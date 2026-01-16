@@ -108,9 +108,16 @@ where
         .with_exclusive_zone(settings.layer_settings.exclusive_zone)
         .with_margin(settings.layer_settings.margin)
         .with_keyboard_interacivity(settings.layer_settings.keyboard_interactivity)
-        .with_connection(settings.with_connection)
-        .build()
-        .expect("Cannot create layershell");
+        .with_connection(settings.with_connection);
+
+    // Apply corner radius if set
+    let ev = if let Some(radii) = settings.layer_settings.corner_radius {
+        ev.with_corner_radius(radii)
+    } else {
+        ev
+    };
+
+    let ev = ev.build().expect("Cannot create layershell");
 
     #[cfg(all(feature = "linux-theme-detection", target_os = "linux"))]
     let system_theme = {
@@ -705,6 +712,10 @@ where
             LayershellCustomAction::SizeChange((width, height)) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 layer_shell_window.set_size((width, height));
+            }
+            LayershellCustomAction::CornerRadiusChange(radii) => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                ev.set_corner_radius_for_surface(layer_shell_window.get_wlsurface(), radii);
             }
             LayershellCustomAction::ExclusiveZoneChange(zone_size) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);

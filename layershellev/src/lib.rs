@@ -116,6 +116,7 @@ pub use waycrate_xkbkeycode::keyboard;
 pub use waycrate_xkbkeycode::xkb_keyboard;
 
 pub mod blur;
+pub mod corner_radius;
 pub mod dpi;
 mod events;
 mod strtoshape;
@@ -900,6 +901,11 @@ pub struct WindowState<T> {
     blur: bool,
     /// Blur manager (bound lazily when blur is enabled)
     blur_manager: Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
+    /// Corner radius for surfaces (all four corners)
+    corner_radius: Option<[u32; 4]>,
+    /// Corner radius manager (bound lazily when corner_radius is set)
+    corner_radius_manager:
+        Option<corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1>,
 
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
@@ -1128,6 +1134,34 @@ impl<T> WindowState<T> {
     }
 }
 
+impl<T: 'static> WindowState<T> {
+    /// Set corner radius for a specific surface
+    /// radii: [top_left, top_right, bottom_right, bottom_left] or None to unset
+    pub fn set_corner_radius_for_surface(&self, surface: &WlSurface, radii: Option<[u32; 4]>) {
+        if let Some(manager) = &self.corner_radius_manager {
+            let corner_data = corner_radius::CornerRadiusData {
+                surface: surface.clone(),
+            };
+            // Get a queue handle from the first unit (they all share the same queue)
+            if let Some(unit) = self.units.first() {
+                let corner_obj = manager.get_corner_radius(surface, &unit.qh, corner_data);
+                if let Some(r) = radii {
+                    corner_obj.set_radius(r[0], r[1], r[2], r[3]);
+                    log::info!("Updated corner radius for surface: {:?}", r);
+                } else {
+                    corner_obj.unset_radius();
+                    log::info!("Unset corner radius for surface");
+                }
+                surface.commit();
+            }
+        } else {
+            log::warn!(
+                "Corner radius manager not available - ensure corner_radius was set in settings"
+            );
+        }
+    }
+}
+
 pub trait ZwpTextInputV3Ext {
     fn set_content_type_by_purpose(&self, purpose: ImePurpose);
 }
@@ -1203,6 +1237,25 @@ fn apply_blur_to_surface<T: 'static>(
     }
 }
 
+/// Apply corner radius to a surface using the layer corner radius protocol
+fn apply_corner_radius_to_surface<T: 'static>(
+    corner_radius_manager: &Option<
+        corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1,
+    >,
+    corner_radius_values: Option<[u32; 4]>,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+) {
+    if let (Some(manager), Some(radii)) = (corner_radius_manager, corner_radius_values) {
+        let corner_data = corner_radius::CornerRadiusData {
+            surface: surface.clone(),
+        };
+        let corner_obj = manager.get_corner_radius(surface, qh, corner_data);
+        corner_obj.set_radius(radii[0], radii[1], radii[2], radii[3]);
+        log::info!("Applied corner radius to layer shell surface: {:?}", radii);
+    }
+}
+
 impl<T> WindowState<T> {
     /// create a WindowState, you need to pass a namespace in
     pub fn new(namespace: &str) -> Self {
@@ -1234,6 +1287,13 @@ impl<T> WindowState<T> {
     /// Request blur effect for surfaces (requires compositor support for org_kde_kwin_blur)
     pub fn with_blur(mut self, blur: bool) -> Self {
         self.blur = blur;
+        self
+    }
+
+    /// Set corner radius for surfaces (requires compositor support for layer_corner_radius_manager_v1)
+    /// Radii are specified as [top_left, top_right, bottom_right, bottom_left]
+    pub fn with_corner_radius(mut self, radii: [u32; 4]) -> Self {
+        self.corner_radius = Some(radii);
         self
     }
 
@@ -1409,6 +1469,8 @@ impl<T> Default for WindowState<T> {
             events_transparent: false,
             blur: false,
             blur_manager: None,
+            corner_radius: None,
+            corner_radius_manager: None,
 
             text_input_manager: None,
             text_input: None,
@@ -2502,6 +2564,28 @@ impl<T: 'static> Dispatch<blur::org_kde_kwin_blur::OrgKdeKwinBlur, blur::BlurDat
     }
 }
 
+// Corner radius protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1);
+
+// Manual Dispatch impl for corner radius surface object since it has custom user data
+impl<T: 'static>
+    Dispatch<
+        corner_radius::layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1,
+        corner_radius::CornerRadiusData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &corner_radius::layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1,
+        _event: <corner_radius::layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1 as Proxy>::Event,
+        _data: &corner_radius::CornerRadiusData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for corner radius objects
+    }
+}
+
 impl<T: 'static> WindowState<T> {
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
@@ -2569,6 +2653,21 @@ impl<T: 'static> WindowState<T> {
                     "Successfully bound org_kde_kwin_blur_manager protocol for blur support"
                 );
             }
+        }
+
+        // Always try to bind corner radius manager for dynamic corner radius support
+        // (allows setting corner radius at runtime even if not set initially)
+        self.corner_radius_manager = globals
+            .bind::<corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.corner_radius_manager.is_some() {
+            log::info!(
+                "Successfully bound layer_corner_radius_manager_v1 protocol for corner radius support"
+            );
         }
 
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
@@ -2654,6 +2753,16 @@ impl<T: 'static> WindowState<T> {
                 apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh);
             }
 
+            // Apply corner radius if set
+            if self.corner_radius.is_some() {
+                apply_corner_radius_to_surface(
+                    &self.corner_radius_manager,
+                    self.corner_radius,
+                    &wl_surface,
+                    &qh,
+                );
+            }
+
             wl_surface.commit();
 
             let mut fractional_scale = None;
@@ -2720,6 +2829,16 @@ impl<T: 'static> WindowState<T> {
                 // Apply blur effect if enabled
                 if self.blur {
                     apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh);
+                }
+
+                // Apply corner radius if set
+                if self.corner_radius.is_some() {
+                    apply_corner_radius_to_surface(
+                        &self.corner_radius_manager,
+                        self.corner_radius,
+                        &wl_surface,
+                        &qh,
+                    );
                 }
 
                 wl_surface.commit();
@@ -3121,6 +3240,11 @@ impl<T: 'static> WindowState<T> {
                                     // Apply blur if requested
                                     if blur {
                                         apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh);
+                                    }
+
+                                    // Apply corner radius if set
+                                    if window_state.corner_radius.is_some() {
+                                        apply_corner_radius_to_surface(&window_state.corner_radius_manager, window_state.corner_radius, &wl_surface, &qh);
                                     }
 
                                     wl_surface.commit();

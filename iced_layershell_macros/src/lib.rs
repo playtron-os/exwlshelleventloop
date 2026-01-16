@@ -44,6 +44,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 /// Margin: top, left, bottom, right
                 MarginChange{id: iced_layershell::reexport::IcedId, margin: (i32, i32, i32, i32)},
                 SizeChange{id: iced_layershell::reexport::IcedId, size: (u32, u32)},
+                /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
+                CornerRadiusChange{id: iced_layershell::reexport::IcedId, radii: Option<[u32; 4]>},
                 ExclusiveZoneChange{id: iced_layershell::reexport::IcedId, zone_size: i32},
                 VirtualKeyboardPressed {
                     time: u32,
@@ -107,6 +109,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::LayerChange { id, layer } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::LayerChange(layer))),
                             Self::MarginChange { id, margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange { id, size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SizeChange(size))),
+                            Self::CornerRadiusChange { id, radii } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::CornerRadiusChange(radii))),
                             Self::ExclusiveZoneChange { id, zone_size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ExclusiveZoneChange(zone_size))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(
                                 None,
@@ -136,6 +139,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 /// Margin: top, left, bottom, right
                 MarginChange((i32, i32, i32, i32)),
                 SizeChange((u32, u32)),
+                /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
+                CornerRadiusChange(Option<[u32; 4]>),
                 ExclusiveZoneChange(i32),
                 VirtualKeyboardPressed {
                     time: u32,
@@ -158,6 +163,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
 
                             Self::MarginChange(margin) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange(size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SizeChange(size))),
+                            Self::CornerRadiusChange(radii) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::CornerRadiusChange(radii))),
                             Self::ExclusiveZoneChange(zone_size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ExclusiveZoneChange(zone_size))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VirtualKeyboardPressed {
                                 time,
