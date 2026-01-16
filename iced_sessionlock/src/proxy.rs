@@ -62,4 +62,8 @@ where
     fn invalidate_layout(&self) {
         self.send_action(Action::Window(window::Action::RelayoutAll));
     }
+
+    fn tick(&self) {
+        self.send_action(Action::Tick);
+    }
 }

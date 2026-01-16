@@ -1198,5 +1198,8 @@ pub(crate) fn run_action<P, C, E: Executor>(
             }
             ev.request_refresh_all(RefreshRequest::NextFrame);
         }
+        Action::Tick => {
+            // Tick is handled internally by the runtime
+        }
     }
 }

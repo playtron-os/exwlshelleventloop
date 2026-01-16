@@ -114,6 +114,8 @@ pub struct NewPopUpSettings {
 /// be used to create a new popup
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct NewXdgWindowSettings {
+    /// Start maximized
+    pub maximized: bool,
     /// the size of the popup
     pub title: Option<String>,
     pub size: Option<(u32, u32)>,
