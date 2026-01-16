@@ -57,6 +57,7 @@ wayland-protocols-wlr = { version = "0.3.5", default-features = false, features 
 
 wayland-protocols-misc = { version = "0.3.5", features = ["client"] }
 wayland-backend = { version = "0.3.7", features = ["client_system"] }
+wayland-scanner = "0.31.5"
 
 #sctk = { package = "smithay-client-toolkit", version = "0.19.2", features = [
 #  "calloop",
