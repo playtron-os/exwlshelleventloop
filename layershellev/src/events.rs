@@ -99,6 +99,8 @@ pub struct NewLayerShellSettings {
     pub output_option: OutputOption,
     pub events_transparent: bool,
     pub namespace: Option<String>,
+    /// Request blur effect for this surface (requires compositor support)
+    pub blur: bool,
 }
 
 /// be used to create a new popup
@@ -145,6 +147,7 @@ impl Default for NewLayerShellSettings {
             output_option: OutputOption::None,
             events_transparent: false,
             namespace: None,
+            blur: false,
         }
     }
 }

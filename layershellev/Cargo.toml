@@ -26,6 +26,8 @@ wayland-protocols-misc.workspace = true
 
 wayland-backend.workspace = true
 
+wayland-scanner.workspace = true
+
 rwh_06.workspace = true
 
 bitflags.workspace = true

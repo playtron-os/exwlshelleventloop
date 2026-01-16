@@ -57,6 +57,7 @@ wayland-protocols-wlr = { version = "0.3.5", default-features = false, features 
 
 wayland-protocols-misc = { version = "0.3.5", features = ["client"] }
 wayland-backend = { version = "0.3.7", features = ["client_system"] }
+wayland-scanner = "0.31.5"
 
 calloop = "0.14.1"
 calloop-wayland-source = "0.4.0"

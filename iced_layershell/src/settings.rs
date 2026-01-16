@@ -82,6 +82,8 @@ pub struct LayerShellSettings {
     pub keyboard_interactivity: KeyboardInteractivity,
     pub start_mode: StartMode,
     pub events_transparent: bool,
+    /// Request blur effect for this surface (requires compositor support for org_kde_kwin_blur)
+    pub blur: bool,
 }
 
 impl Default for LayerShellSettings {
@@ -95,6 +97,7 @@ impl Default for LayerShellSettings {
             keyboard_interactivity: KeyboardInteractivity::OnDemand,
             events_transparent: false,
             start_mode: StartMode::default(),
+            blur: false,
         }
     }
 }

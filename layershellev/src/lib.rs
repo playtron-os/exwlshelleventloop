@@ -115,6 +115,7 @@ pub use events::OutputOption;
 pub use waycrate_xkbkeycode::keyboard;
 pub use waycrate_xkbkeycode::xkb_keyboard;
 
+pub mod blur;
 pub mod dpi;
 mod events;
 mod strtoshape;
@@ -895,6 +896,10 @@ pub struct WindowState<T> {
     start_mode: StartMode,
     init_finished: bool,
     events_transparent: bool,
+    /// Whether to request blur effect for surfaces
+    blur: bool,
+    /// Blur manager (bound lazily when blur is enabled)
+    blur_manager: Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
 
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
@@ -1179,6 +1184,25 @@ impl rwh_06::HasDisplayHandle for WindowWrapper {
     }
 }
 
+/// Apply blur effect to a surface using the KDE blur protocol
+fn apply_blur_to_surface<T: 'static>(
+    blur_manager: &Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+) {
+    if let Some(manager) = blur_manager {
+        let blur_data = blur::BlurData {
+            surface: surface.clone(),
+        };
+        let blur_obj = manager.create(surface, qh, blur_data);
+        // Set region to null (entire surface)
+        blur_obj.set_region(None);
+        // Commit the blur effect
+        blur_obj.commit();
+        log::info!("Applied blur effect to layer shell surface");
+    }
+}
+
 impl<T> WindowState<T> {
     /// create a WindowState, you need to pass a namespace in
     pub fn new(namespace: &str) -> Self {
@@ -1204,6 +1228,12 @@ impl<T> WindowState<T> {
 
     pub fn with_events_transparent(mut self, transparent: bool) -> Self {
         self.events_transparent = transparent;
+        self
+    }
+
+    /// Request blur effect for surfaces (requires compositor support for org_kde_kwin_blur)
+    pub fn with_blur(mut self, blur: bool) -> Self {
+        self.blur = blur;
         self
     }
 
@@ -1377,6 +1407,8 @@ impl<T> Default for WindowState<T> {
             start_mode: StartMode::Active,
             init_finished: false,
             events_transparent: false,
+            blur: false,
+            blur_manager: None,
 
             text_input_manager: None,
             text_input: None,
@@ -2451,6 +2483,25 @@ delegate_noop!(@<T> WindowState<T>: ignore ZwpInputPanelV1);
 delegate_noop!(@<T> WindowState<T>: ignore ZxdgDecorationManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore ZxdgToplevelDecorationV1);
 
+// Blur protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager);
+
+// Manual Dispatch impl for blur object since it has custom user data
+impl<T: 'static> Dispatch<blur::org_kde_kwin_blur::OrgKdeKwinBlur, blur::BlurData>
+    for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &blur::org_kde_kwin_blur::OrgKdeKwinBlur,
+        _event: <blur::org_kde_kwin_blur::OrgKdeKwinBlur as Proxy>::Event,
+        _data: &blur::BlurData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for blur objects
+    }
+}
+
 impl<T: 'static> WindowState<T> {
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
@@ -2499,6 +2550,27 @@ impl<T: 'static> WindowState<T> {
             .ok();
 
         self.text_input_manager = text_input_manager;
+
+        // Bind blur manager if blur is enabled
+        if self.blur {
+            self.blur_manager = globals
+                .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
+                    &qh,
+                    1..=1,
+                    (),
+                )
+                .ok();
+            if self.blur_manager.is_none() {
+                log::warn!(
+                    "Blur requested but compositor does not support org_kde_kwin_blur_manager protocol"
+                );
+            } else {
+                log::info!(
+                    "Successfully bound org_kde_kwin_blur_manager protocol for blur support"
+                );
+            }
+        }
+
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
 
         // do the step before, you get empty list
@@ -2577,6 +2649,11 @@ impl<T: 'static> WindowState<T> {
                 region.destroy();
             }
 
+            // Apply blur effect if enabled
+            if self.blur {
+                apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh);
+            }
+
             wl_surface.commit();
 
             let mut fractional_scale = None;
@@ -2639,6 +2716,12 @@ impl<T: 'static> WindowState<T> {
                     wl_surface.set_input_region(Some(&region));
                     region.destroy();
                 }
+
+                // Apply blur effect if enabled
+                if self.blur {
+                    apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh);
+                }
+
                 wl_surface.commit();
 
                 let zxdgoutput = xdg_output_manager.get_xdg_output(output_display, &qh, ());
@@ -2971,6 +3054,7 @@ impl<T: 'static> WindowState<T> {
                                         output_option: output_type,
                                         events_transparent,
                                         namespace,
+                                        blur,
                                     },
                                     id,
                                     info,
@@ -3032,6 +3116,11 @@ impl<T: 'static> WindowState<T> {
                                         let region = wmcompositer.create_region(&qh, ());
                                         wl_surface.set_input_region(Some(&region));
                                         region.destroy();
+                                    }
+
+                                    // Apply blur if requested
+                                    if blur {
+                                        apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh);
                                     }
 
                                     wl_surface.commit();
