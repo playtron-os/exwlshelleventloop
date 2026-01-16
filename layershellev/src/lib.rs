@@ -3135,10 +3135,7 @@ impl<T: 'static> WindowState<T> {
                                     );
                                 },
                                 ReturnData::NewXdgBase((
-                                    NewXdgWindowSettings{
-                                        title,
-                                        size
-                                    },
+                                NewXdgWindowSettings { maximized, title, size },
                                     id,
                                     info,
                                 )) => {
@@ -3150,10 +3147,16 @@ impl<T: 'static> WindowState<T> {
 
                                     toplevel.set_title(title.unwrap_or("".to_owned()));
 
+                                    if maximized { toplevel.set_maximized(); }
                                     let decoration = if let Some(decoration_manager) = &zxdg_decoration_manager {
                                         let decoration = decoration_manager.get_toplevel_decoration(&toplevel, &qh, ());
                                         use zxdg_toplevel_decoration_v1::Mode;
-                                        decoration.set_mode(Mode::ServerSide);
+                                        // Use client-side (no) decorations when maximized, server-side otherwise
+                                        if maximized {
+                                            decoration.set_mode(Mode::ClientSide);
+                                        } else {
+                                            decoration.set_mode(Mode::ServerSide);
+                                        }
                                         Some(decoration)
 
                                     } else {

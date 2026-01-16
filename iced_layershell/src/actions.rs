@@ -6,12 +6,14 @@ use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub struct IcedXdgWindowSettings {
+    pub maximized: bool,
     pub size: Option<(u32, u32)>,
 }
 
 impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
     fn from(val: IcedXdgWindowSettings) -> Self {
         NewXdgWindowSettings {
+            maximized: val.maximized,
             title: None,
             size: val.size,
         }
