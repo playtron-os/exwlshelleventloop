@@ -2,6 +2,9 @@ use crate::reexport::{Anchor, Layer, WlRegion};
 use iced_core::window::Id as IcedId;
 use layershellev::{NewInputPanelSettings, NewLayerShellSettings, NewXdgWindowSettings};
 
+// Re-export VisibilityMode for consumers
+pub use layershellev::home_visibility::VisibilityMode;
+
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -99,6 +102,8 @@ pub enum LayershellCustomAction {
     /// is same with WindowAction::Close(id)
     RemoveWindow,
     ForgetLastOutput,
+    /// Change the home visibility mode for the surface
+    VisibilityModeChange(VisibilityMode),
 }
 
 /// Please do not use this struct directly

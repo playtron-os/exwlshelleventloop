@@ -915,9 +915,14 @@ pub struct WindowState<T> {
 
     /// Whether to use home visibility mode (home_only = only visible when at home)
     home_only: bool,
-    /// Home visibility manager (bound lazily when home_only is enabled)
+    /// Whether to hide when in home mode (inverse of home_only)
+    hide_on_home: bool,
+    /// Home visibility manager (bound lazily when home_only or hide_on_home is enabled)
     home_visibility_manager:
         Option<home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1>,
+    /// Home visibility controllers per surface (keyed by surface protocol ID)
+    home_visibility_controllers:
+        HashMap<u32, home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1>,
     /// Current home state from compositor (true = at home, false = windows visible)
     is_home: bool,
 
@@ -1180,6 +1185,50 @@ impl<T: 'static> WindowState<T> {
             );
         }
     }
+
+    /// Set home visibility mode for a specific surface
+    /// This allows dynamically changing whether a surface is visible at home or not
+    pub fn set_visibility_mode_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        mode: home_visibility::VisibilityMode,
+    ) {
+        let surface_id = surface.id().protocol_id();
+
+        // Check if we already have a controller for this surface
+        if let Some(controller) = self.home_visibility_controllers.get(&surface_id) {
+            controller.set_visibility_mode(mode);
+            log::info!(
+                "Updated visibility mode to {:?} for surface {}",
+                mode,
+                surface_id
+            );
+            return;
+        }
+
+        // Need to create a new controller
+        if let Some(manager) = &self.home_visibility_manager {
+            if let Some(unit) = self.units.first() {
+                let visibility_data = home_visibility::HomeVisibilityData {
+                    surface: surface.clone(),
+                };
+                let visibility_obj =
+                    manager.get_home_visibility(surface, &unit.qh, visibility_data);
+                visibility_obj.set_visibility_mode(mode);
+                self.home_visibility_controllers
+                    .insert(surface_id, visibility_obj);
+                log::info!(
+                    "Created and set visibility mode to {:?} for surface {}",
+                    mode,
+                    surface_id
+                );
+            }
+        } else {
+            log::warn!(
+                "Home visibility manager not available - ensure home_only or hide_on_home was set in settings"
+            );
+        }
+    }
 }
 
 pub trait ZwpTextInputV3Ext {
@@ -1292,22 +1341,27 @@ fn apply_shadow_to_surface<T: 'static>(
     }
 }
 
-/// Apply home-only visibility to a surface using the home visibility protocol
+/// Apply home visibility mode to a surface using the home visibility protocol
+/// Returns the visibility controller so it can be stored for later mode changes
 fn apply_home_visibility_to_surface<T: 'static>(
     home_visibility_manager: &Option<
         home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
     >,
     surface: &WlSurface,
     qh: &QueueHandle<WindowState<T>>,
-) {
+    mode: home_visibility::VisibilityMode,
+) -> Option<home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1> {
     if let Some(manager) = home_visibility_manager {
         let visibility_data = home_visibility::HomeVisibilityData {
             surface: surface.clone(),
         };
         let visibility_obj = manager.get_home_visibility(surface, qh, visibility_data);
-        // Set visibility mode to home_only
-        visibility_obj.set_visibility_mode(home_visibility::VisibilityMode::HomeOnly);
-        log::info!("Applied home-only visibility to layer shell surface");
+        // Set the requested visibility mode
+        visibility_obj.set_visibility_mode(mode);
+        log::info!("Applied {:?} visibility to layer shell surface", mode);
+        Some(visibility_obj)
+    } else {
+        None
     }
 }
 
@@ -1363,6 +1417,14 @@ impl<T> WindowState<T> {
     /// (no regular windows visible, like the iOS home screen).
     pub fn with_home_only(mut self, home_only: bool) -> Self {
         self.home_only = home_only;
+        self
+    }
+
+    /// Set hide-on-home visibility mode for surfaces (requires compositor support for zcosmic_home_visibility_v1)
+    /// When enabled, the surface will be hidden when the compositor is in "home" mode
+    /// (inverse of home_only - visible when windows are present, hidden at home screen).
+    pub fn with_hide_on_home(mut self, hide_on_home: bool) -> Self {
+        self.hide_on_home = hide_on_home;
         self
     }
 
@@ -1543,7 +1605,9 @@ impl<T> Default for WindowState<T> {
             shadow: false,
             shadow_manager: None,
             home_only: false,
+            hide_on_home: false,
             home_visibility_manager: None,
+            home_visibility_controllers: HashMap::new(),
             is_home: false,
 
             text_input_manager: None,
@@ -2826,8 +2890,8 @@ impl<T: 'static> WindowState<T> {
             }
         }
 
-        // Bind home visibility manager if home_only is enabled
-        if self.home_only {
+        // Bind home visibility manager if home_only or hide_on_home is enabled
+        if self.home_only || self.hide_on_home {
             self.home_visibility_manager = globals
                 .bind::<home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1, _, _>(
                     &qh,
@@ -2837,7 +2901,7 @@ impl<T: 'static> WindowState<T> {
                 .ok();
             if self.home_visibility_manager.is_none() {
                 log::warn!(
-                    "Home-only visibility requested but compositor does not support zcosmic_home_visibility_v1 protocol"
+                    "Home visibility mode requested but compositor does not support zcosmic_home_visibility_v1 protocol"
                 );
             } else {
                 log::info!(
@@ -2944,9 +3008,26 @@ impl<T: 'static> WindowState<T> {
                 apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
             }
 
-            // Apply home-only visibility if enabled
+            // Apply home visibility mode if enabled
+            let surface_id = wl_surface.id().protocol_id();
             if self.home_only {
-                apply_home_visibility_to_surface(&self.home_visibility_manager, &wl_surface, &qh);
+                if let Some(controller) = apply_home_visibility_to_surface(
+                    &self.home_visibility_manager,
+                    &wl_surface,
+                    &qh,
+                    home_visibility::VisibilityMode::HomeOnly,
+                ) {
+                    self.home_visibility_controllers.insert(surface_id, controller);
+                }
+            } else if self.hide_on_home {
+                if let Some(controller) = apply_home_visibility_to_surface(
+                    &self.home_visibility_manager,
+                    &wl_surface,
+                    &qh,
+                    home_visibility::VisibilityMode::HideOnHome,
+                ) {
+                    self.home_visibility_controllers.insert(surface_id, controller);
+                }
             }
 
             wl_surface.commit();
@@ -3032,13 +3113,26 @@ impl<T: 'static> WindowState<T> {
                     apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
                 }
 
-                // Apply home-only visibility if enabled
+                // Apply home visibility mode if enabled
+                let surface_id = wl_surface.id().protocol_id();
                 if self.home_only {
-                    apply_home_visibility_to_surface(
+                    if let Some(controller) = apply_home_visibility_to_surface(
                         &self.home_visibility_manager,
                         &wl_surface,
                         &qh,
-                    );
+                        home_visibility::VisibilityMode::HomeOnly,
+                    ) {
+                        self.home_visibility_controllers.insert(surface_id, controller);
+                    }
+                } else if self.hide_on_home {
+                    if let Some(controller) = apply_home_visibility_to_surface(
+                        &self.home_visibility_manager,
+                        &wl_surface,
+                        &qh,
+                        home_visibility::VisibilityMode::HideOnHome,
+                    ) {
+                        self.home_visibility_controllers.insert(surface_id, controller);
+                    }
                 }
 
                 wl_surface.commit();
@@ -3452,9 +3546,26 @@ impl<T: 'static> WindowState<T> {
                                         apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
                                     }
 
-                                    // Apply home-only visibility if enabled
+                                    // Apply home visibility mode if enabled
+                                    let surface_id = wl_surface.id().protocol_id();
                                     if window_state.home_only {
-                                        apply_home_visibility_to_surface(&window_state.home_visibility_manager, &wl_surface, &qh);
+                                        if let Some(controller) = apply_home_visibility_to_surface(
+                                            &window_state.home_visibility_manager,
+                                            &wl_surface,
+                                            &qh,
+                                            home_visibility::VisibilityMode::HomeOnly,
+                                        ) {
+                                            window_state.home_visibility_controllers.insert(surface_id, controller);
+                                        }
+                                    } else if window_state.hide_on_home {
+                                        if let Some(controller) = apply_home_visibility_to_surface(
+                                            &window_state.home_visibility_manager,
+                                            &wl_surface,
+                                            &qh,
+                                            home_visibility::VisibilityMode::HideOnHome,
+                                        ) {
+                                            window_state.home_visibility_controllers.insert(surface_id, controller);
+                                        }
                                     }
 
                                     wl_surface.commit();

@@ -58,6 +58,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 NewInputPanel { settings: iced_layershell::reexport::NewInputPanelSettings, id: iced_layershell::reexport::IcedId },
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
+                VisibilityModeChange { id: iced::window::Id, mode: iced_layershell::actions::VisibilityMode },
             };
 
             let impl_quote = quote! {
@@ -122,6 +123,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::NewInputPanel {settings, id } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::NewInputPanel { settings, id })),
                             Self::RemoveWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
+                            Self::VisibilityModeChange { id, mode } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::VisibilityModeChange(mode))),
                             _ => Err(self)
                         }
                     }
@@ -146,6 +148,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                     time: u32,
                     key: u32,
                 },
+                VisibilityModeChange(iced_layershell::actions::VisibilityMode),
             };
             let impl_quote = quote! {
                 impl #impl_gen TryInto<iced_layershell::actions::LayershellCustomActionWithId> for #ident #ty_gen #where_gen {
@@ -169,6 +172,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                                 time,
                                 key
                             })),
+                            Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
                             _ => Err(self)
                         }
                     }

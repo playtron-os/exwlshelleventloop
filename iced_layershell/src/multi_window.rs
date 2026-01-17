@@ -104,6 +104,7 @@ where
         .with_blur(settings.layer_settings.blur)
         .with_shadow(settings.layer_settings.shadow)
         .with_home_only(settings.layer_settings.home_only)
+        .with_hide_on_home(settings.layer_settings.hide_on_home)
         .with_option_size(settings.layer_settings.size)
         .with_layer(settings.layer_settings.layer)
         .with_anchor(settings.layer_settings.anchor)
@@ -849,6 +850,15 @@ where
             }
             LayershellCustomAction::ForgetLastOutput => {
                 ev.forget_last_output();
+            }
+            LayershellCustomAction::VisibilityModeChange(mode) => {
+                // Get the surface first to avoid borrow conflict
+                let surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id).map(|unit| unit.get_wlsurface().clone())
+                });
+                if let Some(surface) = surface {
+                    ev.set_visibility_mode_for_surface(&surface, mode);
+                }
             }
         }
     }
