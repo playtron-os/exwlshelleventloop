@@ -119,6 +119,7 @@ pub mod blur;
 pub mod corner_radius;
 pub mod dpi;
 mod events;
+pub mod home_visibility;
 pub mod shadow;
 mod strtoshape;
 
@@ -912,6 +913,14 @@ pub struct WindowState<T> {
     /// Shadow manager (bound lazily when shadow is enabled)
     shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
 
+    /// Whether to use home visibility mode (home_only = only visible when at home)
+    home_only: bool,
+    /// Home visibility manager (bound lazily when home_only is enabled)
+    home_visibility_manager:
+        Option<home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1>,
+    /// Current home state from compositor (true = at home, false = windows visible)
+    is_home: bool,
+
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
     text_inputs: Vec<ZwpTextInputV3>,
@@ -967,6 +976,12 @@ impl<T> WindowState<T> {
     // return all windows
     pub fn windows(&self) -> &Vec<WindowStateUnit<T>> {
         &self.units
+    }
+
+    /// Get the current home state from compositor
+    /// Returns true if at home (no windows visible), false otherwise
+    pub fn is_home(&self) -> bool {
+        self.is_home
     }
 
     fn push_window(&mut self, window_state_unit: WindowStateUnit<T>) {
@@ -1277,6 +1292,25 @@ fn apply_shadow_to_surface<T: 'static>(
     }
 }
 
+/// Apply home-only visibility to a surface using the home visibility protocol
+fn apply_home_visibility_to_surface<T: 'static>(
+    home_visibility_manager: &Option<
+        home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
+    >,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+) {
+    if let Some(manager) = home_visibility_manager {
+        let visibility_data = home_visibility::HomeVisibilityData {
+            surface: surface.clone(),
+        };
+        let visibility_obj = manager.get_home_visibility(surface, qh, visibility_data);
+        // Set visibility mode to home_only
+        visibility_obj.set_visibility_mode(home_visibility::VisibilityMode::HomeOnly);
+        log::info!("Applied home-only visibility to layer shell surface");
+    }
+}
+
 impl<T> WindowState<T> {
     /// create a WindowState, you need to pass a namespace in
     pub fn new(namespace: &str) -> Self {
@@ -1321,6 +1355,14 @@ impl<T> WindowState<T> {
     /// Request shadow effect for surfaces (requires compositor support for layer_shadow_manager_v1)
     pub fn with_shadow(mut self, shadow: bool) -> Self {
         self.shadow = shadow;
+        self
+    }
+
+    /// Set home-only visibility mode for surfaces (requires compositor support for zcosmic_home_visibility_v1)
+    /// When enabled, the surface will only be visible when the compositor is in "home" mode
+    /// (no regular windows visible, like the iOS home screen).
+    pub fn with_home_only(mut self, home_only: bool) -> Self {
+        self.home_only = home_only;
         self
     }
 
@@ -1500,6 +1542,9 @@ impl<T> Default for WindowState<T> {
             corner_radius_manager: None,
             shadow: false,
             shadow_manager: None,
+            home_only: false,
+            home_visibility_manager: None,
+            is_home: false,
 
             text_input_manager: None,
             text_input: None,
@@ -2634,6 +2679,53 @@ impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
     }
 }
 
+// Home visibility protocol delegates
+// Manager has the home_state event, so we need a proper Dispatch impl
+impl<T: 'static>
+    Dispatch<
+        home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
+        home_visibility::HomeVisibilityManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
+        event: <home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1 as Proxy>::Event,
+        _data: &home_visibility::HomeVisibilityManagerData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use home_visibility::zcosmic_home_visibility_manager_v1::Event;
+        let Event::HomeState { is_home } = event;
+        let is_home = is_home != 0;
+        log::debug!("Home state changed: is_home={}", is_home);
+        state.is_home = is_home;
+        // Add a message to propagate the event
+        state
+            .message
+            .push((None, DispatchMessageInner::HomeStateChanged(is_home)));
+    }
+}
+
+// Manual Dispatch impl for home visibility controller since it has custom user data
+impl<T: 'static>
+    Dispatch<
+        home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1,
+        home_visibility::HomeVisibilityData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1,
+        _event: <home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1 as Proxy>::Event,
+        _data: &home_visibility::HomeVisibilityData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for visibility controller objects
+    }
+}
+
 impl<T: 'static> WindowState<T> {
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
@@ -2730,6 +2822,26 @@ impl<T: 'static> WindowState<T> {
             } else {
                 log::info!(
                     "Successfully bound layer_shadow_manager_v1 protocol for shadow support"
+                );
+            }
+        }
+
+        // Bind home visibility manager if home_only is enabled
+        if self.home_only {
+            self.home_visibility_manager = globals
+                .bind::<home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1, _, _>(
+                    &qh,
+                    1..=1,
+                    home_visibility::HomeVisibilityManagerData::default(),
+                )
+                .ok();
+            if self.home_visibility_manager.is_none() {
+                log::warn!(
+                    "Home-only visibility requested but compositor does not support zcosmic_home_visibility_v1 protocol"
+                );
+            } else {
+                log::info!(
+                    "Successfully bound zcosmic_home_visibility_manager_v1 protocol for home visibility support"
                 );
             }
         }
@@ -2832,6 +2944,11 @@ impl<T: 'static> WindowState<T> {
                 apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
             }
 
+            // Apply home-only visibility if enabled
+            if self.home_only {
+                apply_home_visibility_to_surface(&self.home_visibility_manager, &wl_surface, &qh);
+            }
+
             wl_surface.commit();
 
             let mut fractional_scale = None;
@@ -2913,6 +3030,15 @@ impl<T: 'static> WindowState<T> {
                 // Apply shadow if enabled
                 if self.shadow {
                     apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
+                }
+
+                // Apply home-only visibility if enabled
+                if self.home_only {
+                    apply_home_visibility_to_surface(
+                        &self.home_visibility_manager,
+                        &wl_surface,
+                        &qh,
+                    );
                 }
 
                 wl_surface.commit();
@@ -3324,6 +3450,11 @@ impl<T: 'static> WindowState<T> {
                                     // Apply shadow if enabled
                                     if window_state.shadow {
                                         apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
+                                    }
+
+                                    // Apply home-only visibility if enabled
+                                    if window_state.home_only {
+                                        apply_home_visibility_to_surface(&window_state.home_visibility_manager, &wl_surface, &qh);
                                     }
 
                                     wl_surface.commit();

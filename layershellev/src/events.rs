@@ -315,6 +315,8 @@ pub(crate) enum DispatchMessageInner {
     },
     XdgInfoChanged(XdgInfoChangedType),
     Ime(Ime),
+    /// Home state changed from compositor (true = at home, false = windows visible)
+    HomeStateChanged(bool),
 }
 
 /// This tell the DispatchMessage by dispatch
@@ -413,6 +415,11 @@ pub enum DispatchMessage {
     },
     Ime(Ime),
     Closed,
+    /// Home state changed from compositor
+    /// is_home: true = at home (no windows visible), false = windows visible
+    HomeStateChanged {
+        is_home: bool,
+    },
 }
 
 impl From<DispatchMessageInner> for DispatchMessage {
@@ -517,6 +524,9 @@ impl From<DispatchMessageInner> for DispatchMessage {
             },
             DispatchMessageInner::Ime(ime) => DispatchMessage::Ime(ime),
             DispatchMessageInner::XdgInfoChanged(_) => unimplemented!(),
+            DispatchMessageInner::HomeStateChanged(is_home) => {
+                DispatchMessage::HomeStateChanged { is_home }
+            }
         }
     }
 }

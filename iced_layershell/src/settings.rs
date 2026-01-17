@@ -89,6 +89,9 @@ pub struct LayerShellSettings {
     /// Corner radius for this surface [top_left, top_right, bottom_right, bottom_left]
     /// (requires compositor support for layer_corner_radius_manager_v1)
     pub corner_radius: Option<[u32; 4]>,
+    /// Home-only visibility mode - surface only visible when compositor is in "home" mode
+    /// (requires compositor support for zcosmic_home_visibility_v1)
+    pub home_only: bool,
 }
 
 impl Default for LayerShellSettings {
@@ -105,6 +108,7 @@ impl Default for LayerShellSettings {
             blur: false,
             shadow: false,
             corner_radius: None,
+            home_only: false,
         }
     }
 }
@@ -170,6 +174,10 @@ mod tests {
             keyboard_interactivity: KeyboardInteractivity::None,
             start_mode: StartMode::TargetScreen("HDMI-1".to_string()),
             events_transparent: false,
+            blur: false,
+            shadow: false,
+            corner_radius: None,
+            home_only: false,
         };
 
         assert_eq!(layer_settings.anchor, Anchor::Top | Anchor::Left);
