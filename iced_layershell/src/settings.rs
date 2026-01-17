@@ -84,6 +84,8 @@ pub struct LayerShellSettings {
     pub events_transparent: bool,
     /// Request blur effect for this surface (requires compositor support for org_kde_kwin_blur)
     pub blur: bool,
+    /// Request shadow effect for this surface (requires compositor support for layer_shadow_manager_v1)
+    pub shadow: bool,
     /// Corner radius for this surface [top_left, top_right, bottom_right, bottom_left]
     /// (requires compositor support for layer_corner_radius_manager_v1)
     pub corner_radius: Option<[u32; 4]>,
@@ -101,6 +103,7 @@ impl Default for LayerShellSettings {
             events_transparent: false,
             start_mode: StartMode::default(),
             blur: false,
+            shadow: false,
             corner_radius: None,
         }
     }
