@@ -92,6 +92,9 @@ pub struct LayerShellSettings {
     /// Home-only visibility mode - surface only visible when compositor is in "home" mode
     /// (requires compositor support for zcosmic_home_visibility_v1)
     pub home_only: bool,
+    /// Hide-on-home visibility mode - surface hidden when compositor is in "home" mode
+    /// (inverse of home_only, requires compositor support for zcosmic_home_visibility_v1)
+    pub hide_on_home: bool,
 }
 
 impl Default for LayerShellSettings {
@@ -109,6 +112,7 @@ impl Default for LayerShellSettings {
             shadow: false,
             corner_radius: None,
             home_only: false,
+            hide_on_home: false,
         }
     }
 }
@@ -178,6 +182,7 @@ mod tests {
             shadow: false,
             corner_radius: None,
             home_only: false,
+            hide_on_home: false,
         };
 
         assert_eq!(layer_settings.anchor, Anchor::Top | Anchor::Left);
