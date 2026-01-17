@@ -119,6 +119,7 @@ pub mod blur;
 pub mod corner_radius;
 pub mod dpi;
 mod events;
+pub mod shadow;
 mod strtoshape;
 
 use events::DispatchMessageInner;
@@ -906,6 +907,10 @@ pub struct WindowState<T> {
     /// Corner radius manager (bound lazily when corner_radius is set)
     corner_radius_manager:
         Option<corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1>,
+    /// Whether to request shadow effect for surfaces
+    shadow: bool,
+    /// Shadow manager (bound lazily when shadow is enabled)
+    shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
 
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
@@ -1256,6 +1261,22 @@ fn apply_corner_radius_to_surface<T: 'static>(
     }
 }
 
+/// Apply shadow to a surface using the layer shadow protocol
+fn apply_shadow_to_surface<T: 'static>(
+    shadow_manager: &Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+) {
+    if let Some(manager) = shadow_manager {
+        let shadow_data = shadow::ShadowData {
+            surface: surface.clone(),
+        };
+        let shadow_obj = manager.get_shadow(surface, qh, shadow_data);
+        shadow_obj.enable();
+        log::info!("Applied shadow effect to layer shell surface");
+    }
+}
+
 impl<T> WindowState<T> {
     /// create a WindowState, you need to pass a namespace in
     pub fn new(namespace: &str) -> Self {
@@ -1294,6 +1315,12 @@ impl<T> WindowState<T> {
     /// Radii are specified as [top_left, top_right, bottom_right, bottom_left]
     pub fn with_corner_radius(mut self, radii: [u32; 4]) -> Self {
         self.corner_radius = Some(radii);
+        self
+    }
+
+    /// Request shadow effect for surfaces (requires compositor support for layer_shadow_manager_v1)
+    pub fn with_shadow(mut self, shadow: bool) -> Self {
+        self.shadow = shadow;
         self
     }
 
@@ -1471,6 +1498,8 @@ impl<T> Default for WindowState<T> {
             blur_manager: None,
             corner_radius: None,
             corner_radius_manager: None,
+            shadow: false,
+            shadow_manager: None,
 
             text_input_manager: None,
             text_input: None,
@@ -2586,6 +2615,25 @@ impl<T: 'static>
     }
 }
 
+// Shadow protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore shadow::layer_shadow_manager_v1::LayerShadowManagerV1);
+
+// Manual Dispatch impl for shadow surface object since it has custom user data
+impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1, shadow::ShadowData>
+    for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
+        _event: <shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1 as Proxy>::Event,
+        _data: &shadow::ShadowData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for shadow objects
+    }
+}
+
 impl<T: 'static> WindowState<T> {
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
@@ -2668,6 +2716,22 @@ impl<T: 'static> WindowState<T> {
             log::info!(
                 "Successfully bound layer_corner_radius_manager_v1 protocol for corner radius support"
             );
+        }
+
+        // Bind shadow manager if shadow is enabled
+        if self.shadow {
+            self.shadow_manager = globals
+                .bind::<shadow::layer_shadow_manager_v1::LayerShadowManagerV1, _, _>(&qh, 1..=1, ())
+                .ok();
+            if self.shadow_manager.is_none() {
+                log::warn!(
+                    "Shadow requested but compositor does not support layer_shadow_manager_v1 protocol"
+                );
+            } else {
+                log::info!(
+                    "Successfully bound layer_shadow_manager_v1 protocol for shadow support"
+                );
+            }
         }
 
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
@@ -2763,6 +2827,11 @@ impl<T: 'static> WindowState<T> {
                 );
             }
 
+            // Apply shadow if enabled
+            if self.shadow {
+                apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
+            }
+
             wl_surface.commit();
 
             let mut fractional_scale = None;
@@ -2839,6 +2908,11 @@ impl<T: 'static> WindowState<T> {
                         &wl_surface,
                         &qh,
                     );
+                }
+
+                // Apply shadow if enabled
+                if self.shadow {
+                    apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
                 }
 
                 wl_surface.commit();
@@ -3245,6 +3319,11 @@ impl<T: 'static> WindowState<T> {
                                     // Apply corner radius if set
                                     if window_state.corner_radius.is_some() {
                                         apply_corner_radius_to_surface(&window_state.corner_radius_manager, window_state.corner_radius, &wl_surface, &qh);
+                                    }
+
+                                    // Apply shadow if enabled
+                                    if window_state.shadow {
+                                        apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
                                     }
 
                                     wl_surface.commit();

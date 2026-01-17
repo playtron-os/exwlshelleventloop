@@ -102,6 +102,7 @@ where
         .with_use_display_handle(true)
         .with_events_transparent(settings.layer_settings.events_transparent)
         .with_blur(settings.layer_settings.blur)
+        .with_shadow(settings.layer_settings.shadow)
         .with_option_size(settings.layer_settings.size)
         .with_layer(settings.layer_settings.layer)
         .with_anchor(settings.layer_settings.anchor)
