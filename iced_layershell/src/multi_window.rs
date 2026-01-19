@@ -877,6 +877,12 @@ where
                     ev.set_visibility_mode_for_surface(&surface, mode);
                 }
             }
+            #[cfg(feature = "foreign-toplevel")]
+            LayershellCustomAction::ToplevelAction(action) => {
+                log::info!("Processing ToplevelAction: {:?}", action);
+                let result = ev.execute_toplevel_action(action);
+                log::info!("ToplevelAction result: {}", result);
+            }
         }
     }
 

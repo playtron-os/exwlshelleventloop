@@ -946,9 +946,20 @@ pub struct WindowState<T> {
     cosmic_toplevel_info: Option<
         cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
     >,
+
+    // zcosmic_toplevel_manager_v1 (COSMIC extension for control - activate, close, etc.)
+    #[cfg(feature = "cosmic-toplevel")]
+    cosmic_toplevel_manager: Option<
+        cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
+    >,
+
     /// Mapping from cosmic handle protocol ID to ext handle protocol ID
     #[cfg(feature = "cosmic-toplevel")]
     cosmic_to_ext_handle_map: HashMap<u32, u32>,
+
+    /// COSMIC toplevel handles for control operations (keyed by ext handle protocol ID)
+    #[cfg(feature = "cosmic-toplevel")]
+    cosmic_toplevel_handles: HashMap<u32, cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1>,
 
     // zwlr_foreign_toplevel_manager_v1 (wlroots fallback)
     #[cfg(feature = "foreign-toplevel")]
@@ -959,6 +970,10 @@ pub struct WindowState<T> {
     /// Data for each tracked foreign toplevel window (keyed by protocol object ID)
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_data: HashMap<u32, foreign_toplevel::ToplevelHandleData>,
+
+    /// Handles for each tracked foreign toplevel window (for sending commands)
+    #[cfg(feature = "foreign-toplevel")]
+    foreign_toplevel_handles: HashMap<u32, wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1>,
 
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
@@ -1122,6 +1137,18 @@ impl<T> WindowState<T> {
 
     pub fn is_with_target(&self) -> bool {
         self.start_mode.is_with_target()
+    }
+
+    /// Execute a toplevel action (activate, close, minimize, etc.)
+    ///
+    /// Returns true if the action was executed, false if the handle was not found.
+    /// Requires the `foreign-toplevel` feature.
+    #[cfg(feature = "foreign-toplevel")]
+    pub fn execute_toplevel_action(&self, action: foreign_toplevel::ToplevelAction) -> bool
+    where
+        T: 'static,
+    {
+        foreign_toplevel::execute_toplevel_action(self, action, self.seat.as_ref())
     }
 
     pub fn ime_allowed(&self) -> bool {
@@ -1682,11 +1709,17 @@ impl<T> Default for WindowState<T> {
             #[cfg(feature = "cosmic-toplevel")]
             cosmic_toplevel_info: None,
             #[cfg(feature = "cosmic-toplevel")]
+            cosmic_toplevel_manager: None,
+            #[cfg(feature = "cosmic-toplevel")]
             cosmic_to_ext_handle_map: HashMap::new(),
+            #[cfg(feature = "cosmic-toplevel")]
+            cosmic_toplevel_handles: HashMap::new(),
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_manager: None,
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_data: HashMap::new(),
+            #[cfg(feature = "foreign-toplevel")]
+            foreign_toplevel_handles: HashMap::new(),
 
             text_input_manager: None,
             text_input: None,
@@ -2887,6 +2920,52 @@ impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
     fn remove_toplevel_data(&mut self, id: u32) {
         self.foreign_toplevel_data.remove(&id);
     }
+
+    fn store_toplevel_handle(
+        &mut self,
+        id: u32,
+        handle: wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+    ) {
+        self.foreign_toplevel_handles.insert(id, handle);
+    }
+
+    fn remove_toplevel_handle(&mut self, id: u32) {
+        self.foreign_toplevel_handles.remove(&id);
+    }
+
+    fn get_toplevel_handle(&self, id: u32) -> Option<&wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1>{
+        self.foreign_toplevel_handles.get(&id)
+    }
+
+    #[cfg(feature = "cosmic-toplevel")]
+    fn store_cosmic_toplevel_handle(
+        &mut self,
+        id: u32,
+        handle: cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
+    ) {
+        log::debug!("Storing COSMIC toplevel handle for id {}", id);
+        self.cosmic_toplevel_handles.insert(id, handle);
+    }
+
+    #[cfg(feature = "cosmic-toplevel")]
+    fn remove_cosmic_toplevel_handle(&mut self, id: u32) {
+        self.cosmic_toplevel_handles.remove(&id);
+    }
+
+    #[cfg(feature = "cosmic-toplevel")]
+    fn get_cosmic_toplevel_handle(&self, id: u32) -> Option<&cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1>{
+        self.cosmic_toplevel_handles.get(&id)
+    }
+
+    #[cfg(feature = "cosmic-toplevel")]
+    fn get_cosmic_toplevel_manager(&self) -> Option<&cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>{
+        self.cosmic_toplevel_manager.as_ref()
+    }
+
+    #[cfg(feature = "cosmic-toplevel")]
+    fn cosmic_toplevel_info(&self) -> Option<&cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>{
+        self.cosmic_toplevel_info.as_ref()
+    }
 }
 
 // COSMIC toplevel handler implementation
@@ -3094,6 +3173,30 @@ impl<T: 'static>
     }
 }
 
+// zcosmic_toplevel_manager_v1 dispatch (for control operations)
+#[cfg(feature = "cosmic-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
+        foreign_toplevel::CosmicToplevelManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
+        event: cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::Event,
+        data: &foreign_toplevel::CosmicToplevelManagerData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
+            foreign_toplevel::CosmicToplevelManagerData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
 impl<T: 'static> WindowState<T> {
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
@@ -3215,10 +3318,11 @@ impl<T: 'static> WindowState<T> {
         }
 
         // Bind foreign toplevel protocols if enabled
-        // Priority: ext_foreign_toplevel_list + cosmic_toplevel_info > wlr_foreign_toplevel_manager
+        // We need zwlr_foreign_toplevel_manager for control operations (activate, close, etc.)
+        // ext_foreign_toplevel_list + cosmic_toplevel_info provide better info but no control
         #[cfg(feature = "foreign-toplevel")]
         if self.foreign_toplevel_enabled {
-            // Try ext_foreign_toplevel_list_v1 first (preferred, standard protocol)
+            // Try ext_foreign_toplevel_list_v1 first (standard protocol for info)
             self.ext_foreign_toplevel_list = globals
                 .bind::<wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
                     &qh,
@@ -3231,29 +3335,55 @@ impl<T: 'static> WindowState<T> {
                 log::info!(
                     "Successfully bound ext_foreign_toplevel_list_v1 protocol for foreign toplevel tracking"
                 );
+            }
 
-                // Also try to bind COSMIC toplevel info for state information
-                #[cfg(feature = "cosmic-toplevel")]
-                {
-                    self.cosmic_toplevel_info = globals
-                        .bind::<cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
-                            &qh,
-                            2..=2,  // Version 2+ has get_cosmic_toplevel
-                            foreign_toplevel::CosmicToplevelInfoData::default(),
-                        )
-                        .ok();
-                    if self.cosmic_toplevel_info.is_some() {
-                        log::info!(
-                            "Successfully bound zcosmic_toplevel_info_v1 protocol for toplevel state info"
-                        );
-                    } else {
-                        log::debug!(
-                            "zcosmic_toplevel_info_v1 not available - state info will be limited"
-                        );
-                    }
+            // Try to bind COSMIC protocols for state info and control
+            #[cfg(feature = "cosmic-toplevel")]
+            {
+                // COSMIC toplevel info (for state info like minimized/maximized)
+                self.cosmic_toplevel_info = globals
+                    .bind::<cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
+                        &qh,
+                        2..=2,  // Version 2+ has get_cosmic_toplevel
+                        foreign_toplevel::CosmicToplevelInfoData::default(),
+                    )
+                    .ok();
+                if self.cosmic_toplevel_info.is_some() {
+                    log::info!(
+                        "Successfully bound zcosmic_toplevel_info_v1 protocol for toplevel state info"
+                    );
+                } else {
+                    log::debug!(
+                        "zcosmic_toplevel_info_v1 not available - state info will be limited"
+                    );
                 }
-            } else {
-                // Fallback to wlr_foreign_toplevel_manager_v1
+
+                // COSMIC toplevel manager (for control - activate, close, etc.)
+                self.cosmic_toplevel_manager = globals
+                    .bind::<cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
+                        &qh,
+                        1..=4,
+                        foreign_toplevel::CosmicToplevelManagerData::default(),
+                    )
+                    .ok();
+                if self.cosmic_toplevel_manager.is_some() {
+                    log::info!(
+                        "Successfully bound zcosmic_toplevel_manager_v1 protocol for toplevel control"
+                    );
+                } else {
+                    log::debug!(
+                        "zcosmic_toplevel_manager_v1 not available - trying wlr fallback for control"
+                    );
+                }
+            }
+
+            // Fall back to wlr_foreign_toplevel_manager_v1 if COSMIC manager not available
+            #[cfg(feature = "cosmic-toplevel")]
+            let has_cosmic_manager = self.cosmic_toplevel_manager.is_some();
+            #[cfg(not(feature = "cosmic-toplevel"))]
+            let has_cosmic_manager = false;
+
+            if !has_cosmic_manager {
                 self.foreign_toplevel_manager = globals
                     .bind::<wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, _, _>(
                         &qh,
@@ -3264,13 +3394,29 @@ impl<T: 'static> WindowState<T> {
 
                 if self.foreign_toplevel_manager.is_some() {
                     log::info!(
-                        "Successfully bound zwlr_foreign_toplevel_manager_v1 protocol for foreign toplevel tracking (fallback)"
-                    );
-                } else {
-                    log::warn!(
-                        "Foreign toplevel tracking requested but compositor does not support ext_foreign_toplevel_list_v1 or zwlr_foreign_toplevel_manager_v1 protocols"
+                        "Successfully bound zwlr_foreign_toplevel_manager_v1 protocol for foreign toplevel management"
                     );
                 }
+            }
+
+            // Check if we have at least one way to track toplevels
+            let has_info =
+                self.ext_foreign_toplevel_list.is_some() || self.foreign_toplevel_manager.is_some();
+            #[cfg(feature = "cosmic-toplevel")]
+            let has_control =
+                self.cosmic_toplevel_manager.is_some() || self.foreign_toplevel_manager.is_some();
+            #[cfg(not(feature = "cosmic-toplevel"))]
+            let has_control = self.foreign_toplevel_manager.is_some();
+
+            if !has_info {
+                log::warn!(
+                    "Foreign toplevel tracking requested but compositor does not support any toplevel info protocols"
+                );
+            }
+            if !has_control {
+                log::warn!(
+                    "Foreign toplevel control (activate, close, etc.) not available - no supported protocol found"
+                );
             }
         }
 

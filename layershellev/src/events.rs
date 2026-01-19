@@ -538,9 +538,7 @@ impl From<DispatchMessageInner> for DispatchMessage {
                 DispatchMessage::HomeStateChanged { is_home }
             }
             #[cfg(feature = "foreign-toplevel")]
-            DispatchMessageInner::ForeignToplevel(event) => {
-                DispatchMessage::ForeignToplevel(event)
-            }
+            DispatchMessageInner::ForeignToplevel(event) => DispatchMessage::ForeignToplevel(event),
         }
     }
 }

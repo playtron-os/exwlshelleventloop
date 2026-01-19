@@ -59,6 +59,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
                 VisibilityModeChange { id: iced::window::Id, mode: iced_layershell::actions::VisibilityMode },
+                #[cfg(feature = "foreign-toplevel")]
+                ToplevelAction(iced_layershell::actions::ToplevelAction),
             };
 
             let impl_quote = quote! {
@@ -124,6 +126,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::RemoveWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::VisibilityModeChange { id, mode } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::VisibilityModeChange(mode))),
+                            #[cfg(feature = "foreign-toplevel")]
+                            Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             _ => Err(self)
                         }
                     }
@@ -149,6 +153,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                     key: u32,
                 },
                 VisibilityModeChange(iced_layershell::actions::VisibilityMode),
+                #[cfg(feature = "foreign-toplevel")]
+                ToplevelAction(iced_layershell::actions::ToplevelAction),
             };
             let impl_quote = quote! {
                 impl #impl_gen TryInto<iced_layershell::actions::LayershellCustomActionWithId> for #ident #ty_gen #where_gen {
@@ -173,6 +179,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                                 key
                             })),
                             Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
+                            #[cfg(feature = "foreign-toplevel")]
+                            Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             _ => Err(self)
                         }
                     }
