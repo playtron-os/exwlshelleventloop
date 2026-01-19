@@ -15,6 +15,8 @@ use wayland_client::{
     },
 };
 
+#[cfg(feature = "foreign-toplevel")]
+use crate::foreign_toplevel::ForeignToplevelEvent;
 use crate::{id, xkb_keyboard::KeyEvent};
 
 use crate::keyboard::ModifiersState;
@@ -319,6 +321,9 @@ pub(crate) enum DispatchMessageInner {
     Ime(Ime),
     /// Home state changed from compositor (true = at home, false = windows visible)
     HomeStateChanged(bool),
+    /// Foreign toplevel event
+    #[cfg(feature = "foreign-toplevel")]
+    ForeignToplevel(ForeignToplevelEvent),
 }
 
 /// This tell the DispatchMessage by dispatch
@@ -422,6 +427,9 @@ pub enum DispatchMessage {
     HomeStateChanged {
         is_home: bool,
     },
+    /// Foreign toplevel event (new window, window changed, window closed)
+    #[cfg(feature = "foreign-toplevel")]
+    ForeignToplevel(ForeignToplevelEvent),
 }
 
 impl From<DispatchMessageInner> for DispatchMessage {
@@ -528,6 +536,10 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::XdgInfoChanged(_) => unimplemented!(),
             DispatchMessageInner::HomeStateChanged(is_home) => {
                 DispatchMessage::HomeStateChanged { is_home }
+            }
+            #[cfg(feature = "foreign-toplevel")]
+            DispatchMessageInner::ForeignToplevel(event) => {
+                DispatchMessage::ForeignToplevel(event)
             }
         }
     }

@@ -1,11 +1,92 @@
 use iced_core::mouse;
 use iced_runtime::Action;
 use layershellev::DispatchMessage;
+#[cfg(feature = "foreign-toplevel")]
+use layershellev::foreign_toplevel::ForeignToplevelEvent;
 use layershellev::keyboard::ModifiersState;
 use layershellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlRegion};
 use layershellev::xkb_keyboard::KeyEvent as LayerShellKeyEvent;
+#[cfg(feature = "foreign-toplevel")]
+use std::sync::mpsc;
+#[cfg(feature = "foreign-toplevel")]
+use std::sync::OnceLock;
 
 use iced_core::keyboard::Modifiers as IcedModifiers;
+
+// Global channel for foreign toplevel events
+#[cfg(feature = "foreign-toplevel")]
+static FOREIGN_TOPLEVEL_CHANNEL: OnceLock<(
+    std::sync::Mutex<mpsc::Sender<ForeignToplevelEvent>>,
+    std::sync::Mutex<mpsc::Receiver<ForeignToplevelEvent>>,
+)> = OnceLock::new();
+
+#[cfg(feature = "foreign-toplevel")]
+fn get_foreign_toplevel_channel() -> &'static (
+    std::sync::Mutex<mpsc::Sender<ForeignToplevelEvent>>,
+    std::sync::Mutex<mpsc::Receiver<ForeignToplevelEvent>>,
+) {
+    FOREIGN_TOPLEVEL_CHANNEL.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send a foreign toplevel event (called by the event loop)
+#[cfg(feature = "foreign-toplevel")]
+pub(crate) fn send_foreign_toplevel_event(event: ForeignToplevelEvent) {
+    let (tx, _) = get_foreign_toplevel_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for foreign toplevel events
+///
+/// Use this to receive events about toplevel windows (created, changed, closed)
+/// when `foreign_toplevel: true` is set in the layer shell settings.
+///
+/// This function is only available when the `foreign-toplevel` feature is enabled.
+///
+/// # Example
+/// ```ignore
+/// fn subscription(&self) -> Subscription<Message> {
+///     iced_layershell::event::foreign_toplevel_subscription()
+///         .map(Message::ForeignToplevel)
+/// }
+/// ```
+#[cfg(feature = "foreign-toplevel")]
+pub fn foreign_toplevel_subscription() -> iced::Subscription<ForeignToplevelEvent> {
+    #[derive(Hash)]
+    struct ForeignToplevelSubscription;
+
+    iced::Subscription::run_with(ForeignToplevelSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<ForeignToplevelEvent>| async move {
+                use iced_futures::futures::SinkExt;
+                let (_, rx) = get_foreign_toplevel_channel();
+
+                loop {
+                    // Try to receive events
+                    let event = {
+                        if let Ok(rx) = rx.lock() {
+                            rx.try_recv().ok()
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(event) = event {
+                        let _ = output.send(event).await;
+                    } else {
+                        // Small delay to avoid busy-waiting - yield control
+                        iced_futures::futures::future::pending::<()>().await;
+                    }
+                }
+            },
+        )
+    })
+}
 
 fn from_u32_to_icedmouse(code: u32) -> mouse::Button {
     match code {
@@ -104,6 +185,9 @@ pub enum WindowEvent {
     HomeStateChanged {
         is_home: bool,
     },
+    /// Foreign toplevel event (window created, changed, or closed)
+    #[cfg(feature = "foreign-toplevel")]
+    ForeignToplevel(ForeignToplevelEvent),
 }
 
 #[derive(Debug)]
@@ -205,6 +289,10 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::Ime(ime) => WindowEvent::Ime(ime.clone()),
             DispatchMessage::HomeStateChanged { is_home } => {
                 WindowEvent::HomeStateChanged { is_home: *is_home }
+            }
+            #[cfg(feature = "foreign-toplevel")]
+            DispatchMessage::ForeignToplevel(event) => {
+                WindowEvent::ForeignToplevel(event.clone())
             }
         }
     }

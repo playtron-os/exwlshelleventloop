@@ -17,6 +17,7 @@ debug = ["iced_debug/enable"]
 time-travel = ["iced_exdevtools/time-travel", "debug"]
 unconditional-rendering = []
 linux-theme-detection = ["dep:mundy"]
+foreign-toplevel = ["layershellev/foreign-toplevel"]
 
 [dependencies]
 iced_renderer.workspace = true

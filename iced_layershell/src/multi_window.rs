@@ -104,7 +104,12 @@ where
         .with_blur(settings.layer_settings.blur)
         .with_shadow(settings.layer_settings.shadow)
         .with_home_only(settings.layer_settings.home_only)
-        .with_hide_on_home(settings.layer_settings.hide_on_home)
+        .with_hide_on_home(settings.layer_settings.hide_on_home);
+
+    #[cfg(feature = "foreign-toplevel")]
+    let ev = ev.with_foreign_toplevel(settings.layer_settings.foreign_toplevel);
+
+    let ev = ev
         .with_option_size(settings.layer_settings.size)
         .with_layer(settings.layer_settings.layer)
         .with_anchor(settings.layer_settings.anchor)
@@ -612,6 +617,13 @@ where
         layer_shell_id: Option<LayerShellId>,
         event: LayerShellWindowEvent,
     ) {
+        // Handle foreign toplevel events specially - they go through a subscription channel
+        #[cfg(feature = "foreign-toplevel")]
+        if let LayerShellWindowEvent::ForeignToplevel(ref toplevel_event) = event {
+            crate::event::send_foreign_toplevel_event(toplevel_event.clone());
+            return;
+        }
+
         let id_and_window = if let Some(layer_shell_id) = layer_shell_id {
             self.window_manager.get_mut_alias(layer_shell_id)
         } else {
