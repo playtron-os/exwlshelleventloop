@@ -119,6 +119,8 @@ pub mod blur;
 pub mod corner_radius;
 pub mod dpi;
 mod events;
+#[cfg(feature = "foreign-toplevel")]
+pub mod foreign_toplevel;
 pub mod home_visibility;
 pub mod shadow;
 mod strtoshape;
@@ -926,6 +928,18 @@ pub struct WindowState<T> {
     /// Current home state from compositor (true = at home, false = windows visible)
     is_home: bool,
 
+    /// Whether to track foreign toplevel windows (taskbar/dock functionality)
+    #[cfg(feature = "foreign-toplevel")]
+    foreign_toplevel_enabled: bool,
+    /// Foreign toplevel manager (bound lazily when foreign_toplevel_enabled is true)
+    #[cfg(feature = "foreign-toplevel")]
+    foreign_toplevel_manager: Option<
+        wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+    >,
+    /// Data for each tracked foreign toplevel window (keyed by protocol object ID)
+    #[cfg(feature = "foreign-toplevel")]
+    foreign_toplevel_data: HashMap<u32, foreign_toplevel::ToplevelHandleData>,
+
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
     text_inputs: Vec<ZwpTextInputV3>,
@@ -1428,6 +1442,15 @@ impl<T> WindowState<T> {
         self
     }
 
+    /// Enable foreign toplevel tracking (requires compositor support for zwlr_foreign_toplevel_manager_v1)
+    /// When enabled, events will be sent for all opened windows (toplevels) on the system.
+    /// Useful for creating taskbars or docks that need to show running applications.
+    /// This method is only available when the `foreign-toplevel` feature is enabled.
+    #[cfg(feature = "foreign-toplevel")]
+    pub fn with_foreign_toplevel(mut self, enabled: bool) -> Self {
+        self.foreign_toplevel_enabled = enabled;
+        self
+    }
     /// if the shell is a single one, only display on one screen,
     /// fi true, the layer will binding to current screen
     pub fn with_active(mut self) -> Self {
@@ -1609,6 +1632,13 @@ impl<T> Default for WindowState<T> {
             home_visibility_manager: None,
             home_visibility_controllers: HashMap::new(),
             is_home: false,
+
+            #[cfg(feature = "foreign-toplevel")]
+            foreign_toplevel_enabled: false,
+            #[cfg(feature = "foreign-toplevel")]
+            foreign_toplevel_manager: None,
+            #[cfg(feature = "foreign-toplevel")]
+            foreign_toplevel_data: HashMap::new(),
 
             text_input_manager: None,
             text_input: None,
@@ -2790,6 +2820,87 @@ impl<T: 'static>
     }
 }
 
+// Foreign toplevel protocol implementation
+#[cfg(feature = "foreign-toplevel")]
+#[allow(private_interfaces)]
+impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
+    fn foreign_toplevel_event(&mut self, event: foreign_toplevel::ForeignToplevelEvent) {
+        self.message.push((
+            None,
+            DispatchMessageInner::ForeignToplevel(event),
+        ));
+    }
+
+    fn get_toplevel_data(&mut self, id: u32) -> &mut foreign_toplevel::ToplevelHandleData {
+        self.foreign_toplevel_data
+            .entry(id)
+            .or_insert_with(foreign_toplevel::ToplevelHandleData::default)
+    }
+
+    fn remove_toplevel_data(&mut self, id: u32) {
+        self.foreign_toplevel_data.remove(&id);
+    }
+}
+
+// Foreign toplevel manager dispatch
+#[cfg(feature = "foreign-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+        foreign_toplevel::ForeignToplevelManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+        event: wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::Event,
+        data: &foreign_toplevel::ForeignToplevelManagerData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+            foreign_toplevel::ForeignToplevelManagerData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+
+    fn event_created_child(
+        opcode: u16,
+        qhandle: &QueueHandle<Self>,
+    ) -> std::sync::Arc<dyn wayland_client::backend::ObjectData> {
+        <() as Dispatch<
+            wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+            foreign_toplevel::ForeignToplevelManagerData,
+            Self,
+        >>::event_created_child(opcode, qhandle)
+    }
+}
+
+// Foreign toplevel handle dispatch
+#[cfg(feature = "foreign-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+        foreign_toplevel::ToplevelHandleUserData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+        event: wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::Event,
+        data: &foreign_toplevel::ToplevelHandleUserData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+            foreign_toplevel::ToplevelHandleUserData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
 impl<T: 'static> WindowState<T> {
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
@@ -2906,6 +3017,27 @@ impl<T: 'static> WindowState<T> {
             } else {
                 log::info!(
                     "Successfully bound zcosmic_home_visibility_manager_v1 protocol for home visibility support"
+                );
+            }
+        }
+
+        // Bind foreign toplevel manager if enabled
+        #[cfg(feature = "foreign-toplevel")]
+        if self.foreign_toplevel_enabled {
+            self.foreign_toplevel_manager = globals
+                .bind::<wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, _, _>(
+                    &qh,
+                    1..=3,
+                    foreign_toplevel::ForeignToplevelManagerData::default(),
+                )
+                .ok();
+            if self.foreign_toplevel_manager.is_none() {
+                log::warn!(
+                    "Foreign toplevel tracking requested but compositor does not support zwlr_foreign_toplevel_manager_v1 protocol"
+                );
+            } else {
+                log::info!(
+                    "Successfully bound zwlr_foreign_toplevel_manager_v1 protocol for foreign toplevel tracking"
                 );
             }
         }

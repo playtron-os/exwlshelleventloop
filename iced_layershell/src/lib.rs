@@ -4,7 +4,7 @@ pub mod build_pattern;
 mod clipboard;
 mod conversion;
 mod error;
-mod event;
+pub mod event;
 mod multi_window;
 mod proxy;
 mod user_interface;
@@ -15,6 +15,8 @@ pub mod reexport {
     pub use layershellev::NewInputPanelSettings;
     pub use layershellev::NewLayerShellSettings;
     pub use layershellev::OutputOption;
+    #[cfg(feature = "foreign-toplevel")]
+    pub use layershellev::foreign_toplevel::{ForeignToplevelEvent, ToplevelInfo};
     pub use layershellev::reexport::Anchor;
     pub use layershellev::reexport::KeyboardInteractivity;
     pub use layershellev::reexport::Layer;
