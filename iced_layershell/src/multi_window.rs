@@ -729,8 +729,12 @@ where
                 layer_shell_window.set_size((width, height));
             }
             LayershellCustomAction::CornerRadiusChange(radii) => {
-                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
-                ev.set_corner_radius_for_surface(layer_shell_window.get_wlsurface(), radii);
+                // Extract surface in a block to drop the borrow before calling mutable method
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_corner_radius_for_surface(&surface, radii);
             }
             LayershellCustomAction::ExclusiveZoneChange(zone_size) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
@@ -866,7 +870,8 @@ where
             LayershellCustomAction::VisibilityModeChange(mode) => {
                 // Get the surface first to avoid borrow conflict
                 let surface = layer_shell_id.and_then(|id| {
-                    ev.get_unit_with_id(id).map(|unit| unit.get_wlsurface().clone())
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
                 });
                 if let Some(surface) = surface {
                     ev.set_visibility_mode_for_surface(&surface, mode);

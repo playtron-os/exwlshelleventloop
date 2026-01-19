@@ -910,6 +910,9 @@ pub struct WindowState<T> {
     /// Corner radius manager (bound lazily when corner_radius is set)
     corner_radius_manager:
         Option<corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1>,
+    /// Corner radius surfaces per surface (keyed by surface protocol ID)
+    corner_radius_surfaces:
+        HashMap<u32, corner_radius::layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1>,
     /// Whether to request shadow effect for surfaces
     shadow: bool,
     /// Shadow manager (bound lazily when shadow is enabled)
@@ -1193,7 +1196,23 @@ impl<T> WindowState<T> {
 impl<T: 'static> WindowState<T> {
     /// Set corner radius for a specific surface
     /// radii: [top_left, top_right, bottom_right, bottom_left] or None to unset
-    pub fn set_corner_radius_for_surface(&self, surface: &WlSurface, radii: Option<[u32; 4]>) {
+    pub fn set_corner_radius_for_surface(&mut self, surface: &WlSurface, radii: Option<[u32; 4]>) {
+        let surface_id = surface.id().protocol_id();
+
+        // Check if we already have a corner radius object for this surface
+        if let Some(corner_obj) = self.corner_radius_surfaces.get(&surface_id) {
+            if let Some(r) = radii {
+                corner_obj.set_radius(r[0], r[1], r[2], r[3]);
+                log::info!("Updated corner radius for surface: {:?}", r);
+            } else {
+                corner_obj.unset_radius();
+                log::info!("Unset corner radius for surface");
+            }
+            surface.commit();
+            return;
+        }
+
+        // Need to create a new corner radius object
         if let Some(manager) = &self.corner_radius_manager {
             let corner_data = corner_radius::CornerRadiusData {
                 surface: surface.clone(),
@@ -1208,6 +1227,7 @@ impl<T: 'static> WindowState<T> {
                     corner_obj.unset_radius();
                     log::info!("Unset corner radius for surface");
                 }
+                self.corner_radius_surfaces.insert(surface_id, corner_obj);
                 surface.commit();
             }
         } else {
@@ -1338,6 +1358,7 @@ fn apply_blur_to_surface<T: 'static>(
 }
 
 /// Apply corner radius to a surface using the layer corner radius protocol
+/// Returns the corner radius surface object so it can be stored for later updates
 fn apply_corner_radius_to_surface<T: 'static>(
     corner_radius_manager: &Option<
         corner_radius::layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1,
@@ -1345,7 +1366,7 @@ fn apply_corner_radius_to_surface<T: 'static>(
     corner_radius_values: Option<[u32; 4]>,
     surface: &WlSurface,
     qh: &QueueHandle<WindowState<T>>,
-) {
+) -> Option<corner_radius::layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1> {
     if let (Some(manager), Some(radii)) = (corner_radius_manager, corner_radius_values) {
         let corner_data = corner_radius::CornerRadiusData {
             surface: surface.clone(),
@@ -1353,6 +1374,9 @@ fn apply_corner_radius_to_surface<T: 'static>(
         let corner_obj = manager.get_corner_radius(surface, qh, corner_data);
         corner_obj.set_radius(radii[0], radii[1], radii[2], radii[3]);
         log::info!("Applied corner radius to layer shell surface: {:?}", radii);
+        Some(corner_obj)
+    } else {
+        None
     }
 }
 
@@ -1642,6 +1666,7 @@ impl<T> Default for WindowState<T> {
             blur_manager: None,
             corner_radius: None,
             corner_radius_manager: None,
+            corner_radius_surfaces: HashMap::new(),
             shadow: false,
             shadow_manager: None,
             home_only: false,
@@ -3333,13 +3358,16 @@ impl<T: 'static> WindowState<T> {
             }
 
             // Apply corner radius if set
+            let surface_id = wl_surface.id().protocol_id();
             if self.corner_radius.is_some() {
-                apply_corner_radius_to_surface(
+                if let Some(corner_obj) = apply_corner_radius_to_surface(
                     &self.corner_radius_manager,
                     self.corner_radius,
                     &wl_surface,
                     &qh,
-                );
+                ) {
+                    self.corner_radius_surfaces.insert(surface_id, corner_obj);
+                }
             }
 
             // Apply shadow if enabled
@@ -3348,7 +3376,6 @@ impl<T: 'static> WindowState<T> {
             }
 
             // Apply home visibility mode if enabled
-            let surface_id = wl_surface.id().protocol_id();
             if self.home_only {
                 if let Some(controller) = apply_home_visibility_to_surface(
                     &self.home_visibility_manager,
@@ -3440,13 +3467,16 @@ impl<T: 'static> WindowState<T> {
                 }
 
                 // Apply corner radius if set
+                let surface_id = wl_surface.id().protocol_id();
                 if self.corner_radius.is_some() {
-                    apply_corner_radius_to_surface(
+                    if let Some(corner_obj) = apply_corner_radius_to_surface(
                         &self.corner_radius_manager,
                         self.corner_radius,
                         &wl_surface,
                         &qh,
-                    );
+                    ) {
+                        self.corner_radius_surfaces.insert(surface_id, corner_obj);
+                    }
                 }
 
                 // Apply shadow if enabled
@@ -3455,7 +3485,6 @@ impl<T: 'static> WindowState<T> {
                 }
 
                 // Apply home visibility mode if enabled
-                let surface_id = wl_surface.id().protocol_id();
                 if self.home_only {
                     if let Some(controller) = apply_home_visibility_to_surface(
                         &self.home_visibility_manager,
@@ -3880,8 +3909,11 @@ impl<T: 'static> WindowState<T> {
                                     }
 
                                     // Apply corner radius if set
+                                    let surface_id = wl_surface.id().protocol_id();
                                     if window_state.corner_radius.is_some() {
-                                        apply_corner_radius_to_surface(&window_state.corner_radius_manager, window_state.corner_radius, &wl_surface, &qh);
+                                        if let Some(corner_obj) = apply_corner_radius_to_surface(&window_state.corner_radius_manager, window_state.corner_radius, &wl_surface, &qh) {
+                                            window_state.corner_radius_surfaces.insert(surface_id, corner_obj);
+                                        }
                                     }
 
                                     // Apply shadow if enabled
@@ -3890,7 +3922,6 @@ impl<T: 'static> WindowState<T> {
                                     }
 
                                     // Apply home visibility mode if enabled
-                                    let surface_id = wl_surface.id().protocol_id();
                                     if window_state.home_only {
                                         if let Some(controller) = apply_home_visibility_to_surface(
                                             &window_state.home_visibility_manager,
