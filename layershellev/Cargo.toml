@@ -12,6 +12,7 @@ description = "extra shell binding for layershell with winit like eventloop"
 [features]
 default = []
 foreign-toplevel = []
+cosmic-toplevel = ["foreign-toplevel", "dep:cosmic-protocols"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -42,3 +43,5 @@ calloop-wayland-source.workspace = true
 log.workspace = true
 
 waycrate_xkbkeycode.workspace = true
+
+cosmic-protocols = { workspace = true, optional = true }

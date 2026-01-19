@@ -67,21 +67,23 @@ pub fn foreign_toplevel_subscription() -> iced::Subscription<ForeignToplevelEven
                 let (_, rx) = get_foreign_toplevel_channel();
 
                 loop {
-                    // Try to receive events
-                    let event = {
+                    // Try to receive all pending events
+                    let events: Vec<ForeignToplevelEvent> = {
                         if let Ok(rx) = rx.lock() {
-                            rx.try_recv().ok()
+                            std::iter::from_fn(|| rx.try_recv().ok()).collect()
                         } else {
-                            None
+                            Vec::new()
                         }
                     };
 
-                    if let Some(event) = event {
-                        let _ = output.send(event).await;
-                    } else {
-                        // Small delay to avoid busy-waiting - yield control
-                        iced_futures::futures::future::pending::<()>().await;
+                    if !events.is_empty() {
+                        for event in events {
+                            let _ = output.send(event).await;
+                        }
                     }
+
+                    // Small async delay to avoid busy-waiting (~60fps polling)
+                    futures_timer::Delay::new(std::time::Duration::from_millis(16)).await;
                 }
             },
         )
