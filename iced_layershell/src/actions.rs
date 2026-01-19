@@ -5,6 +5,10 @@ use layershellev::{NewInputPanelSettings, NewLayerShellSettings, NewXdgWindowSet
 // Re-export VisibilityMode for consumers
 pub use layershellev::home_visibility::VisibilityMode;
 
+// Re-export ToplevelAction for consumers
+#[cfg(feature = "foreign-toplevel")]
+pub use layershellev::foreign_toplevel::ToplevelAction;
+
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -104,6 +108,9 @@ pub enum LayershellCustomAction {
     ForgetLastOutput,
     /// Change the home visibility mode for the surface
     VisibilityModeChange(VisibilityMode),
+    /// Execute a toplevel action (activate, close, minimize, etc.)
+    #[cfg(feature = "foreign-toplevel")]
+    ToplevelAction(ToplevelAction),
 }
 
 /// Please do not use this struct directly

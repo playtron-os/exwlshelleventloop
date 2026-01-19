@@ -7,9 +7,9 @@ use layershellev::keyboard::ModifiersState;
 use layershellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlRegion};
 use layershellev::xkb_keyboard::KeyEvent as LayerShellKeyEvent;
 #[cfg(feature = "foreign-toplevel")]
-use std::sync::mpsc;
-#[cfg(feature = "foreign-toplevel")]
 use std::sync::OnceLock;
+#[cfg(feature = "foreign-toplevel")]
+use std::sync::mpsc;
 
 use iced_core::keyboard::Modifiers as IcedModifiers;
 
@@ -293,9 +293,7 @@ impl From<&DispatchMessage> for WindowEvent {
                 WindowEvent::HomeStateChanged { is_home: *is_home }
             }
             #[cfg(feature = "foreign-toplevel")]
-            DispatchMessage::ForeignToplevel(event) => {
-                WindowEvent::ForeignToplevel(event.clone())
-            }
+            DispatchMessage::ForeignToplevel(event) => WindowEvent::ForeignToplevel(event.clone()),
         }
     }
 }

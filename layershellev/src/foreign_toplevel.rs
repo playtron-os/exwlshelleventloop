@@ -5,6 +5,7 @@
 //!
 //! - `ext_foreign_toplevel_list_v1` (standard Wayland protocol, preferred)
 //! - `zcosmic_toplevel_info_v1` (COSMIC extension for state info like minimized/maximized)
+//! - `zcosmic_toplevel_manager_v1` (COSMIC extension for control - activate, close, etc.)
 //! - `zwlr_foreign_toplevel_manager_v1` (wlroots fallback)
 //!
 //! Use this to create taskbars and docks that need to track open windows.
@@ -22,6 +23,12 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 use cosmic_protocols::toplevel_info::v1::client::{
     zcosmic_toplevel_handle_v1::{self, ZcosmicToplevelHandleV1},
     zcosmic_toplevel_info_v1::{self, ZcosmicToplevelInfoV1},
+};
+
+// COSMIC toplevel management extension (for control - activate, close, etc.)
+#[cfg(feature = "cosmic-toplevel")]
+use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::{
+    self, ZcosmicToplevelManagerV1,
 };
 
 // wlroots fallback protocol
@@ -108,6 +115,11 @@ pub struct ForeignToplevelManagerData;
 #[derive(Debug, Clone, Default)]
 pub struct ToplevelHandleUserData;
 
+/// User data for COSMIC toplevel manager
+#[cfg(feature = "cosmic-toplevel")]
+#[derive(Debug, Clone, Default)]
+pub struct CosmicToplevelManagerData;
+
 /// Trait for handling foreign toplevel events
 #[allow(private_interfaces)]
 pub trait ForeignToplevelHandler {
@@ -119,6 +131,56 @@ pub trait ForeignToplevelHandler {
 
     /// Remove toplevel data (internal use)
     fn remove_toplevel_data(&mut self, id: u32);
+
+    /// Store a toplevel handle for later use (internal use)
+    fn store_toplevel_handle(&mut self, id: u32, handle: ZwlrForeignToplevelHandleV1);
+
+    /// Remove a toplevel handle (internal use)
+    fn remove_toplevel_handle(&mut self, id: u32);
+
+    /// Get a stored toplevel handle (for sending commands)
+    fn get_toplevel_handle(&self, id: u32) -> Option<&ZwlrForeignToplevelHandleV1>;
+
+    /// Store a COSMIC toplevel handle for later use (internal use)
+    #[cfg(feature = "cosmic-toplevel")]
+    fn store_cosmic_toplevel_handle(&mut self, id: u32, handle: ZcosmicToplevelHandleV1);
+
+    /// Remove a COSMIC toplevel handle (internal use)
+    #[cfg(feature = "cosmic-toplevel")]
+    fn remove_cosmic_toplevel_handle(&mut self, id: u32);
+
+    /// Get a stored COSMIC toplevel handle (for sending commands)
+    #[cfg(feature = "cosmic-toplevel")]
+    fn get_cosmic_toplevel_handle(&self, id: u32) -> Option<&ZcosmicToplevelHandleV1>;
+
+    /// Get the COSMIC toplevel manager (for control operations)
+    #[cfg(feature = "cosmic-toplevel")]
+    fn get_cosmic_toplevel_manager(&self) -> Option<&ZcosmicToplevelManagerV1>;
+
+    /// Get the COSMIC toplevel info manager (for creating COSMIC handles from ext handles)
+    #[cfg(feature = "cosmic-toplevel")]
+    fn cosmic_toplevel_info(&self) -> Option<&ZcosmicToplevelInfoV1>;
+}
+
+/// Actions that can be performed on a toplevel window
+#[derive(Debug, Clone)]
+pub enum ToplevelAction {
+    /// Activate/focus the window
+    Activate(u32),
+    /// Close the window
+    Close(u32),
+    /// Maximize the window
+    SetMaximized(u32),
+    /// Unmaximize the window
+    UnsetMaximized(u32),
+    /// Minimize the window
+    SetMinimized(u32),
+    /// Unminimize the window (activate is usually sufficient)
+    UnsetMinimized(u32),
+    /// Set fullscreen
+    SetFullscreen(u32),
+    /// Unset fullscreen
+    UnsetFullscreen(u32),
 }
 
 /// Blanket implementation for foreign toplevel manager dispatch
@@ -141,8 +203,14 @@ where
             zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } => {
                 // Get the object ID for this toplevel handle
                 let id = toplevel.id().protocol_id();
+                log::info!(
+                    "zwlr_foreign_toplevel: new toplevel handle, storing id={}",
+                    id
+                );
                 // Initialize empty state for this toplevel
                 let _ = state.get_toplevel_data(id);
+                // Store the handle for later use (activate, close, etc.)
+                state.store_toplevel_handle(id, toplevel);
             }
             zwlr_foreign_toplevel_manager_v1::Event::Finished => {
                 state.foreign_toplevel_event(ForeignToplevelEvent::Finished);
@@ -227,6 +295,7 @@ where
             zwlr_foreign_toplevel_handle_v1::Event::Closed => {
                 let info = state.get_toplevel_data(id).to_info(id);
                 state.remove_toplevel_data(id);
+                state.remove_toplevel_handle(id);
                 state.foreign_toplevel_event(ForeignToplevelEvent::Closed(info.id));
                 // Destroy the handle
                 proxy.destroy();
@@ -257,7 +326,71 @@ pub struct ExtForeignToplevelListData;
 #[derive(Debug, Clone, Default)]
 pub struct ExtToplevelHandleData;
 
-/// Dispatch for ext_foreign_toplevel_list_v1
+#[cfg(feature = "cosmic-toplevel")]
+/// Dispatch for ext_foreign_toplevel_list_v1 WITH cosmic-toplevel feature
+impl<D> Dispatch<ExtForeignToplevelListV1, ExtForeignToplevelListData, D> for ()
+where
+    D: Dispatch<ExtForeignToplevelListV1, ExtForeignToplevelListData>
+        + Dispatch<ExtForeignToplevelHandleV1, ExtToplevelHandleData>
+        + Dispatch<ZcosmicToplevelHandleV1, CosmicToplevelHandleData>
+        + ForeignToplevelHandler
+        + 'static,
+{
+    fn event(
+        state: &mut D,
+        _proxy: &ExtForeignToplevelListV1,
+        event: ext_foreign_toplevel_list_v1::Event,
+        _data: &ExtForeignToplevelListData,
+        _conn: &Connection,
+        qhandle: &QueueHandle<D>,
+    ) {
+        match event {
+            ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => {
+                let id = toplevel.id().protocol_id();
+                log::trace!("ext_foreign_toplevel_list: new toplevel handle id={}", id);
+                // Initialize empty state for this toplevel
+                let _ = state.get_toplevel_data(id);
+
+                // If we have the COSMIC toplevel info manager, create a COSMIC handle for control
+                if let Some(cosmic_info) = state.cosmic_toplevel_info() {
+                    let cosmic_handle = cosmic_info.get_cosmic_toplevel(
+                        &toplevel,
+                        qhandle,
+                        CosmicToplevelHandleData { ext_handle_id: id },
+                    );
+                    log::debug!(
+                        "Created COSMIC toplevel handle for ext handle id={}, cosmic_id={}",
+                        id,
+                        cosmic_handle.id().protocol_id()
+                    );
+                    state.store_cosmic_toplevel_handle(id, cosmic_handle);
+                }
+            }
+            ext_foreign_toplevel_list_v1::Event::Finished => {
+                log::trace!("ext_foreign_toplevel_list: finished");
+                state.foreign_toplevel_event(ForeignToplevelEvent::Finished);
+            }
+            _ => {}
+        }
+    }
+
+    fn event_created_child(
+        opcode: u16,
+        qhandle: &QueueHandle<D>,
+    ) -> std::sync::Arc<dyn wayland_client::backend::ObjectData> {
+        match opcode {
+            // toplevel event (opcode 0)
+            0 => qhandle.make_data::<ExtForeignToplevelHandleV1, _>(ExtToplevelHandleData),
+            _ => panic!(
+                "Unknown ext toplevel opcode in event_created_child: {}",
+                opcode
+            ),
+        }
+    }
+}
+
+#[cfg(not(feature = "cosmic-toplevel"))]
+/// Dispatch for ext_foreign_toplevel_list_v1 WITHOUT cosmic-toplevel feature
 impl<D> Dispatch<ExtForeignToplevelListV1, ExtForeignToplevelListData, D> for ()
 where
     D: Dispatch<ExtForeignToplevelListV1, ExtForeignToplevelListData>
@@ -484,4 +617,174 @@ where
             _ => {}
         }
     }
+}
+
+// ============================================================================
+// COSMIC toplevel manager dispatch
+// ============================================================================
+
+/// Dispatch for COSMIC toplevel manager (control operations)
+#[cfg(feature = "cosmic-toplevel")]
+impl<D> Dispatch<ZcosmicToplevelManagerV1, CosmicToplevelManagerData, D> for ()
+where
+    D: Dispatch<ZcosmicToplevelManagerV1, CosmicToplevelManagerData>
+        + ForeignToplevelHandler
+        + 'static,
+{
+    fn event(
+        _state: &mut D,
+        _proxy: &ZcosmicToplevelManagerV1,
+        event: zcosmic_toplevel_manager_v1::Event,
+        _data: &CosmicToplevelManagerData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<D>,
+    ) {
+        match event {
+            zcosmic_toplevel_manager_v1::Event::Capabilities { capabilities } => {
+                log::debug!("COSMIC toplevel manager capabilities: {:?}", capabilities);
+            }
+            _ => {}
+        }
+    }
+}
+
+// ============================================================================
+// Toplevel action execution
+// ============================================================================
+
+/// Execute a toplevel action on a stored handle
+///
+/// Returns true if the action was executed, false if the handle was not found.
+/// Prefers COSMIC toplevel manager if available, falls back to wlr protocol.
+pub fn execute_toplevel_action<D: ForeignToplevelHandler>(
+    state: &D,
+    action: ToplevelAction,
+    seat: Option<&wayland_client::protocol::wl_seat::WlSeat>,
+) -> bool {
+    let id = match &action {
+        ToplevelAction::Activate(id) => *id,
+        ToplevelAction::Close(id) => *id,
+        ToplevelAction::SetMaximized(id) => *id,
+        ToplevelAction::UnsetMaximized(id) => *id,
+        ToplevelAction::SetMinimized(id) => *id,
+        ToplevelAction::UnsetMinimized(id) => *id,
+        ToplevelAction::SetFullscreen(id) => *id,
+        ToplevelAction::UnsetFullscreen(id) => *id,
+    };
+
+    log::info!("execute_toplevel_action: action={:?}, id={}", action, id);
+
+    // Try COSMIC toplevel manager first (if available)
+    #[cfg(feature = "cosmic-toplevel")]
+    {
+        if let Some(manager) = state.get_cosmic_toplevel_manager() {
+            if let Some(handle) = state.get_cosmic_toplevel_handle(id) {
+                log::info!("Using COSMIC toplevel manager for id {}", id);
+                return execute_cosmic_action(manager, handle, action, seat);
+            } else {
+                log::debug!("No COSMIC handle for id {}, trying wlr fallback", id);
+            }
+        }
+    }
+
+    // Fall back to wlr protocol
+    let Some(handle) = state.get_toplevel_handle(id) else {
+        log::warn!("Toplevel handle not found for id {}", id);
+        return false;
+    };
+
+    log::info!("Found wlr toplevel handle for id {}", id);
+    execute_wlr_action(handle, action, seat)
+}
+
+/// Execute action using COSMIC toplevel manager
+#[cfg(feature = "cosmic-toplevel")]
+fn execute_cosmic_action(
+    manager: &ZcosmicToplevelManagerV1,
+    handle: &ZcosmicToplevelHandleV1,
+    action: ToplevelAction,
+    seat: Option<&wayland_client::protocol::wl_seat::WlSeat>,
+) -> bool {
+    match action {
+        ToplevelAction::Activate(_) => {
+            if let Some(seat) = seat {
+                log::info!("COSMIC: Activating toplevel");
+                manager.activate(handle, seat);
+            } else {
+                log::warn!("Cannot activate toplevel without a seat");
+                return false;
+            }
+        }
+        ToplevelAction::Close(_) => {
+            log::info!("COSMIC: Closing toplevel");
+            manager.close(handle);
+        }
+        ToplevelAction::SetMaximized(_) => {
+            log::info!("COSMIC: Setting maximized");
+            manager.set_maximized(handle);
+        }
+        ToplevelAction::UnsetMaximized(_) => {
+            log::info!("COSMIC: Unsetting maximized");
+            manager.unset_maximized(handle);
+        }
+        ToplevelAction::SetMinimized(_) => {
+            log::info!("COSMIC: Setting minimized");
+            manager.set_minimized(handle);
+        }
+        ToplevelAction::UnsetMinimized(_) => {
+            log::info!("COSMIC: Unsetting minimized");
+            manager.unset_minimized(handle);
+        }
+        ToplevelAction::SetFullscreen(_) => {
+            log::info!("COSMIC: Setting fullscreen");
+            manager.set_fullscreen(handle, None);
+        }
+        ToplevelAction::UnsetFullscreen(_) => {
+            log::info!("COSMIC: Unsetting fullscreen");
+            manager.unset_fullscreen(handle);
+        }
+    }
+    true
+}
+
+/// Execute action using wlr foreign toplevel protocol
+fn execute_wlr_action(
+    handle: &ZwlrForeignToplevelHandleV1,
+    action: ToplevelAction,
+    seat: Option<&wayland_client::protocol::wl_seat::WlSeat>,
+) -> bool {
+    match action {
+        ToplevelAction::Activate(_) => {
+            if let Some(seat) = seat {
+                log::info!("wlr: Activating toplevel");
+                handle.activate(seat);
+            } else {
+                log::warn!("Cannot activate toplevel without a seat");
+                return false;
+            }
+        }
+        ToplevelAction::Close(_) => {
+            handle.close();
+        }
+        ToplevelAction::SetMaximized(_) => {
+            handle.set_maximized();
+        }
+        ToplevelAction::UnsetMaximized(_) => {
+            handle.unset_maximized();
+        }
+        ToplevelAction::SetMinimized(_) => {
+            handle.set_minimized();
+        }
+        ToplevelAction::UnsetMinimized(_) => {
+            handle.unset_minimized();
+        }
+        ToplevelAction::SetFullscreen(_) => {
+            handle.set_fullscreen(None);
+        }
+        ToplevelAction::UnsetFullscreen(_) => {
+            handle.unset_fullscreen();
+        }
+    }
+
+    true
 }

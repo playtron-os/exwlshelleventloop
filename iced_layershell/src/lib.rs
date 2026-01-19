@@ -16,7 +16,7 @@ pub mod reexport {
     pub use layershellev::NewLayerShellSettings;
     pub use layershellev::OutputOption;
     #[cfg(feature = "foreign-toplevel")]
-    pub use layershellev::foreign_toplevel::{ForeignToplevelEvent, ToplevelInfo};
+    pub use layershellev::foreign_toplevel::{ForeignToplevelEvent, ToplevelAction, ToplevelInfo};
     pub use layershellev::reexport::Anchor;
     pub use layershellev::reexport::KeyboardInteractivity;
     pub use layershellev::reexport::Layer;
