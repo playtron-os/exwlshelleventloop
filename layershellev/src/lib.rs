@@ -931,11 +931,28 @@ pub struct WindowState<T> {
     /// Whether to track foreign toplevel windows (taskbar/dock functionality)
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_enabled: bool,
-    /// Foreign toplevel manager (bound lazily when foreign_toplevel_enabled is true)
+
+    // ext_foreign_toplevel_list_v1 (preferred, standard Wayland protocol)
+    #[cfg(feature = "foreign-toplevel")]
+    ext_foreign_toplevel_list: Option<
+        wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+    >,
+
+    // zcosmic_toplevel_info_v1 (COSMIC extension for state info)
+    #[cfg(feature = "cosmic-toplevel")]
+    cosmic_toplevel_info: Option<
+        cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+    >,
+    /// Mapping from cosmic handle protocol ID to ext handle protocol ID
+    #[cfg(feature = "cosmic-toplevel")]
+    cosmic_to_ext_handle_map: HashMap<u32, u32>,
+
+    // zwlr_foreign_toplevel_manager_v1 (wlroots fallback)
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_manager: Option<
         wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
     >,
+
     /// Data for each tracked foreign toplevel window (keyed by protocol object ID)
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_data: HashMap<u32, foreign_toplevel::ToplevelHandleData>,
@@ -1635,6 +1652,12 @@ impl<T> Default for WindowState<T> {
 
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_enabled: false,
+            #[cfg(feature = "foreign-toplevel")]
+            ext_foreign_toplevel_list: None,
+            #[cfg(feature = "cosmic-toplevel")]
+            cosmic_toplevel_info: None,
+            #[cfg(feature = "cosmic-toplevel")]
+            cosmic_to_ext_handle_map: HashMap::new(),
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_manager: None,
             #[cfg(feature = "foreign-toplevel")]
@@ -2825,10 +2848,9 @@ impl<T: 'static>
 #[allow(private_interfaces)]
 impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
     fn foreign_toplevel_event(&mut self, event: foreign_toplevel::ForeignToplevelEvent) {
-        self.message.push((
-            None,
-            DispatchMessageInner::ForeignToplevel(event),
-        ));
+        log::trace!("Queuing foreign toplevel event: {:?}", event);
+        self.message
+            .push((None, DispatchMessageInner::ForeignToplevel(event)));
     }
 
     fn get_toplevel_data(&mut self, id: u32) -> &mut foreign_toplevel::ToplevelHandleData {
@@ -2839,6 +2861,23 @@ impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
 
     fn remove_toplevel_data(&mut self, id: u32) {
         self.foreign_toplevel_data.remove(&id);
+    }
+}
+
+// COSMIC toplevel handler implementation
+#[cfg(feature = "cosmic-toplevel")]
+#[allow(private_interfaces)]
+impl<T: 'static> foreign_toplevel::CosmicToplevelHandler for WindowState<T> {
+    fn cosmic_toplevel_info(&self) -> Option<&cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>{
+        self.cosmic_toplevel_info.as_ref()
+    }
+
+    fn set_cosmic_handle_mapping(&mut self, cosmic_id: u32, ext_id: u32) {
+        self.cosmic_to_ext_handle_map.insert(cosmic_id, ext_id);
+    }
+
+    fn get_ext_handle_id(&self, cosmic_id: u32) -> Option<u32> {
+        self.cosmic_to_ext_handle_map.get(&cosmic_id).copied()
     }
 }
 
@@ -2896,6 +2935,135 @@ impl<T: 'static>
         <() as Dispatch<
             wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
             foreign_toplevel::ToplevelHandleUserData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+// ext_foreign_toplevel_list_v1 dispatch
+#[cfg(feature = "foreign-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+        foreign_toplevel::ExtForeignToplevelListData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+        event: wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::Event,
+        data: &foreign_toplevel::ExtForeignToplevelListData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+            foreign_toplevel::ExtForeignToplevelListData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+
+    fn event_created_child(
+        opcode: u16,
+        qhandle: &QueueHandle<Self>,
+    ) -> std::sync::Arc<dyn wayland_client::backend::ObjectData> {
+        <() as Dispatch<
+            wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+            foreign_toplevel::ExtForeignToplevelListData,
+            Self,
+        >>::event_created_child(opcode, qhandle)
+    }
+}
+
+// ext_foreign_toplevel_handle_v1 dispatch
+#[cfg(feature = "foreign-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+        foreign_toplevel::ExtToplevelHandleData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+        event: wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::Event,
+        data: &foreign_toplevel::ExtToplevelHandleData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        use foreign_toplevel::ForeignToplevelHandler;
+        use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::Event;
+
+        // Check if this is a Done event for a new (uninitialized) handle
+        // If so, request the COSMIC extension for state info
+        #[cfg(feature = "cosmic-toplevel")]
+        if let Event::Done = &event {
+            let ext_id = proxy.id().protocol_id();
+            let handle_data = state.get_toplevel_data(ext_id);
+            if !handle_data.initialized {
+                // First Done event - request cosmic extension if available
+                if let Some(cosmic_info) = state.cosmic_toplevel_info.as_ref() {
+                    log::trace!("Requesting cosmic toplevel handle for ext handle {}", ext_id);
+                    let cosmic_handle_data = foreign_toplevel::CosmicToplevelHandleData {
+                        ext_handle_id: ext_id,
+                    };
+                    cosmic_info.get_cosmic_toplevel(proxy, qhandle, cosmic_handle_data);
+                }
+            }
+        }
+
+        // Forward to blanket impl
+        <() as Dispatch<
+            wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+            foreign_toplevel::ExtToplevelHandleData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+// zcosmic_toplevel_info_v1 dispatch
+#[cfg(feature = "cosmic-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+        foreign_toplevel::CosmicToplevelInfoData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+        event: cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::Event,
+        data: &foreign_toplevel::CosmicToplevelInfoData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+            foreign_toplevel::CosmicToplevelInfoData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+// zcosmic_toplevel_handle_v1 dispatch
+#[cfg(feature = "cosmic-toplevel")]
+impl<T: 'static>
+    Dispatch<
+        cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
+        foreign_toplevel::CosmicToplevelHandleData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
+        event: cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::Event,
+        data: &foreign_toplevel::CosmicToplevelHandleData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
+            foreign_toplevel::CosmicToplevelHandleData,
             Self,
         >>::event(state, proxy, event, data, conn, qhandle)
     }
@@ -3021,24 +3189,63 @@ impl<T: 'static> WindowState<T> {
             }
         }
 
-        // Bind foreign toplevel manager if enabled
+        // Bind foreign toplevel protocols if enabled
+        // Priority: ext_foreign_toplevel_list + cosmic_toplevel_info > wlr_foreign_toplevel_manager
         #[cfg(feature = "foreign-toplevel")]
         if self.foreign_toplevel_enabled {
-            self.foreign_toplevel_manager = globals
-                .bind::<wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, _, _>(
+            // Try ext_foreign_toplevel_list_v1 first (preferred, standard protocol)
+            self.ext_foreign_toplevel_list = globals
+                .bind::<wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
                     &qh,
-                    1..=3,
-                    foreign_toplevel::ForeignToplevelManagerData::default(),
+                    1..=1,
+                    foreign_toplevel::ExtForeignToplevelListData::default(),
                 )
                 .ok();
-            if self.foreign_toplevel_manager.is_none() {
-                log::warn!(
-                    "Foreign toplevel tracking requested but compositor does not support zwlr_foreign_toplevel_manager_v1 protocol"
-                );
-            } else {
+
+            if self.ext_foreign_toplevel_list.is_some() {
                 log::info!(
-                    "Successfully bound zwlr_foreign_toplevel_manager_v1 protocol for foreign toplevel tracking"
+                    "Successfully bound ext_foreign_toplevel_list_v1 protocol for foreign toplevel tracking"
                 );
+
+                // Also try to bind COSMIC toplevel info for state information
+                #[cfg(feature = "cosmic-toplevel")]
+                {
+                    self.cosmic_toplevel_info = globals
+                        .bind::<cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
+                            &qh,
+                            2..=2,  // Version 2+ has get_cosmic_toplevel
+                            foreign_toplevel::CosmicToplevelInfoData::default(),
+                        )
+                        .ok();
+                    if self.cosmic_toplevel_info.is_some() {
+                        log::info!(
+                            "Successfully bound zcosmic_toplevel_info_v1 protocol for toplevel state info"
+                        );
+                    } else {
+                        log::debug!(
+                            "zcosmic_toplevel_info_v1 not available - state info will be limited"
+                        );
+                    }
+                }
+            } else {
+                // Fallback to wlr_foreign_toplevel_manager_v1
+                self.foreign_toplevel_manager = globals
+                    .bind::<wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, _, _>(
+                        &qh,
+                        1..=3,
+                        foreign_toplevel::ForeignToplevelManagerData::default(),
+                    )
+                    .ok();
+
+                if self.foreign_toplevel_manager.is_some() {
+                    log::info!(
+                        "Successfully bound zwlr_foreign_toplevel_manager_v1 protocol for foreign toplevel tracking (fallback)"
+                    );
+                } else {
+                    log::warn!(
+                        "Foreign toplevel tracking requested but compositor does not support ext_foreign_toplevel_list_v1 or zwlr_foreign_toplevel_manager_v1 protocols"
+                    );
+                }
             }
         }
 
@@ -3149,7 +3356,8 @@ impl<T: 'static> WindowState<T> {
                     &qh,
                     home_visibility::VisibilityMode::HomeOnly,
                 ) {
-                    self.home_visibility_controllers.insert(surface_id, controller);
+                    self.home_visibility_controllers
+                        .insert(surface_id, controller);
                 }
             } else if self.hide_on_home {
                 if let Some(controller) = apply_home_visibility_to_surface(
@@ -3158,7 +3366,8 @@ impl<T: 'static> WindowState<T> {
                     &qh,
                     home_visibility::VisibilityMode::HideOnHome,
                 ) {
-                    self.home_visibility_controllers.insert(surface_id, controller);
+                    self.home_visibility_controllers
+                        .insert(surface_id, controller);
                 }
             }
 
@@ -3254,7 +3463,8 @@ impl<T: 'static> WindowState<T> {
                         &qh,
                         home_visibility::VisibilityMode::HomeOnly,
                     ) {
-                        self.home_visibility_controllers.insert(surface_id, controller);
+                        self.home_visibility_controllers
+                            .insert(surface_id, controller);
                     }
                 } else if self.hide_on_home {
                     if let Some(controller) = apply_home_visibility_to_surface(
@@ -3263,7 +3473,8 @@ impl<T: 'static> WindowState<T> {
                         &qh,
                         home_visibility::VisibilityMode::HideOnHome,
                     ) {
-                        self.home_visibility_controllers.insert(surface_id, controller);
+                        self.home_visibility_controllers
+                            .insert(surface_id, controller);
                     }
                 }
 
