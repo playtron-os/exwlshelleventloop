@@ -129,6 +129,7 @@ where
                 border: Border::default(),
                 shadow: Shadow::default(),
                 snap: true,
+                border_only: false,
             },
             Color::from_rgba(1.0, 0.0, 0.0, 1.0),
         );
