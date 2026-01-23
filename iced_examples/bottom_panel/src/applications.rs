@@ -72,6 +72,7 @@ impl App {
                     color: iced::Color::TRANSPARENT,
                     offset: Vector { x: 0.0, y: 2.0 },
                     blur_radius: 5.0,
+                    inset: false,
                 },
                 snap: true,
             })
