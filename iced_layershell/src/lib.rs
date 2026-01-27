@@ -11,6 +11,9 @@ mod user_interface;
 
 pub mod settings;
 
+// Re-export iced so macros can use it
+pub use iced;
+
 pub mod reexport {
     pub use layershellev::NewInputPanelSettings;
     pub use layershellev::NewLayerShellSettings;
@@ -21,6 +24,7 @@ pub mod reexport {
     pub use layershellev::reexport::KeyboardInteractivity;
     pub use layershellev::reexport::Layer;
     pub use layershellev::reexport::wayland_client::{WlRegion, wl_keyboard};
+    pub use layershellev::voice_mode::{VoiceModeEvent, OrbState, set_voice_active, is_voice_active};
 }
 
 mod ime_preedit;

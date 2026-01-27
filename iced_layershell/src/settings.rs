@@ -95,6 +95,9 @@ pub struct LayerShellSettings {
     /// Hide-on-home visibility mode - surface hidden when compositor is in "home" mode
     /// (inverse of home_only, requires compositor support for zcosmic_home_visibility_v1)
     pub hide_on_home: bool,
+    /// Enable voice mode support - receive voice input events from the compositor
+    /// (requires compositor support for zcosmic_voice_mode_v1)
+    pub voice_mode: bool,
     /// Enable foreign toplevel tracking - receive events for all opened windows on the system
     /// (requires compositor support for zwlr_foreign_toplevel_manager_v1)
     /// This field is only available when the `foreign-toplevel` feature is enabled.
@@ -118,6 +121,7 @@ impl Default for LayerShellSettings {
             corner_radius: None,
             home_only: false,
             hide_on_home: false,
+            voice_mode: false,
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel: false,
         }
@@ -125,6 +129,14 @@ impl Default for LayerShellSettings {
 }
 
 impl LayerShellSettings {
+    /// Enable voice mode support - receive voice input events from the compositor.
+    /// Requires compositor support for `zcosmic_voice_mode_v1`.
+    #[must_use]
+    pub fn with_voice_mode(mut self) -> Self {
+        self.voice_mode = true;
+        self
+    }
+
     /// Enable foreign toplevel tracking - receive events for all opened windows on the system.
     /// Requires compositor support for `zwlr_foreign_toplevel_manager_v1`.
     /// This method is only available when the `foreign-toplevel` feature is enabled.
