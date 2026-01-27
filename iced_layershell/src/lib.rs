@@ -11,6 +11,9 @@ mod user_interface;
 
 pub mod settings;
 
+// Re-export iced so macros can use it
+pub use iced;
+
 pub mod reexport {
     pub use layershellev::NewInputPanelSettings;
     pub use layershellev::NewLayerShellSettings;
@@ -26,6 +29,7 @@ pub mod reexport {
     }
     pub use iced_core::window::Id as IcedId;
     pub use iced_runtime::Task;
+    pub use layershellev::voice_mode::{VoiceModeEvent, OrbState, set_voice_active, is_voice_active};
 }
 
 mod ime_preedit;

@@ -108,6 +108,13 @@ pub enum LayershellCustomAction {
     ForgetLastOutput,
     /// Change the home visibility mode for the surface
     VisibilityModeChange(VisibilityMode),
+    /// Send audio level to compositor for voice orb visualization (0-1000)
+    SetVoiceAudioLevel(u32),
+    /// Acknowledge a will_stop event from the compositor.
+    /// serial - the serial from the will_stop event
+    /// freeze - if true, freeze the orb in place for processing.
+    ///          if false, proceed with hiding the orb.
+    VoiceAckStop(u32, bool),
     /// Execute a toplevel action (activate, close, minimize, etc.)
     #[cfg(feature = "foreign-toplevel")]
     ToplevelAction(ToplevelAction),

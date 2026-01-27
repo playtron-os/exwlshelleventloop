@@ -104,7 +104,8 @@ where
         .with_blur(settings.layer_settings.blur)
         .with_shadow(settings.layer_settings.shadow)
         .with_home_only(settings.layer_settings.home_only)
-        .with_hide_on_home(settings.layer_settings.hide_on_home);
+        .with_hide_on_home(settings.layer_settings.hide_on_home)
+        .with_voice_mode(settings.layer_settings.voice_mode);
 
     #[cfg(feature = "foreign-toplevel")]
     let ev = ev.with_foreign_toplevel(settings.layer_settings.foreign_toplevel);
@@ -624,6 +625,12 @@ where
             return;
         }
 
+        // Handle voice mode events specially - they go through a subscription channel
+        if let LayerShellWindowEvent::VoiceMode(ref voice_event) = event {
+            crate::event::send_voice_mode_event(voice_event.clone());
+            return;
+        }
+
         let id_and_window = if let Some(layer_shell_id) = layer_shell_id {
             self.window_manager.get_mut_alias(layer_shell_id)
         } else {
@@ -882,6 +889,12 @@ where
                 log::info!("Processing ToplevelAction: {:?}", action);
                 let result = ev.execute_toplevel_action(action);
                 log::info!("ToplevelAction result: {}", result);
+            }
+            LayershellCustomAction::SetVoiceAudioLevel(level) => {
+                ev.send_voice_audio_level(level);
+            }
+            LayershellCustomAction::VoiceAckStop(serial, freeze) => {
+                ev.voice_ack_stop(serial, freeze);
             }
         }
     }
