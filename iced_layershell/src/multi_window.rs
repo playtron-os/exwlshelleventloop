@@ -896,6 +896,9 @@ where
             LayershellCustomAction::VoiceAckStop(serial, freeze) => {
                 ev.voice_ack_stop(serial, freeze);
             }
+            LayershellCustomAction::VoiceDismiss => {
+                ev.voice_dismiss();
+            }
         }
     }
 

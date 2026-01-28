@@ -1071,6 +1071,17 @@ impl<T> WindowState<T> {
         }
     }
 
+    /// Dismiss the frozen voice orb.
+    /// This tells the compositor to hide the orb when transcription completes
+    /// without spawning a new window (e.g., empty result or error).
+    /// Only valid when orb is in frozen state.
+    pub fn voice_dismiss(&self) {
+        log::info!("Sending voice dismiss to compositor");
+        for receiver in self.voice_mode_receivers.values() {
+            receiver.dismiss();
+        }
+    }
+
     fn push_window(&mut self, window_state_unit: WindowStateUnit<T>) {
         let surface = window_state_unit.wl_surface.clone();
         self.units.push(window_state_unit);
