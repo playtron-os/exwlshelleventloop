@@ -115,6 +115,10 @@ pub enum LayershellCustomAction {
     /// freeze - if true, freeze the orb in place for processing.
     ///          if false, proceed with hiding the orb.
     VoiceAckStop(u32, bool),
+    /// Dismiss the frozen voice orb.
+    /// This tells the compositor to hide the orb when transcription completes
+    /// without spawning a new window (e.g., empty result or error).
+    VoiceDismiss,
     /// Execute a toplevel action (activate, close, minimize, etc.)
     #[cfg(feature = "foreign-toplevel")]
     ToplevelAction(ToplevelAction),
