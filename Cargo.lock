@@ -1015,7 +1015,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/playtron-os/winit.git?rev=82ef4fc1#82ef4fc130321bd35495d1e8aee9ff3ea3e8bca1"
+source = "git+https://github.com/playtron-os/winit.git?rev=b88f8dc4#b88f8dc4a759e6acbdec7e8e3135593636cb2c5f"
 
 [[package]]
 name = "either"
@@ -5504,7 +5504,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.12"
-source = "git+https://github.com/playtron-os/winit.git?rev=82ef4fc1#82ef4fc130321bd35495d1e8aee9ff3ea3e8bca1"
+source = "git+https://github.com/playtron-os/winit.git?rev=b88f8dc4#b88f8dc4a759e6acbdec7e8e3135593636cb2c5f"
 dependencies = [
  "ahash",
  "android-activity",
