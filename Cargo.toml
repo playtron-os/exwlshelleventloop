@@ -72,16 +72,16 @@ rwh_05 = { package = "raw-window-handle", version = "0.5.2", features = [
 rwh_06 = { package = "raw-window-handle", version = "0.6", features = ["std"] }
 
 # Use Playtron iced fork
-iced = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_runtime = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_core = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_program = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_renderer = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_futures = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_graphics = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_debug = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_devtools = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
-iced_widget = { git = "https://github.com/playtron-os/iced.git", rev = "639791bb" }
+iced = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_runtime = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_core = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_program = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_renderer = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_futures = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_graphics = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_debug = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_devtools = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
+iced_widget = { git = "https://github.com/playtron-os/iced.git", rev = "09a32b33" }
 #iced = { path = "../iced" }
 #iced_runtime = { path = "../iced/runtime" }
 #iced_core = { path = "../iced/core" }
