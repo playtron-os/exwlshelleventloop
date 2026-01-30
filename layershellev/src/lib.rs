@@ -3069,6 +3069,10 @@ impl<T: 'static>
                 _proxy.ack_stop(serial, if freeze { 1 } else { 0 });
                 voice_mode::VoiceModeEvent::WillStop { serial }
             }
+            Event::FocusInput => {
+                log::info!("Voice mode focus_input (tap detected)");
+                voice_mode::VoiceModeEvent::FocusInput
+            }
         };
         
         // Store the event for later processing

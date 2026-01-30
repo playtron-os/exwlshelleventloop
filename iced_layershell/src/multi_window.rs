@@ -18,7 +18,7 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 #[cfg(not(all(feature = "linux-theme-detection", target_os = "linux")))]
 use iced_core::theme::Mode;
 use iced_core::{
-    Event as IcedEvent, theme,
+    Event as IcedEvent, theme, voice_mode as iced_voice_mode,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
 use iced_core::{Size, mouse::Cursor, time::Instant};
@@ -49,6 +49,46 @@ use window_manager::Window;
 
 mod state;
 mod window_manager;
+
+/// Convert layershellev voice mode event to iced voice mode event
+fn convert_voice_mode_event(event: &layershellev::voice_mode::VoiceModeEvent) -> Option<IcedEvent> {
+    use layershellev::voice_mode::{OrbState as LayerOrbState, VoiceModeEvent};
+
+    let convert_orb_state = |state: LayerOrbState| -> iced_voice_mode::OrbState {
+        match state {
+            LayerOrbState::Hidden => iced_voice_mode::OrbState::Hidden,
+            LayerOrbState::Floating => iced_voice_mode::OrbState::Floating,
+            LayerOrbState::Attached => iced_voice_mode::OrbState::Attached,
+            LayerOrbState::Frozen => iced_voice_mode::OrbState::Frozen,
+            LayerOrbState::Transitioning => iced_voice_mode::OrbState::Transitioning,
+            _ => iced_voice_mode::OrbState::Hidden, // Unknown state, default to hidden
+        }
+    };
+
+    let iced_event = match event {
+        VoiceModeEvent::Started { orb_state } => iced_voice_mode::Event::Started {
+            orb_state: convert_orb_state(*orb_state),
+        },
+        VoiceModeEvent::Stopped => iced_voice_mode::Event::Stopped,
+        VoiceModeEvent::Cancelled => iced_voice_mode::Event::Cancelled,
+        VoiceModeEvent::OrbAttached {
+            x,
+            y,
+            width,
+            height,
+        } => iced_voice_mode::Event::OrbAttached {
+            x: *x,
+            y: *y,
+            width: *width,
+            height: *height,
+        },
+        VoiceModeEvent::OrbDetached => iced_voice_mode::Event::OrbDetached,
+        VoiceModeEvent::WillStop { serial } => iced_voice_mode::Event::WillStop { serial: *serial },
+        VoiceModeEvent::FocusInput => iced_voice_mode::Event::FocusInput,
+    };
+
+    Some(IcedEvent::VoiceMode(iced_event))
+}
 
 type MultiRuntime<E, Message> = Runtime<E, IcedProxy<Action<Message>>, Action<Message>>;
 
@@ -395,7 +435,20 @@ where
                 self.handle_closed_event(ev, layer_shell_id)
             }
             IcedLayerShellEvent::Window(window_event) => {
-                self.handle_window_event(layer_shell_id, window_event)
+                // Voice mode events need to trigger a refresh to process the subscription message
+                let needs_refresh = self.handle_window_event(layer_shell_id, window_event);
+                if needs_refresh {
+                    // Process any iced_events that were added immediately (e.g. voice mode events)
+                    // This ensures the UI updates without waiting for the next NormalDispatch
+                    if !self.iced_events.is_empty() {
+                        tracing::debug!(
+                            "handle_event: processing {} iced_events immediately after window event",
+                            self.iced_events.len()
+                        );
+                        self.handle_normal_dispatch(ev);
+                    }
+                    ev.request_refresh_all(RefreshRequest::NextFrame);
+                }
             }
             IcedLayerShellEvent::UserAction(user_action) => {
                 self.handle_user_action(ev, user_action)
@@ -613,22 +666,45 @@ where
         }
     }
 
+    /// Handle window events. Returns true if a refresh should be requested
+    /// (for events that go through subscription channels like voice mode).
     fn handle_window_event(
         &mut self,
         layer_shell_id: Option<LayerShellId>,
         event: LayerShellWindowEvent,
-    ) {
+    ) -> bool {
         // Handle foreign toplevel events specially - they go through a subscription channel
         #[cfg(feature = "foreign-toplevel")]
         if let LayerShellWindowEvent::ForeignToplevel(ref toplevel_event) = event {
             crate::event::send_foreign_toplevel_event(toplevel_event.clone());
-            return;
+            return true; // Request refresh to process subscription message
         }
 
-        // Handle voice mode events specially - they go through a subscription channel
+        // Handle voice mode events - convert to iced event and push to iced_events for immediate processing
         if let LayerShellWindowEvent::VoiceMode(ref voice_event) = event {
-            crate::event::send_voice_mode_event(voice_event.clone());
-            return;
+            tracing::debug!(
+                "handle_window_event: received VoiceMode event: {:?}",
+                voice_event
+            );
+            if let Some(iced_event) = convert_voice_mode_event(voice_event) {
+                // Push to first window (voice mode events are global, not per-window)
+                if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+                    tracing::debug!(
+                        "handle_window_event: pushing iced voice event to window {:?}, iced_events count: {}",
+                        iced_id,
+                        self.iced_events.len() + 1
+                    );
+                    self.iced_events.push((iced_id, iced_event));
+                } else {
+                    tracing::warn!(
+                        "handle_window_event: no windows in window_manager to receive voice event"
+                    );
+                }
+            } else {
+                tracing::warn!("handle_window_event: failed to convert voice event");
+            }
+            tracing::debug!("handle_window_event: requesting refresh for voice event");
+            return true; // Request refresh
         }
 
         let id_and_window = if let Some(layer_shell_id) = layer_shell_id {
@@ -637,7 +713,7 @@ where
             self.window_manager.iter_mut().next()
         };
         let Some((iced_id, window)) = id_and_window else {
-            return;
+            return false;
         };
         // In previous implementation, event without layer_shell_id won't call `update` here, but
         // will broadcast to the application. I'm not sure why, but I think it is
@@ -652,6 +728,7 @@ where
         ) {
             self.iced_events.push((iced_id, event));
         }
+        false
     }
 
     fn handle_user_action(&mut self, ev: &mut WindowState<IcedId>, action: Action<P::Message>) {
@@ -906,6 +983,12 @@ where
         if self.iced_events.is_empty() && self.messages.is_empty() {
             return;
         }
+
+        tracing::debug!(
+            "handle_normal_dispatch: iced_events={}, messages={}",
+            self.iced_events.len(),
+            self.messages.len()
+        );
 
         let mut rebuilds = Vec::new();
         for (iced_id, window) in self.window_manager.iter_mut() {
@@ -1171,6 +1254,8 @@ pub(crate) fn run_action<P, C, E: Executor>(
                     }
                 }
             }
+            // Request refresh after widget operations (e.g., focus) to update visual state
+            ev.request_refresh_all(RefreshRequest::NextFrame);
         }
         Action::Window(action) => match action {
             WindowAction::Close(id) => {
@@ -1211,6 +1296,23 @@ pub(crate) fn run_action<P, C, E: Executor>(
                 if let Some(window) = window_manager.get_mut(id) {
                     let _ = channel.send(window.state.wayland_scale_factor() as f32);
                 };
+            }
+            WindowAction::RedrawAll => {
+                ev.request_refresh_all(RefreshRequest::NextFrame);
+            }
+            WindowAction::RelayoutAll => {
+                // Rebuild all user interfaces and request refresh
+                for (iced_id, window) in window_manager.iter_mut() {
+                    if let Some(cache) = user_interfaces.remove(&iced_id) {
+                        user_interfaces.build(
+                            iced_id,
+                            cache,
+                            &mut window.renderer,
+                            window.state.viewport().logical_size(),
+                        );
+                    }
+                }
+                ev.request_refresh_all(RefreshRequest::NextFrame);
             }
             _ => {}
         },

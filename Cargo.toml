@@ -72,16 +72,26 @@ rwh_05 = { package = "raw-window-handle", version = "0.5.2", features = [
 rwh_06 = { package = "raw-window-handle", version = "0.6", features = ["std"] }
 
 # Use Playtron iced fork
-iced = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_runtime = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_core = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_program = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_renderer = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_futures = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_graphics = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_debug = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_devtools = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
-iced_widget = { git = "https://github.com/playtron-os/iced.git", rev = "93df4333" }
+iced = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_runtime = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_core = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_program = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_renderer = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_futures = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_graphics = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_debug = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_devtools = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+iced_widget = { git = "https://github.com/playtron-os/iced.git", rev = "a71cb02b" }
+#iced = { path = "../iced" }
+#iced_runtime = { path = "../iced/runtime" }
+#iced_core = { path = "../iced/core" }
+#iced_program = { path = "../iced/program" }
+#iced_renderer = { path = "../iced/renderer" }
+#iced_futures = { path = "../iced/futures" }
+#iced_graphics = { path = "../iced/graphics" }
+#iced_debug = { path = "../iced/debug" }
+#iced_devtools = { path = "../iced/devtools" }
+#iced_widget = { path = "../iced/widget" }
 window_clipboard = "0.5.0"
 
 bitflags = "2.9.0"
