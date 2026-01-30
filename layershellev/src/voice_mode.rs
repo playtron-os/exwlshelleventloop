@@ -78,6 +78,8 @@ pub enum VoiceModeEvent {
         /// Serial to echo back in ack_stop
         serial: u32,
     },
+    /// Focus the input field (tap event, not hold)
+    FocusInput,
 }
 
 /// User data for the voice mode manager
@@ -179,6 +181,10 @@ where
                 info!("Voice mode will_stop, serial: {}, auto-responding with freeze: {}", serial, freeze);
                 _proxy.ack_stop(serial, if freeze { 1 } else { 0 });
                 VoiceModeEvent::WillStop { serial }
+            }
+            zcosmic_voice_mode_v1::Event::FocusInput => {
+                info!("Voice mode focus_input (tap detected)");
+                VoiceModeEvent::FocusInput
             }
         };
         
