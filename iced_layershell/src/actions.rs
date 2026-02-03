@@ -106,6 +106,11 @@ pub enum LayershellCustomAction {
     /// is same with WindowAction::Close(id)
     RemoveWindow,
     ForgetLastOutput,
+    /// Hide the window without destroying it (uses layer_surface_visibility protocol)
+    /// The surface is not rendered and doesn't receive input, but maintains its configuration.
+    HideWindow,
+    /// Show the window if it was previously hidden
+    ShowWindow,
     /// Change the home visibility mode for the surface
     VisibilityModeChange(VisibilityMode),
     /// Send audio level to compositor for voice orb visualization (0-1000)

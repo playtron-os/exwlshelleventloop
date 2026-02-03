@@ -122,6 +122,7 @@ mod events;
 #[cfg(feature = "foreign-toplevel")]
 pub mod foreign_toplevel;
 pub mod home_visibility;
+pub mod layer_surface_visibility;
 pub mod shadow;
 mod strtoshape;
 pub mod voice_mode;
@@ -217,6 +218,7 @@ use wayland_protocols::xdg::decoration::zv1::client::{
 pub use calloop;
 use calloop::{
     Error as CallLoopError, EventLoop, LoopHandle, RegistrationToken,
+    ping::make_ping,
     timer::{TimeoutAction, Timer},
 };
 use calloop_wayland_source::WaylandSource;
@@ -943,6 +945,16 @@ pub struct WindowState<T> {
     /// Pending voice mode events from compositor
     voice_mode_events: Vec<voice_mode::VoiceModeEvent>,
 
+    /// Layer surface visibility manager (bound lazily when needed)
+    layer_surface_visibility_manager: Option<
+        layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
+    >,
+    /// Visibility controllers per surface (keyed by surface protocol ID)
+    layer_surface_visibility_controllers: HashMap<
+        u32,
+        layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
+    >,
+
     /// Whether to track foreign toplevel windows (taskbar/dock functionality)
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_enabled: bool,
@@ -1348,6 +1360,88 @@ impl<T: 'static> WindowState<T> {
         } else {
             log::warn!(
                 "Home visibility manager not available - ensure home_only or hide_on_home was set in settings"
+            );
+        }
+    }
+
+    /// Hide a surface without destroying it (using layer_surface_visibility protocol)
+    /// The surface will not be rendered and won't receive input events.
+    /// Use show_surface to make it visible again.
+    pub fn hide_surface(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+
+        // Check if we already have a visibility controller for this surface
+        if let Some(controller) = self.layer_surface_visibility_controllers.get(&surface_id) {
+            controller.set_hidden();
+            // Flush to ensure compositor processes immediately
+            if let Some(ref conn) = self.connection {
+                let _ = conn.flush();
+            }
+            log::info!("Hidden surface {} (existing controller)", surface_id);
+            return;
+        }
+
+        // Need to create a new controller
+        if let Some(manager) = &self.layer_surface_visibility_manager {
+            if let Some(unit) = self.units.first() {
+                let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
+                    surface: surface.clone(),
+                    hidden: true,
+                };
+                let controller =
+                    manager.get_visibility_controller(surface, &unit.qh, visibility_data);
+                controller.set_hidden();
+                self.layer_surface_visibility_controllers
+                    .insert(surface_id, controller);
+                // Flush to ensure compositor processes immediately
+                if let Some(ref conn) = self.connection {
+                    let _ = conn.flush();
+                }
+                log::info!("Hidden surface {} (new controller)", surface_id);
+            }
+        } else {
+            log::warn!(
+                "Layer surface visibility manager not available - compositor may not support this protocol"
+            );
+        }
+    }
+
+    /// Show a surface that was previously hidden
+    pub fn show_surface(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+
+        // Check if we have a visibility controller for this surface
+        if let Some(controller) = self.layer_surface_visibility_controllers.get(&surface_id) {
+            controller.set_visible();
+            // Flush to ensure compositor processes immediately
+            if let Some(ref conn) = self.connection {
+                let _ = conn.flush();
+            }
+            log::info!("Shown surface {} (existing controller)", surface_id);
+            return;
+        }
+
+        // Need to create a new controller (surface was never hidden, but make it explicit)
+        if let Some(manager) = &self.layer_surface_visibility_manager {
+            if let Some(unit) = self.units.first() {
+                let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
+                    surface: surface.clone(),
+                    hidden: false,
+                };
+                let controller =
+                    manager.get_visibility_controller(surface, &unit.qh, visibility_data);
+                controller.set_visible();
+                self.layer_surface_visibility_controllers
+                    .insert(surface_id, controller);
+                // Flush to ensure compositor processes immediately
+                if let Some(ref conn) = self.connection {
+                    let _ = conn.flush();
+                }
+                log::info!("Shown surface {} (new controller)", surface_id);
+            }
+        } else {
+            log::warn!(
+                "Layer surface visibility manager not available - compositor may not support this protocol"
             );
         }
     }
@@ -1797,6 +1891,9 @@ impl<T> Default for WindowState<T> {
             voice_mode_manager: None,
             voice_mode_receivers: HashMap::new(),
             voice_mode_events: Vec::new(),
+
+            layer_surface_visibility_manager: None,
+            layer_surface_visibility_controllers: HashMap::new(),
 
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_enabled: false,
@@ -3005,6 +3102,51 @@ impl<T: 'static>
     }
 }
 
+// Layer surface visibility protocol delegates
+impl<T: 'static>
+    Dispatch<
+        layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
+        layer_surface_visibility::LayerSurfaceVisibilityManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
+        _event: <layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1 as Proxy>::Event,
+        _data: &layer_surface_visibility::LayerSurfaceVisibilityManagerData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for manager
+    }
+}
+
+impl<T: 'static>
+    Dispatch<
+        layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
+        layer_surface_visibility::LayerSurfaceVisibilityData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
+        event: <layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1 as Proxy>::Event,
+        data: &layer_surface_visibility::LayerSurfaceVisibilityData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use layer_surface_visibility::zcosmic_layer_surface_visibility_v1::Event;
+        let Event::VisibilityChanged { visible } = event;
+        let visible = visible != 0;
+        log::debug!(
+            "Layer surface visibility changed: surface={:?}, visible={}",
+            data.surface.id().protocol_id(),
+            visible
+        );
+        // We just log the event - the client controls visibility, not the compositor
+    }
+}
+
 // Voice mode protocol delegates
 impl<T: 'static>
     Dispatch<
@@ -3515,6 +3657,19 @@ impl<T: 'static> WindowState<T> {
             .ok();
         if self.shadow_manager.is_some() {
             log::info!("Successfully bound layer_shadow_manager_v1 protocol for shadow support");
+        }
+
+        // Always try to bind layer surface visibility manager for hide/show support
+        // (allows hiding/showing surfaces without destroying them)
+        self.layer_surface_visibility_manager = globals
+            .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
+                &qh,
+                1..=1,
+                layer_surface_visibility::LayerSurfaceVisibilityManagerData::default(),
+            )
+            .ok();
+        if self.layer_surface_visibility_manager.is_some() {
+            log::info!("Successfully bound zcosmic_layer_surface_visibility_manager_v1 protocol for hide/show support");
         }
 
         // Bind home visibility manager if home_only or hide_on_home is enabled
@@ -4075,6 +4230,37 @@ impl<T: 'static> WindowState<T> {
 
         let events: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(Vec::new()));
 
+        // Create a ping source for immediate message processing
+        // The ping source callback runs immediately when pinged from the message thread
+        let (ping_sender, ping_source) = make_ping().expect("Failed to create ping source");
+        let events_for_ping = events.clone();
+
+        event_loop
+            .handle()
+            .insert_source(ping_source, move |_, _, r_window_state| {
+                // Process user events immediately when pinged
+                let window_state = &mut r_window_state.raw;
+                let event_handler = &mut r_window_state.fun;
+
+                let mut local_events = events_for_ping.lock().expect(
+                    "This events only used in callbacks, so it should always be unlockable",
+                );
+                let mut swapped_events: Vec<Message> = vec![];
+                std::mem::swap(&mut *local_events, &mut swapped_events);
+                drop(local_events);
+
+                for event in swapped_events {
+                    window_state.handle_event(&mut *event_handler, LayerShellEvent::UserEvent(event), None);
+                }
+
+                // Trigger NormalDispatch to process the events through iced
+                window_state.handle_event(&mut *event_handler, LayerShellEvent::NormalDispatch, None);
+            })
+            .expect("Failed to insert ping source");
+
+        // Get the signal early so we can share it with the message receiver thread
+        let signal = event_loop.get_signal();
+
         let thread = std::thread::spawn({
             let events = events.clone();
             let to_exit = to_exit.clone();
@@ -4083,7 +4269,8 @@ impl<T: 'static> WindowState<T> {
                     return;
                 };
                 loop {
-                    let message = message_receiver.recv_timeout(Duration::from_millis(100));
+                    // Block waiting for messages - ping will wake the loop immediately
+                    let message = message_receiver.recv_timeout(Duration::from_millis(500));
                     if to_exit.load(Ordering::Relaxed) {
                         break;
                     }
@@ -4091,6 +4278,9 @@ impl<T: 'static> WindowState<T> {
                         Ok(message) => {
                             let mut events_local = events.lock().unwrap();
                             events_local.push(message);
+                            drop(events_local); // Release lock before ping
+                            // Ping the event loop to process the message immediately
+                            ping_sender.ping();
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => {
@@ -4100,8 +4290,6 @@ impl<T: 'static> WindowState<T> {
                 }
             }
         });
-
-        let signal = event_loop.get_signal();
         event_loop
             .handle()
             .insert_source(
@@ -4206,15 +4394,8 @@ impl<T: 'static> WindowState<T> {
                         }
                     }
 
-                    let mut local_events = events.lock().expect(
-                        "This events only used in this callback, so it should always can be unlocked",
-                    );
-                    let mut swapped_events: Vec<Message> = vec![];
-                    std::mem::swap(&mut *local_events, &mut swapped_events);
-                    drop(local_events);
-                    for event in swapped_events {
-                        window_state.handle_event(&mut *event_handler, LayerShellEvent::UserEvent(event), None);
-                    }
+                    // User events are now processed by the ping source for immediate response.
+                    // The timer only handles internal messages and periodic dispatch.
                     window_state.handle_event(
                         &mut *event_handler,
                         LayerShellEvent::NormalDispatch,

@@ -1243,6 +1243,26 @@ where
             LayershellCustomAction::ForgetLastOutput => {
                 ev.forget_last_output();
             }
+            LayershellCustomAction::HideWindow => {
+                // Get the surface to hide
+                let surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                if let Some(surface) = surface {
+                    ev.hide_surface(&surface);
+                }
+            }
+            LayershellCustomAction::ShowWindow => {
+                // Get the surface to show
+                let surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                if let Some(surface) = surface {
+                    ev.show_surface(&surface);
+                }
+            }
             LayershellCustomAction::VisibilityModeChange(mode) => {
                 // Get the surface first to avoid borrow conflict
                 let surface = layer_shell_id.and_then(|id| {
