@@ -1928,6 +1928,14 @@ impl<T> WindowState<T> {
         }
     }
 
+    /// Flush pending requests to the Wayland compositor.
+    /// This ensures that all pending protocol requests are sent immediately.
+    pub fn flush(&self) {
+        if let Some(ref conn) = self.connection {
+            let _ = conn.flush();
+        }
+    }
+
     pub fn request_close(&mut self, id: id::Id) {
         self.get_mut_unit_with_id(id)
             .map(WindowStateUnit::request_close);

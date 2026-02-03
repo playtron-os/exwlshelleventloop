@@ -332,8 +332,10 @@ where
     compositor: Option<C>,
     window_manager: WindowManager<P, C>,
     cached_layer_dimensions: HashMap<IcedId, (Size<u32>, f32)>,
-    /// Windows that need auto-sizing after first render
+    /// Windows that need auto-sizing after first render (measure phase)
     auto_size_pending: std::collections::HashSet<IcedId>,
+    /// Windows hidden until auto-size resize completes - maps to expected (width, height)
+    auto_size_hidden: HashMap<IcedId, (u32, u32)>,
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
@@ -368,6 +370,7 @@ where
             window_manager: WindowManager::new(),
             cached_layer_dimensions: HashMap::new(),
             auto_size_pending: std::collections::HashSet::new(),
+            auto_size_hidden: HashMap::new(),
             clipboard: LayerShellClipboard::unconnected(),
             wl_input_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
@@ -469,6 +472,13 @@ where
             self.handle_layer_shell_action(ev, iced_id, action);
         }
 
+        // If there are windows hidden pending auto-size, flush and request immediate refresh
+        if !self.auto_size_hidden.is_empty() {
+            // Flush to ensure size change request is sent to compositor immediately
+            ev.flush();
+            ev.request_refresh_all(RefreshRequest::At(Instant::now()));
+        }
+
         (ContextState::Context(self), None)
     }
 
@@ -504,6 +514,19 @@ where
                 events.push(IcedEvent::Window(IcedWindowEvent::Resized(
                     window.state.window_size_f32(),
                 )));
+
+                // Check if this resize completes an auto-size operation
+                if let Some(&(expected_w, expected_h)) = self.auto_size_hidden.get(&iced_id) {
+                    if width == expected_w && height == expected_h {
+                        tracing::trace!(
+                            "Auto-size resize confirmed for {:?}: {}x{}, unhiding",
+                            iced_id,
+                            width,
+                            height
+                        );
+                        self.auto_size_hidden.remove(&iced_id);
+                    }
+                }
             }
             (iced_id, window)
         } else {
@@ -611,8 +634,8 @@ where
             cursor,
         );
 
-        // Check if this window needs auto-sizing
-        if self.auto_size_pending.remove(&iced_id) {
+        // Check if this window needs auto-sizing (first render measurement)
+        let skip_present = if self.auto_size_pending.remove(&iced_id) {
             let content_size = ui.content_size();
             let window_size = window.state.window_size_f32();
 
@@ -629,21 +652,26 @@ where
                 let new_height = content_size.height.ceil() as u32;
 
                 tracing::trace!(
-                    "Auto-sizing window {:?} to ({}, {})",
+                    "Auto-sizing window {:?} to ({}, {}), applying immediately",
                     iced_id,
                     new_width,
                     new_height
                 );
 
-                // Queue a size change action
-                self.waiting_layer_shell_actions.push((
-                    Some(iced_id),
-                    LayershellCustomAction::SizeChange((new_width, new_height)),
-                ));
+                // Apply size change immediately instead of queueing
+                layer_shell_window.set_size((new_width, new_height));
+
+                // Mark as hidden with expected size - skip presenting until resize event received
+                self.auto_size_hidden.insert(iced_id, (new_width, new_height));
+                true
             } else {
                 tracing::trace!("Auto-size: content >= window, no resize needed");
+                false
             }
-        }
+        } else {
+            // Check if this window is hidden pending auto-size resize
+            self.auto_size_hidden.contains_key(&iced_id)
+        };
 
         draw_span.finish();
 
@@ -653,6 +681,18 @@ where
         Self::handle_ui_state(ev, window, ui_state, false, true);
 
         window.draw_preedit();
+
+        // Skip presenting if window is hidden pending auto-size resize
+        // But we still need to commit the surface to keep the frame callback chain going
+        if skip_present {
+            tracing::trace!("Skipping present for {:?} (auto-size pending), committing empty frame", iced_id);
+            // Commit the surface without attaching a new buffer - this keeps the frame callbacks going
+            // and allows the compositor to send us configure events
+            if let Some(layer_shell_window) = ev.get_unit_with_id(layer_shell_id) {
+                layer_shell_window.get_wlsurface().commit();
+            }
+            return;
+        }
 
         let present_span = iced_debug::present(iced_id);
         match compositor.present(
@@ -691,6 +731,7 @@ where
         };
         self.cached_layer_dimensions.remove(&iced_id);
         self.auto_size_pending.remove(&iced_id);
+        self.auto_size_hidden.remove(&iced_id);
         self.window_manager.remove(iced_id);
         self.user_interfaces.remove(&iced_id);
         self.runtime
@@ -850,6 +891,8 @@ where
             LayershellCustomAction::SizeChange((width, height)) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 layer_shell_window.set_size((width, height));
+                // Note: For auto-size windows, unhiding happens when we receive the resize event
+                // with the correct size (in handle_refresh_event)
             }
             LayershellCustomAction::CornerRadiusChange(radii) => {
                 // Extract surface in a block to drop the borrow before calling mutable method
