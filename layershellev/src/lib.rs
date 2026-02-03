@@ -3669,7 +3669,9 @@ impl<T: 'static> WindowState<T> {
             )
             .ok();
         if self.layer_surface_visibility_manager.is_some() {
-            log::info!("Successfully bound zcosmic_layer_surface_visibility_manager_v1 protocol for hide/show support");
+            log::info!(
+                "Successfully bound zcosmic_layer_surface_visibility_manager_v1 protocol for hide/show support"
+            );
         }
 
         // Bind home visibility manager if home_only or hide_on_home is enabled
@@ -4250,11 +4252,19 @@ impl<T: 'static> WindowState<T> {
                 drop(local_events);
 
                 for event in swapped_events {
-                    window_state.handle_event(&mut *event_handler, LayerShellEvent::UserEvent(event), None);
+                    window_state.handle_event(
+                        &mut *event_handler,
+                        LayerShellEvent::UserEvent(event),
+                        None,
+                    );
                 }
 
                 // Trigger NormalDispatch to process the events through iced
-                window_state.handle_event(&mut *event_handler, LayerShellEvent::NormalDispatch, None);
+                window_state.handle_event(
+                    &mut *event_handler,
+                    LayerShellEvent::NormalDispatch,
+                    None,
+                );
             })
             .expect("Failed to insert ping source");
 
