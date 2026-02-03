@@ -104,6 +104,11 @@ pub struct NewLayerShellSettings {
     pub namespace: Option<String>,
     /// Request blur effect for this surface (requires compositor support)
     pub blur: bool,
+    /// Request shadow effect for this surface (requires compositor support for layer_shadow_manager_v1)
+    pub shadow: bool,
+    /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
+    /// (requires compositor support for layer_corner_radius_manager_v1)
+    pub corner_radius: Option<[u32; 4]>,
 }
 
 /// be used to create a new popup
@@ -151,6 +156,8 @@ impl Default for NewLayerShellSettings {
             events_transparent: false,
             namespace: None,
             blur: false,
+            shadow: false,
+            corner_radius: None,
         }
     }
 }

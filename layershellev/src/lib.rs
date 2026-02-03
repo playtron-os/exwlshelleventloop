@@ -1457,13 +1457,22 @@ fn apply_shadow_to_surface<T: 'static>(
     surface: &WlSurface,
     qh: &QueueHandle<WindowState<T>>,
 ) {
+    log::debug!(
+        "apply_shadow_to_surface called, manager present: {}",
+        shadow_manager.is_some()
+    );
     if let Some(manager) = shadow_manager {
         let shadow_data = shadow::ShadowData {
             surface: surface.clone(),
         };
         let shadow_obj = manager.get_shadow(surface, qh, shadow_data);
         shadow_obj.enable();
-        log::info!("Applied shadow effect to layer shell surface");
+        log::info!(
+            "Applied shadow effect to layer shell surface (surface_id: {})",
+            surface.id().protocol_id()
+        );
+    } else {
+        log::warn!("Cannot apply shadow: shadow_manager is None");
     }
 }
 
@@ -3021,11 +3030,15 @@ impl<T: 'static>
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        use wayland_client::WEnum;
         use voice_mode::zcosmic_voice_mode_v1::{Event, OrbState};
-        
-        log::debug!("Voice mode receiver event: {:?}, is_default: {}", event, data.is_default);
-        
+        use wayland_client::WEnum;
+
+        log::debug!(
+            "Voice mode receiver event: {:?}, is_default: {}",
+            event,
+            data.is_default
+        );
+
         let voice_event = match event {
             Event::Start { orb_state } => {
                 let orb_state = match orb_state {
@@ -3038,7 +3051,10 @@ impl<T: 'static>
                 // Set voice active immediately so will_stop can respond correctly
                 // Don't wait for iced's event loop to process the message
                 voice_mode::set_voice_active(true);
-                log::info!("Voice mode started, orb_state: {:?}, voice_active set to true", orb_state);
+                log::info!(
+                    "Voice mode started, orb_state: {:?}, voice_active set to true",
+                    orb_state
+                );
                 voice_mode::VoiceModeEvent::Started { orb_state }
             }
             Event::Stop => {
@@ -3053,9 +3069,25 @@ impl<T: 'static>
                 log::info!("Voice mode cancelled, voice_active set to false");
                 voice_mode::VoiceModeEvent::Cancelled
             }
-            Event::OrbAttached { x, y, width, height } => {
-                log::debug!("Voice orb attached: x={}, y={}, width={}, height={}", x, y, width, height);
-                voice_mode::VoiceModeEvent::OrbAttached { x, y, width, height }
+            Event::OrbAttached {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                log::debug!(
+                    "Voice orb attached: x={}, y={}, width={}, height={}",
+                    x,
+                    y,
+                    width,
+                    height
+                );
+                voice_mode::VoiceModeEvent::OrbAttached {
+                    x,
+                    y,
+                    width,
+                    height,
+                }
             }
             Event::OrbDetached => {
                 log::debug!("Voice orb detached");
@@ -3065,7 +3097,11 @@ impl<T: 'static>
                 // Immediately respond with cached voice active state
                 // This avoids round-trip through iced's event loop
                 let freeze = voice_mode::is_voice_active();
-                log::info!("Voice mode will_stop, serial: {}, auto-responding with freeze: {}", serial, freeze);
+                log::info!(
+                    "Voice mode will_stop, serial: {}, auto-responding with freeze: {}",
+                    serial,
+                    freeze
+                );
                 _proxy.ack_stop(serial, if freeze { 1 } else { 0 });
                 voice_mode::VoiceModeEvent::WillStop { serial }
             }
@@ -3074,11 +3110,13 @@ impl<T: 'static>
                 voice_mode::VoiceModeEvent::FocusInput
             }
         };
-        
+
         // Store the event for later processing
         state.voice_mode_events.push(voice_event.clone());
         // Also push to message queue
-        state.message.push((None, DispatchMessageInner::VoiceMode(voice_event)));
+        state
+            .message
+            .push((None, DispatchMessageInner::VoiceMode(voice_event)));
     }
 }
 
@@ -4214,6 +4252,8 @@ impl<T: 'static> WindowState<T> {
                                         events_transparent,
                                         namespace,
                                         blur,
+                                        shadow,
+                                        corner_radius,
                                     },
                                     id,
                                     info,
@@ -4282,17 +4322,23 @@ impl<T: 'static> WindowState<T> {
                                         apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh);
                                     }
 
-                                    // Apply corner radius if set
+                                    // Apply corner radius if set (per-surface setting takes precedence, then fallback to window_state)
                                     let surface_id = wl_surface.id().protocol_id();
-                                    if window_state.corner_radius.is_some() {
-                                        if let Some(corner_obj) = apply_corner_radius_to_surface(&window_state.corner_radius_manager, window_state.corner_radius, &wl_surface, &qh) {
+                                    let effective_corner_radius = corner_radius.or(window_state.corner_radius);
+                                    log::debug!("NewLayerShell: corner_radius={:?}, effective={:?}", corner_radius, effective_corner_radius);
+                                    if effective_corner_radius.is_some() {
+                                        if let Some(corner_obj) = apply_corner_radius_to_surface(&window_state.corner_radius_manager, effective_corner_radius, &wl_surface, &qh) {
                                             window_state.corner_radius_surfaces.insert(surface_id, corner_obj);
                                         }
                                     }
 
-                                    // Apply shadow if enabled
-                                    if window_state.shadow {
+                                    // Apply shadow if enabled (per-surface setting takes precedence, then fallback to window_state)
+                                    log::debug!("NewLayerShell: shadow={}, window_state.shadow={}, shadow_manager present={}", 
+                                        shadow, window_state.shadow, window_state.shadow_manager.is_some());
+                                    if shadow || window_state.shadow {
                                         apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
+                                    } else {
+                                        log::debug!("NewLayerShell: shadow not requested for this surface");
                                     }
 
                                     // Apply home visibility mode if enabled

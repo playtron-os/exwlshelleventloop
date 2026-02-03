@@ -404,7 +404,7 @@ where
         layer_shell_id: Option<LayerShellId>,
         layer_shell_event: IcedLayerShellEvent<P::Message>,
     ) -> (ContextState<Self>, Option<IcedLayerShellEvent<P::Message>>) {
-        tracing::debug!(
+        tracing::trace!(
             "Handle layer shell event, layer_shell_id: {:?},  waiting actions: {}, messages: {}",
             layer_shell_id,
             self.waiting_layer_shell_actions.len(),
