@@ -334,8 +334,14 @@ where
     cached_layer_dimensions: HashMap<IcedId, (Size<u32>, f32)>,
     /// Windows that need auto-sizing after first render (measure phase)
     auto_size_pending: std::collections::HashSet<IcedId>,
-    /// Windows hidden until auto-size resize completes - maps to expected (width, height)
-    auto_size_hidden: HashMap<IcedId, (u32, u32)>,
+    /// Windows hidden until auto-size resize completes - maps to expected (width, height) and frame count
+    auto_size_hidden: HashMap<IcedId, (u32, u32, u8)>,
+    /// Windows with continuous auto-sizing enabled (resize when content changes)
+    auto_size_enabled: std::collections::HashSet<IcedId>,
+    /// Track last content size for auto_size windows to detect changes
+    auto_size_last_content: HashMap<IcedId, (u32, u32)>,
+    /// Maximum size for auto_size windows (from original LayerShellSettings.size)
+    auto_size_max: HashMap<IcedId, (u32, u32)>,
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
@@ -371,6 +377,9 @@ where
             cached_layer_dimensions: HashMap::new(),
             auto_size_pending: std::collections::HashSet::new(),
             auto_size_hidden: HashMap::new(),
+            auto_size_enabled: std::collections::HashSet::new(),
+            auto_size_last_content: HashMap::new(),
+            auto_size_max: HashMap::new(),
             clipboard: LayerShellClipboard::unconnected(),
             wl_input_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
@@ -472,13 +481,6 @@ where
             self.handle_layer_shell_action(ev, iced_id, action);
         }
 
-        // If there are windows hidden pending auto-size, flush and request immediate refresh
-        if !self.auto_size_hidden.is_empty() {
-            // Flush to ensure size change request is sent to compositor immediately
-            ev.flush();
-            ev.request_refresh_all(RefreshRequest::At(Instant::now()));
-        }
-
         (ContextState::Context(self), None)
     }
 
@@ -514,19 +516,6 @@ where
                 events.push(IcedEvent::Window(IcedWindowEvent::Resized(
                     window.state.window_size_f32(),
                 )));
-
-                // Check if this resize completes an auto-size operation
-                if let Some(&(expected_w, expected_h)) = self.auto_size_hidden.get(&iced_id) {
-                    if width == expected_w && height == expected_h {
-                        tracing::trace!(
-                            "Auto-size resize confirmed for {:?}: {}x{}, unhiding",
-                            iced_id,
-                            width,
-                            height
-                        );
-                        self.auto_size_hidden.remove(&iced_id);
-                    }
-                }
             }
             (iced_id, window)
         } else {
@@ -625,6 +614,189 @@ where
                 });
         }
 
+        // For auto_size windows, check if content might want to grow BEFORE draw
+        // We do unbounded measurement here, then relayout back for proper draw
+        let dynamic_resize_target: Option<(u32, u32)> = if self.auto_size_enabled.contains(&iced_id)
+            && !self.auto_size_pending.contains(&iced_id)
+        {
+            let window_size = window.state.window_size();
+            let content_size = ui.content_size();
+            let content_height = content_size.height.ceil() as u32;
+
+            // Get max bounds
+            let (max_width, max_height) = self
+                .auto_size_max
+                .get(&iced_id)
+                .copied()
+                .unwrap_or((10000, 10000));
+
+            // If content fills window height, it might want to be taller
+            let content_fills_window = content_height >= window_size.height.saturating_sub(1);
+
+            if content_fills_window && window_size.height < max_height {
+                // Do measurement at max bounds
+                let max_bounds = Size::new(max_width as f32, max_height as f32);
+                ui = ui.relayout(max_bounds, &mut window.renderer);
+                let true_content_size = ui.content_size();
+                let measured_width = (true_content_size.width.ceil() as u32).min(max_width);
+                let measured_height = (true_content_size.height.ceil() as u32).min(max_height);
+
+                // Relayout back to current window size for proper draw
+                let current_bounds = Size::new(window_size.width as f32, window_size.height as f32);
+                ui = ui.relayout(current_bounds, &mut window.renderer);
+
+                // Check if we need to resize
+                let last_size = self.auto_size_last_content.get(&iced_id).copied();
+                let needs_resize = last_size
+                    .map(|(_, last_h)| measured_height != last_h)
+                    .unwrap_or(true);
+
+                if needs_resize && measured_height > 0 && measured_width > 0 {
+                    tracing::debug!(
+                        "Auto-size unbounded measure for {:?}: content fills window, true size=({}, {}), max=({}, {})",
+                        iced_id,
+                        measured_width,
+                        measured_height,
+                        max_width,
+                        max_height
+                    );
+                    Some((measured_width, measured_height))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Check if this window needs initial auto-sizing (first render measurement)
+        // Do this BEFORE draw so we can request resize before presenting
+        let initial_auto_size_target: Option<(u32, u32)> =
+            if self.auto_size_pending.remove(&iced_id) {
+                let window_size = window.state.window_size_f32();
+
+                // Get max bounds from stored settings (original size acts as maximum)
+                let (max_width, max_height) = self
+                    .auto_size_max
+                    .get(&iced_id)
+                    .copied()
+                    .unwrap_or((10000, 10000));
+
+                // Do layout at max size to measure true content size
+                let max_bounds = Size::new(max_width as f32, max_height as f32);
+                ui = ui.relayout(max_bounds, &mut window.renderer);
+                let content_size = ui.content_size();
+
+                tracing::debug!(
+                    "Auto-size INITIAL check for {:?}: content={:?}, max=({}, {})",
+                    iced_id,
+                    content_size,
+                    max_width,
+                    max_height
+                );
+
+                // Resize to measured content size (clamped to max bounds)
+                let new_width = (content_size.width.ceil() as u32).min(max_width);
+                let new_height = (content_size.height.ceil() as u32).min(max_height);
+
+                // Skip if size would be zero (invalid for layer shell)
+                if new_width == 0 || new_height == 0 {
+                    tracing::trace!(
+                        "Auto-size: skipping zero size ({}, {})",
+                        new_width,
+                        new_height
+                    );
+                    // Relayout back to window size for draw
+                    let current_bounds = Size::new(window_size.width, window_size.height);
+                    ui = ui.relayout(current_bounds, &mut window.renderer);
+                    None
+                } else {
+                    tracing::debug!(
+                        "Auto-sizing window {:?} from ({}, {}) to ({}, {})",
+                        iced_id,
+                        window_size.width as u32,
+                        window_size.height as u32,
+                        new_width,
+                        new_height
+                    );
+
+                    // Apply size change BEFORE draw
+                    layer_shell_window.set_size((new_width, new_height));
+
+                    // Relayout to the new target size for proper draw
+                    let target_bounds = Size::new(new_width as f32, new_height as f32);
+                    ui = ui.relayout(target_bounds, &mut window.renderer);
+
+                    // Store initial content size for change detection
+                    self.auto_size_last_content
+                        .insert(iced_id, (new_width, new_height));
+
+                    Some((new_width, new_height))
+                }
+            } else {
+                None
+            };
+
+        // If we just requested initial auto-size, skip present until resize is confirmed
+        // The issue is that window.state still has old size, so draw will use wrong viewport
+        let skip_present = if let Some((target_w, target_h)) = initial_auto_size_target {
+            let current_size = window.state.window_size();
+            tracing::debug!(
+                "Auto-size: requested resize to ({}, {}), current window state is ({}, {})",
+                target_w,
+                target_h,
+                current_size.width,
+                current_size.height
+            );
+            // Window state hasn't updated yet - wait for configure event
+            self.auto_size_hidden
+                .insert(iced_id, (target_w, target_h, 0));
+            true
+        } else if let Some((target_w, target_h, frame_count)) =
+            self.auto_size_hidden.get_mut(&iced_id)
+        {
+            let current_size = window.state.window_size();
+            if current_size.width == *target_w && current_size.height == *target_h {
+                // Resize confirmed, remove from hidden
+                tracing::debug!(
+                    "Auto-size resize CONFIRMED for {:?}: size ({}, {})",
+                    iced_id,
+                    target_w,
+                    target_h
+                );
+                self.auto_size_hidden.remove(&iced_id);
+                false
+            } else {
+                *frame_count += 1;
+                tracing::info!(
+                    "Auto-size waiting for resize {:?}: frame {}, current {:?}, target ({}, {})",
+                    iced_id,
+                    frame_count,
+                    current_size,
+                    target_w,
+                    target_h
+                );
+                if *frame_count > 5 {
+                    // Timeout - give up waiting
+                    tracing::warn!(
+                        "Auto-size TIMEOUT for {:?}: showing at size {:?}, wanted ({}, {})",
+                        iced_id,
+                        current_size,
+                        target_w,
+                        target_h
+                    );
+                    self.auto_size_hidden.remove(&iced_id);
+                    false
+                } else {
+                    true
+                }
+            }
+        } else {
+            false
+        };
+
         ui.draw(
             &mut window.renderer,
             window.state.theme(),
@@ -634,44 +806,63 @@ where
             cursor,
         );
 
-        // Check if this window needs auto-sizing (first render measurement)
-        let skip_present = if self.auto_size_pending.remove(&iced_id) {
+        // Check for dynamic content size changes on auto_size windows
+        if self.auto_size_enabled.contains(&iced_id) && initial_auto_size_target.is_none() {
+            // Check for content size changes on auto_size windows (dynamic resize)
+            // Use pre-measured target if available (for content that fills window)
+            // Otherwise use current content size (for content shrinking)
+            let window_size = window.state.window_size();
             let content_size = ui.content_size();
-            let window_size = window.state.window_size_f32();
+            let (new_width, new_height) = if let Some((w, h)) = dynamic_resize_target {
+                (w, h)
+            } else {
+                (
+                    content_size.width.ceil() as u32,
+                    content_size.height.ceil() as u32,
+                )
+            };
+
+            let last_size = self.auto_size_last_content.get(&iced_id).copied();
 
             tracing::trace!(
-                "Auto-size check for {:?}: content={:?}, window={:?}",
+                "Auto-size dynamic check for {:?}: content=({}, {}), window=({}, {}), last={:?}",
                 iced_id,
-                content_size,
-                window_size
+                new_width,
+                new_height,
+                window_size.width,
+                window_size.height,
+                last_size
             );
 
-            // Only resize if content is smaller than the window
-            if content_size.width < window_size.width || content_size.height < window_size.height {
-                let new_width = content_size.width.ceil() as u32;
-                let new_height = content_size.height.ceil() as u32;
+            let needs_resize = last_size
+                .map(|(last_w, last_h)| last_w != new_width || last_h != new_height)
+                .unwrap_or(true);
 
-                tracing::trace!(
-                    "Auto-sizing window {:?} to ({}, {}), applying immediately",
-                    iced_id,
-                    new_width,
-                    new_height
-                );
+            if needs_resize {
+                // Skip if size would be zero (invalid for layer shell)
+                if new_width == 0 || new_height == 0 {
+                    tracing::trace!(
+                        "Auto-size dynamic: skipping zero size ({}, {})",
+                        new_width,
+                        new_height
+                    );
+                } else {
+                    tracing::debug!(
+                        "Auto-size content changed for {:?}: new size ({}, {})",
+                        iced_id,
+                        new_width,
+                        new_height
+                    );
 
-                // Apply size change immediately instead of queueing
-                layer_shell_window.set_size((new_width, new_height));
+                    // Update tracked size
+                    self.auto_size_last_content
+                        .insert(iced_id, (new_width, new_height));
 
-                // Mark as hidden with expected size - skip presenting until resize event received
-                self.auto_size_hidden.insert(iced_id, (new_width, new_height));
-                true
-            } else {
-                tracing::trace!("Auto-size: content >= window, no resize needed");
-                false
+                    // Apply size change
+                    layer_shell_window.set_size((new_width, new_height));
+                }
             }
-        } else {
-            // Check if this window is hidden pending auto-size resize
-            self.auto_size_hidden.contains_key(&iced_id)
-        };
+        }
 
         draw_span.finish();
 
@@ -682,24 +873,24 @@ where
 
         window.draw_preedit();
 
-        // Skip presenting if window is hidden pending auto-size resize
-        // But we still need to commit the surface to keep the frame callback chain going
-        if skip_present {
-            tracing::trace!("Skipping present for {:?} (auto-size pending), committing empty frame", iced_id);
-            // Commit the surface without attaching a new buffer - this keeps the frame callbacks going
-            // and allows the compositor to send us configure events
-            if let Some(layer_shell_window) = ev.get_unit_with_id(layer_shell_id) {
-                layer_shell_window.get_wlsurface().commit();
-            }
-            return;
-        }
+        // Use fully transparent background while waiting for auto-size resize
+        // This prevents the "flash" of the large popup before resize completes
+        let background_color = if skip_present {
+            tracing::trace!(
+                "Using transparent background for {:?} (waiting for auto-size)",
+                iced_id
+            );
+            iced_core::Color::TRANSPARENT
+        } else {
+            window.state.background_color()
+        };
 
         let present_span = iced_debug::present(iced_id);
         match compositor.present(
             &mut window.renderer,
             &mut window.surface,
             window.state.viewport(),
-            window.state.background_color(),
+            background_color,
             || {
                 ev.request_next_present(layer_shell_id);
             },
@@ -732,6 +923,9 @@ where
         self.cached_layer_dimensions.remove(&iced_id);
         self.auto_size_pending.remove(&iced_id);
         self.auto_size_hidden.remove(&iced_id);
+        self.auto_size_enabled.remove(&iced_id);
+        self.auto_size_last_content.remove(&iced_id);
+        self.auto_size_max.remove(&iced_id);
         self.window_manager.remove(iced_id);
         self.user_interfaces.remove(&iced_id);
         self.runtime
@@ -940,14 +1134,25 @@ where
                 });
             }
             LayershellCustomAction::NewLayerShell {
-                settings,
+                mut settings,
                 id: iced_id,
                 ..
             } => {
                 // Track this window for auto-sizing if enabled
                 if settings.auto_size {
-                    tracing::debug!("Auto-size enabled for window {:?}", iced_id);
+                    // Store the original size as max bounds for auto-sizing
+                    let max_size = settings.size.unwrap_or((10000, 10000));
+                    tracing::debug!(
+                        "Auto-size enabled for window {:?}, max_size={:?}, forcing initial size to 1x1",
+                        iced_id,
+                        max_size
+                    );
                     self.auto_size_pending.insert(iced_id);
+                    self.auto_size_enabled.insert(iced_id);
+                    self.auto_size_max.insert(iced_id, max_size);
+                    // Force initial size to 1x1 to avoid visual flash before auto-size completes
+                    // The surface will be resized to content size on first render
+                    settings.size = Some((1, 1));
                 }
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewLayerShell((
