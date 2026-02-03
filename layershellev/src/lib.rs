@@ -3500,20 +3500,13 @@ impl<T: 'static> WindowState<T> {
             );
         }
 
-        // Bind shadow manager if shadow is enabled
-        if self.shadow {
-            self.shadow_manager = globals
-                .bind::<shadow::layer_shadow_manager_v1::LayerShadowManagerV1, _, _>(&qh, 1..=1, ())
-                .ok();
-            if self.shadow_manager.is_none() {
-                log::warn!(
-                    "Shadow requested but compositor does not support layer_shadow_manager_v1 protocol"
-                );
-            } else {
-                log::info!(
-                    "Successfully bound layer_shadow_manager_v1 protocol for shadow support"
-                );
-            }
+        // Always try to bind shadow manager for dynamic shadow support
+        // (allows requesting shadow on any surface, like popups, even if main window doesn't have shadow)
+        self.shadow_manager = globals
+            .bind::<shadow::layer_shadow_manager_v1::LayerShadowManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
+        if self.shadow_manager.is_some() {
+            log::info!("Successfully bound layer_shadow_manager_v1 protocol for shadow support");
         }
 
         // Bind home visibility manager if home_only or hide_on_home is enabled
