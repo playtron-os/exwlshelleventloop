@@ -56,6 +56,14 @@ where
         self
     }
 
+    /// Returns the size of the root content after layout.
+    ///
+    /// This is the actual size that the content wants to be, which may be
+    /// smaller than the bounds passed to `build` or `relayout`.
+    pub fn content_size(&self) -> Size {
+        self.ui.as_ref().expect("ui is taken").content_size()
+    }
+
     pub fn update(
         &mut self,
         events: &[Event],

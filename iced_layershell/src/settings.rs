@@ -103,6 +103,10 @@ pub struct LayerShellSettings {
     /// This field is only available when the `foreign-toplevel` feature is enabled.
     #[cfg(feature = "foreign-toplevel")]
     pub foreign_toplevel: bool,
+    /// Auto-size the surface to fit content after first layout.
+    /// When true, the initial size is used as a maximum, and the surface will be resized
+    /// to match the actual content size after the first render.
+    pub auto_size: bool,
 }
 
 impl Default for LayerShellSettings {
@@ -124,6 +128,7 @@ impl Default for LayerShellSettings {
             voice_mode: false,
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel: false,
+            auto_size: false,
         }
     }
 }

@@ -109,6 +109,10 @@ pub struct NewLayerShellSettings {
     /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
     /// (requires compositor support for layer_corner_radius_manager_v1)
     pub corner_radius: Option<[u32; 4]>,
+    /// Auto-size the surface to fit content after first layout.
+    /// When true, the initial size is used as a maximum, and the surface will be resized
+    /// to match the actual content size after the first render.
+    pub auto_size: bool,
 }
 
 /// be used to create a new popup
@@ -158,6 +162,7 @@ impl Default for NewLayerShellSettings {
             blur: false,
             shadow: false,
             corner_radius: None,
+            auto_size: false,
         }
     }
 }

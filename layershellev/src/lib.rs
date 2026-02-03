@@ -4247,6 +4247,7 @@ impl<T: 'static> WindowState<T> {
                                         blur,
                                         shadow,
                                         corner_radius,
+                                        auto_size: _, // Auto-size is handled at the iced level
                                     },
                                     id,
                                     info,

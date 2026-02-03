@@ -332,6 +332,8 @@ where
     compositor: Option<C>,
     window_manager: WindowManager<P, C>,
     cached_layer_dimensions: HashMap<IcedId, (Size<u32>, f32)>,
+    /// Windows that need auto-sizing after first render
+    auto_size_pending: std::collections::HashSet<IcedId>,
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
@@ -365,6 +367,7 @@ where
             compositor: Default::default(),
             window_manager: WindowManager::new(),
             cached_layer_dimensions: HashMap::new(),
+            auto_size_pending: std::collections::HashSet::new(),
             clipboard: LayerShellClipboard::unconnected(),
             wl_input_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
@@ -607,6 +610,41 @@ where
             },
             cursor,
         );
+
+        // Check if this window needs auto-sizing
+        if self.auto_size_pending.remove(&iced_id) {
+            let content_size = ui.content_size();
+            let window_size = window.state.window_size_f32();
+
+            tracing::trace!(
+                "Auto-size check for {:?}: content={:?}, window={:?}",
+                iced_id,
+                content_size,
+                window_size
+            );
+
+            // Only resize if content is smaller than the window
+            if content_size.width < window_size.width || content_size.height < window_size.height {
+                let new_width = content_size.width.ceil() as u32;
+                let new_height = content_size.height.ceil() as u32;
+
+                tracing::trace!(
+                    "Auto-sizing window {:?} to ({}, {})",
+                    iced_id,
+                    new_width,
+                    new_height
+                );
+
+                // Queue a size change action
+                self.waiting_layer_shell_actions.push((
+                    Some(iced_id),
+                    LayershellCustomAction::SizeChange((new_width, new_height)),
+                ));
+            } else {
+                tracing::trace!("Auto-size: content >= window, no resize needed");
+            }
+        }
+
         draw_span.finish();
 
         // get layer_shell_id so that layer_shell_window can be drop, and ev can be borrow mut
@@ -652,6 +690,7 @@ where
             return;
         };
         self.cached_layer_dimensions.remove(&iced_id);
+        self.auto_size_pending.remove(&iced_id);
         self.window_manager.remove(iced_id);
         self.user_interfaces.remove(&iced_id);
         self.runtime
@@ -862,6 +901,11 @@ where
                 id: iced_id,
                 ..
             } => {
+                // Track this window for auto-sizing if enabled
+                if settings.auto_size {
+                    tracing::debug!("Auto-size enabled for window {:?}", iced_id);
+                    self.auto_size_pending.insert(iced_id);
+                }
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewLayerShell((
                     settings,
