@@ -122,6 +122,7 @@ mod events;
 #[cfg(feature = "foreign-toplevel")]
 pub mod foreign_toplevel;
 pub mod home_visibility;
+pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
 pub mod shadow;
 mod strtoshape;
@@ -955,6 +956,18 @@ pub struct WindowState<T> {
         layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
     >,
 
+    /// Layer surface dismiss manager (bound lazily when needed)
+    layer_surface_dismiss_manager: Option<
+        layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1,
+    >,
+    /// Dismiss controllers per surface (keyed by surface protocol ID)
+    layer_surface_dismiss_controllers: HashMap<
+        u32,
+        layer_surface_dismiss::zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1,
+    >,
+    /// Pending dismiss events from compositor
+    dismiss_requested: bool,
+
     /// Whether to track foreign toplevel windows (taskbar/dock functionality)
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_enabled: bool,
@@ -1445,6 +1458,115 @@ impl<T: 'static> WindowState<T> {
             );
         }
     }
+
+    /// Get or create a dismiss controller for a surface
+    /// Returns the controller if available, or None if the protocol is not supported
+    fn get_or_create_dismiss_controller(
+        &mut self,
+        surface: &WlSurface,
+    ) -> Option<layer_surface_dismiss::zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1>
+    {
+        let surface_id = surface.id().protocol_id();
+
+        // Check if we already have a controller for this surface
+        if let Some(controller) = self.layer_surface_dismiss_controllers.get(&surface_id) {
+            return Some(controller.clone());
+        }
+
+        // Need to create a new controller
+        let manager = self.layer_surface_dismiss_manager.as_ref()?;
+        let unit = self.units.first()?;
+
+        let dismiss_data = layer_surface_dismiss::LayerSurfaceDismissData {
+            surface: surface.clone(),
+        };
+        let controller = manager.get_dismiss_controller(surface, &unit.qh, dismiss_data);
+        self.layer_surface_dismiss_controllers
+            .insert(surface_id, controller.clone());
+        log::debug!("Created dismiss controller for surface {}", surface_id);
+        Some(controller)
+    }
+
+    /// Arm dismiss notifications for a surface
+    /// Once armed, a dismiss_requested event will be sent when the user clicks/touches
+    /// outside the surface's dismiss group.
+    pub fn arm_dismiss(&mut self, surface: &WlSurface) {
+        if let Some(controller) = self.get_or_create_dismiss_controller(surface) {
+            controller.arm();
+            if let Some(ref conn) = self.connection {
+                let _ = conn.flush();
+            }
+            log::info!(
+                "Armed dismiss for surface {}",
+                surface.id().protocol_id()
+            );
+        } else {
+            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+        }
+    }
+
+    /// Disarm dismiss notifications for a surface
+    /// The surface will no longer receive dismiss_requested events.
+    pub fn disarm_dismiss(&mut self, surface: &WlSurface) {
+        if let Some(controller) = self.get_or_create_dismiss_controller(surface) {
+            controller.disarm();
+            if let Some(ref conn) = self.connection {
+                let _ = conn.flush();
+            }
+            log::info!(
+                "Disarmed dismiss for surface {}",
+                surface.id().protocol_id()
+            );
+        } else {
+            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+        }
+    }
+
+    /// Add a surface to the dismiss group of another surface
+    /// When the popup_surface is armed, clicks outside both surfaces will trigger dismiss.
+    /// The group_surface is typically the parent panel bar.
+    pub fn add_to_dismiss_group(&mut self, popup_surface: &WlSurface, group_surface: &WlSurface) {
+        if let Some(controller) = self.get_or_create_dismiss_controller(popup_surface) {
+            controller.add_to_group(group_surface);
+            if let Some(ref conn) = self.connection {
+                let _ = conn.flush();
+            }
+            log::info!(
+                "Added surface {} to dismiss group of popup surface {}",
+                group_surface.id().protocol_id(),
+                popup_surface.id().protocol_id()
+            );
+        } else {
+            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+        }
+    }
+
+    /// Remove a surface from the dismiss group of another surface
+    pub fn remove_from_dismiss_group(
+        &mut self,
+        popup_surface: &WlSurface,
+        group_surface: &WlSurface,
+    ) {
+        if let Some(controller) = self.get_or_create_dismiss_controller(popup_surface) {
+            controller.remove_from_group(group_surface);
+            if let Some(ref conn) = self.connection {
+                let _ = conn.flush();
+            }
+            log::info!(
+                "Removed surface {} from dismiss group of popup surface {}",
+                group_surface.id().protocol_id(),
+                popup_surface.id().protocol_id()
+            );
+        } else {
+            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+        }
+    }
+
+    /// Check if dismiss was requested and clear the flag
+    /// Returns true if a dismiss was requested since the last check.
+    pub fn take_dismiss_requested(&mut self) -> bool {
+        std::mem::take(&mut self.dismiss_requested)
+    }
 }
 
 pub trait ZwpTextInputV3Ext {
@@ -1895,6 +2017,10 @@ impl<T> Default for WindowState<T> {
             layer_surface_visibility_manager: None,
             layer_surface_visibility_controllers: HashMap::new(),
 
+            layer_surface_dismiss_manager: None,
+            layer_surface_dismiss_controllers: HashMap::new(),
+            dismiss_requested: false,
+
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_enabled: false,
             #[cfg(feature = "foreign-toplevel")]
@@ -2181,6 +2307,7 @@ impl<T> Dispatch<wl_keyboard::WlKeyboard, ()> for WindowState<T> {
                 _ => unreachable!(),
             },
             wl_keyboard::Event::Enter { surface, .. } => {
+                log::info!("wl_keyboard::Enter event - keyboard focus entered surface");
                 state.update_current_surface(Some(surface));
                 let keyboard_state = state.keyboard_state.as_mut().unwrap();
                 if let Some(token) = keyboard_state.repeat_token.take() {
@@ -2188,6 +2315,10 @@ impl<T> Dispatch<wl_keyboard::WlKeyboard, ()> for WindowState<T> {
                 }
             }
             wl_keyboard::Event::Leave { .. } => {
+                log::info!(
+                    "wl_keyboard::Leave event - emitting Unfocus for surface {:?}",
+                    surface_id
+                );
                 let keyboard_state = state.keyboard_state.as_mut().unwrap();
                 keyboard_state.current_repeat = None;
                 state.message.push((
@@ -3147,6 +3278,52 @@ impl<T: 'static>
     }
 }
 
+// Layer surface dismiss protocol delegates
+impl<T: 'static>
+    Dispatch<
+        layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1,
+        layer_surface_dismiss::LayerSurfaceDismissManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1,
+        _event: <layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1 as Proxy>::Event,
+        _data: &layer_surface_dismiss::LayerSurfaceDismissManagerData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for manager
+    }
+}
+
+impl<T: 'static>
+    Dispatch<
+        layer_surface_dismiss::zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1,
+        layer_surface_dismiss::LayerSurfaceDismissData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &layer_surface_dismiss::zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1,
+        event: <layer_surface_dismiss::zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1 as Proxy>::Event,
+        data: &layer_surface_dismiss::LayerSurfaceDismissData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use layer_surface_dismiss::zcosmic_layer_surface_dismiss_v1::Event;
+        let Event::DismissRequested = event;
+        log::debug!(
+            "Dismiss requested for surface {:?}",
+            data.surface.id().protocol_id()
+        );
+        state.dismiss_requested = true;
+        state
+            .message
+            .push((None, DispatchMessageInner::DismissRequested));
+    }
+}
+
 // Voice mode protocol delegates
 impl<T: 'static>
     Dispatch<
@@ -3267,6 +3444,17 @@ impl<T: 'static>
         state
             .message
             .push((None, DispatchMessageInner::VoiceMode(voice_event)));
+    }
+}
+
+// Layer surface dismiss protocol implementation
+#[allow(private_interfaces)]
+impl<T: 'static> layer_surface_dismiss::LayerSurfaceDismissHandler for WindowState<T> {
+    fn dismiss_requested(&mut self, _surface: &WlSurface) {
+        log::debug!("Dismiss requested for surface");
+        self.dismiss_requested = true;
+        self.message
+            .push((None, DispatchMessageInner::DismissRequested));
     }
 }
 
@@ -3671,6 +3859,20 @@ impl<T: 'static> WindowState<T> {
         if self.layer_surface_visibility_manager.is_some() {
             log::info!(
                 "Successfully bound zcosmic_layer_surface_visibility_manager_v1 protocol for hide/show support"
+            );
+        }
+
+        // Always try to bind layer surface dismiss manager for dismiss-on-outside-click support
+        self.layer_surface_dismiss_manager = globals
+            .bind::<layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1, _, _>(
+                &qh,
+                1..=1,
+                layer_surface_dismiss::LayerSurfaceDismissManagerData::default(),
+            )
+            .ok();
+        if self.layer_surface_dismiss_manager.is_some() {
+            log::info!(
+                "Successfully bound zcosmic_layer_surface_dismiss_manager_v1 protocol for dismiss support"
             );
         }
 

@@ -127,6 +127,18 @@ pub enum LayershellCustomAction {
     /// Execute a toplevel action (activate, close, minimize, etc.)
     #[cfg(feature = "foreign-toplevel")]
     ToplevelAction(ToplevelAction),
+    /// Arm dismiss notifications for this window.
+    /// Once armed, a DismissRequested event will be sent when the user
+    /// clicks/touches outside the window's dismiss group.
+    ArmDismiss,
+    /// Disarm dismiss notifications for this window.
+    DisarmDismiss,
+    /// Add the main panel surface to this popup's dismiss group.
+    /// When the popup is armed, clicks outside both the popup and the panel
+    /// will trigger dismiss.
+    AddMainSurfaceToDismissGroup,
+    /// Remove the main panel surface from this popup's dismiss group.
+    RemoveMainSurfaceFromDismissGroup,
 }
 
 /// Please do not use this struct directly

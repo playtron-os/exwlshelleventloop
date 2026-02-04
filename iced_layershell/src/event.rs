@@ -63,6 +63,30 @@ pub(crate) fn send_voice_mode_event(event: VoiceModeEvent) {
     }
 }
 
+// Global channel for dismiss events
+static DISMISS_CHANNEL: OnceLock<(
+    std::sync::Mutex<mpsc::Sender<()>>,
+    std::sync::Mutex<mpsc::Receiver<()>>,
+)> = OnceLock::new();
+
+fn get_dismiss_channel() -> &'static (
+    std::sync::Mutex<mpsc::Sender<()>>,
+    std::sync::Mutex<mpsc::Receiver<()>>,
+) {
+    DISMISS_CHANNEL.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send a dismiss event (called by the event loop when a dismiss is requested)
+pub(crate) fn send_dismiss_event() {
+    let (tx, _) = get_dismiss_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(());
+    }
+}
+
 /// Subscription for foreign toplevel events
 ///
 /// Use this to receive events about toplevel windows (created, changed, closed)
@@ -139,6 +163,55 @@ pub fn voice_mode_subscription() -> iced::Subscription<VoiceModeEvent> {
                 loop {
                     // Try to receive all pending events
                     let events: Vec<VoiceModeEvent> = {
+                        if let Ok(rx) = rx.lock() {
+                            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+
+                    if !events.is_empty() {
+                        for event in events {
+                            let _ = output.send(event).await;
+                        }
+                    }
+
+                    // Small async delay to avoid busy-waiting (~60fps polling)
+                    futures_timer::Delay::new(std::time::Duration::from_millis(16)).await;
+                }
+            },
+        )
+    })
+}
+
+/// Subscription for dismiss events from the compositor.
+///
+/// Use this to receive dismiss events when the user clicks/touches outside
+/// an armed dismiss group. Layer surfaces can arm dismiss by using the
+/// `ArmDismiss` action and add surfaces to the dismiss group with
+/// `AddMainSurfaceToDismissGroup`.
+///
+/// # Example
+/// ```ignore
+/// fn subscription(&self) -> Subscription<Message> {
+///     iced_layershell::event::dismiss_subscription()
+///         .map(|()| Message::DismissRequested)
+/// }
+/// ```
+pub fn dismiss_subscription() -> iced::Subscription<()> {
+    #[derive(Hash)]
+    struct DismissSubscription;
+
+    iced::Subscription::run_with(DismissSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<()>| async move {
+                use iced_futures::futures::SinkExt;
+                let (_, rx) = get_dismiss_channel();
+
+                loop {
+                    // Try to receive all pending events
+                    let events: Vec<()> = {
                         if let Ok(rx) = rx.lock() {
                             std::iter::from_fn(|| rx.try_recv().ok()).collect()
                         } else {
@@ -262,6 +335,8 @@ pub enum WindowEvent {
     /// Foreign toplevel event (window created, changed, or closed)
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
+    /// Dismiss requested - user clicked/touched outside an armed dismiss group
+    DismissRequested,
 }
 
 #[derive(Debug)]
@@ -367,6 +442,7 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::VoiceMode(event) => WindowEvent::VoiceMode(event.clone()),
             #[cfg(feature = "foreign-toplevel")]
             DispatchMessage::ForeignToplevel(event) => WindowEvent::ForeignToplevel(event.clone()),
+            DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
         }
     }
 }

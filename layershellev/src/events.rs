@@ -339,6 +339,8 @@ pub(crate) enum DispatchMessageInner {
     /// Foreign toplevel event
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
+    /// Dismiss requested - user clicked/touched outside an armed dismiss group
+    DismissRequested,
 }
 
 /// This tell the DispatchMessage by dispatch
@@ -447,6 +449,8 @@ pub enum DispatchMessage {
     /// Foreign toplevel event (new window, window changed, window closed)
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
+    /// Dismiss requested - user clicked/touched outside an armed dismiss group
+    DismissRequested,
 }
 
 impl From<DispatchMessageInner> for DispatchMessage {
@@ -557,6 +561,7 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::VoiceMode(event) => DispatchMessage::VoiceMode(event),
             #[cfg(feature = "foreign-toplevel")]
             DispatchMessageInner::ForeignToplevel(event) => DispatchMessage::ForeignToplevel(event),
+            DispatchMessageInner::DismissRequested => DispatchMessage::DismissRequested,
         }
     }
 }

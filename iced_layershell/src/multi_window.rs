@@ -981,6 +981,13 @@ where
             return true; // Request refresh
         }
 
+        // Handle dismiss events - send through subscription channel
+        if let LayerShellWindowEvent::DismissRequested = event {
+            tracing::debug!("handle_window_event: received DismissRequested event");
+            crate::event::send_dismiss_event();
+            return true; // Request refresh to process subscription message
+        }
+
         let id_and_window = if let Some(layer_shell_id) = layer_shell_id {
             self.window_manager.get_mut_alias(layer_shell_id)
         } else {
@@ -1287,6 +1294,50 @@ where
             }
             LayershellCustomAction::VoiceDismiss => {
                 ev.voice_dismiss();
+            }
+            LayershellCustomAction::ArmDismiss => {
+                // Get the surface to arm dismiss for
+                let surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                if let Some(surface) = surface {
+                    ev.arm_dismiss(&surface);
+                }
+            }
+            LayershellCustomAction::DisarmDismiss => {
+                // Get the surface to disarm dismiss for
+                let surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                if let Some(surface) = surface {
+                    ev.disarm_dismiss(&surface);
+                }
+            }
+            LayershellCustomAction::AddMainSurfaceToDismissGroup => {
+                // Get the popup surface
+                let popup_surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                // Get the main (first) surface
+                let main_surface = ev.main_window().get_wlsurface().clone();
+                if let Some(popup_surface) = popup_surface {
+                    ev.add_to_dismiss_group(&popup_surface, &main_surface);
+                }
+            }
+            LayershellCustomAction::RemoveMainSurfaceFromDismissGroup => {
+                // Get the popup surface
+                let popup_surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                // Get the main (first) surface
+                let main_surface = ev.main_window().get_wlsurface().clone();
+                if let Some(popup_surface) = popup_surface {
+                    ev.remove_from_dismiss_group(&popup_surface, &main_surface);
+                }
             }
         }
     }
