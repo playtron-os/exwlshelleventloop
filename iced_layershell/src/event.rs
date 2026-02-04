@@ -39,30 +39,6 @@ pub(crate) fn send_foreign_toplevel_event(event: ForeignToplevelEvent) {
     }
 }
 
-// Global channel for voice mode events
-static VOICE_MODE_CHANNEL: OnceLock<(
-    std::sync::Mutex<mpsc::Sender<VoiceModeEvent>>,
-    std::sync::Mutex<mpsc::Receiver<VoiceModeEvent>>,
-)> = OnceLock::new();
-
-fn get_voice_mode_channel() -> &'static (
-    std::sync::Mutex<mpsc::Sender<VoiceModeEvent>>,
-    std::sync::Mutex<mpsc::Receiver<VoiceModeEvent>>,
-) {
-    VOICE_MODE_CHANNEL.get_or_init(|| {
-        let (tx, rx) = mpsc::channel();
-        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
-    })
-}
-
-/// Send a voice mode event (called by the event loop)
-pub(crate) fn send_voice_mode_event(event: VoiceModeEvent) {
-    let (tx, _) = get_voice_mode_channel();
-    if let Ok(tx) = tx.lock() {
-        let _ = tx.send(event);
-    }
-}
-
 // Global channel for dismiss events
 static DISMISS_CHANNEL: OnceLock<(
     std::sync::Mutex<mpsc::Sender<()>>,
@@ -116,53 +92,6 @@ pub fn foreign_toplevel_subscription() -> iced::Subscription<ForeignToplevelEven
                 loop {
                     // Try to receive all pending events
                     let events: Vec<ForeignToplevelEvent> = {
-                        if let Ok(rx) = rx.lock() {
-                            std::iter::from_fn(|| rx.try_recv().ok()).collect()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-
-                    if !events.is_empty() {
-                        for event in events {
-                            let _ = output.send(event).await;
-                        }
-                    }
-
-                    // Small async delay to avoid busy-waiting (~60fps polling)
-                    futures_timer::Delay::new(std::time::Duration::from_millis(16)).await;
-                }
-            },
-        )
-    })
-}
-
-/// Subscription for voice mode events from the compositor.
-///
-/// Use this to receive voice mode events (started, stopped, cancelled, orb attached/detached)
-/// when `voice_mode: true` is set in the layer shell settings.
-///
-/// # Example
-/// ```ignore
-/// fn subscription(&self) -> Subscription<Message> {
-///     iced_layershell::event::voice_mode_subscription()
-///         .map(Message::VoiceMode)
-/// }
-/// ```
-pub fn voice_mode_subscription() -> iced::Subscription<VoiceModeEvent> {
-    #[derive(Hash)]
-    struct VoiceModeSubscription;
-
-    iced::Subscription::run_with(VoiceModeSubscription, |_| {
-        iced_futures::stream::channel(
-            100,
-            |mut output: iced_futures::futures::channel::mpsc::Sender<VoiceModeEvent>| async move {
-                use iced_futures::futures::SinkExt;
-                let (_, rx) = get_voice_mode_channel();
-
-                loop {
-                    // Try to receive all pending events
-                    let events: Vec<VoiceModeEvent> = {
                         if let Ok(rx) = rx.lock() {
                             std::iter::from_fn(|| rx.try_recv().ok()).collect()
                         } else {

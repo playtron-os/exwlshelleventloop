@@ -167,8 +167,12 @@ pub trait ForeignToplevelHandler {
 pub enum ToplevelAction {
     /// Activate/focus the window
     Activate(u32),
-    /// Close the window
+    /// Close the window (polite request, can be ignored by unresponsive apps)
     Close(u32),
+    /// Force close the window with SIGKILL (for unresponsive apps)
+    /// Requires COSMIC toplevel management protocol v5+
+    #[cfg(feature = "cosmic-toplevel")]
+    ForceClose(u32),
     /// Maximize the window
     SetMaximized(u32),
     /// Unmaximize the window
@@ -664,6 +668,8 @@ pub fn execute_toplevel_action<D: ForeignToplevelHandler>(
     let id = match &action {
         ToplevelAction::Activate(id) => *id,
         ToplevelAction::Close(id) => *id,
+        #[cfg(feature = "cosmic-toplevel")]
+        ToplevelAction::ForceClose(id) => *id,
         ToplevelAction::SetMaximized(id) => *id,
         ToplevelAction::UnsetMaximized(id) => *id,
         ToplevelAction::SetMinimized(id) => *id,
@@ -719,6 +725,24 @@ fn execute_cosmic_action(
             log::info!("COSMIC: Closing toplevel");
             manager.close(handle);
         }
+        ToplevelAction::ForceClose(_) => {
+            // force_close requires protocol version 5+
+            // Check manager version to avoid protocol errors on older compositors
+            use wayland_client::Proxy;
+            if manager.version() >= 5 {
+                log::info!(
+                    "COSMIC: Force closing toplevel with SIGKILL (protocol v{})",
+                    manager.version()
+                );
+                manager.force_close(handle);
+            } else {
+                log::warn!(
+                    "COSMIC: force_close not supported (compositor v{}, need v5+), falling back to regular close",
+                    manager.version()
+                );
+                manager.close(handle);
+            }
+        }
         ToplevelAction::SetMaximized(_) => {
             log::info!("COSMIC: Setting maximized");
             manager.set_maximized(handle);
@@ -764,6 +788,12 @@ fn execute_wlr_action(
             }
         }
         ToplevelAction::Close(_) => {
+            handle.close();
+        }
+        #[cfg(feature = "cosmic-toplevel")]
+        ToplevelAction::ForceClose(_) => {
+            // wlr protocol doesn't support force close, fall back to regular close
+            log::warn!("wlr protocol doesn't support force_close, using regular close");
             handle.close();
         }
         ToplevelAction::SetMaximized(_) => {

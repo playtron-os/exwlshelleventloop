@@ -219,6 +219,8 @@ mod tests {
             corner_radius: None,
             home_only: false,
             hide_on_home: false,
+            auto_size: false,
+            voice_mode: false,
         };
 
         assert_eq!(layer_settings.anchor, Anchor::Top | Anchor::Left);

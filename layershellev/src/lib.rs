@@ -3958,10 +3958,11 @@ impl<T: 'static> WindowState<T> {
                 }
 
                 // COSMIC toplevel manager (for control - activate, close, etc.)
+                // Version 5+ needed for force_close support
                 self.cosmic_toplevel_manager = globals
                     .bind::<cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, _, _>(
                         &qh,
-                        1..=4,
+                        1..=5,
                         foreign_toplevel::CosmicToplevelManagerData::default(),
                     )
                     .ok();
