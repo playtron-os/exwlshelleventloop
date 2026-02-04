@@ -1496,12 +1496,11 @@ impl<T: 'static> WindowState<T> {
             if let Some(ref conn) = self.connection {
                 let _ = conn.flush();
             }
-            log::info!(
-                "Armed dismiss for surface {}",
-                surface.id().protocol_id()
-            );
+            log::info!("Armed dismiss for surface {}", surface.id().protocol_id());
         } else {
-            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+            log::warn!(
+                "Layer surface dismiss manager not available - compositor may not support this protocol"
+            );
         }
     }
 
@@ -1518,7 +1517,9 @@ impl<T: 'static> WindowState<T> {
                 surface.id().protocol_id()
             );
         } else {
-            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+            log::warn!(
+                "Layer surface dismiss manager not available - compositor may not support this protocol"
+            );
         }
     }
 
@@ -1537,7 +1538,9 @@ impl<T: 'static> WindowState<T> {
                 popup_surface.id().protocol_id()
             );
         } else {
-            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+            log::warn!(
+                "Layer surface dismiss manager not available - compositor may not support this protocol"
+            );
         }
     }
 
@@ -1558,7 +1561,9 @@ impl<T: 'static> WindowState<T> {
                 popup_surface.id().protocol_id()
             );
         } else {
-            log::warn!("Layer surface dismiss manager not available - compositor may not support this protocol");
+            log::warn!(
+                "Layer surface dismiss manager not available - compositor may not support this protocol"
+            );
         }
     }
 
