@@ -107,6 +107,7 @@
 //! }
 //! ```
 //!
+use calloop::channel::Channel;
 pub use events::NewInputPanelSettings;
 pub use events::NewLayerShellSettings;
 pub use events::NewPopUpSettings;
@@ -219,17 +220,12 @@ use wayland_protocols::xdg::decoration::zv1::client::{
 pub use calloop;
 use calloop::{
     Error as CallLoopError, EventLoop, LoopHandle, RegistrationToken,
-    ping::make_ping,
+    channel,
     timer::{TimeoutAction, Timer},
 };
 use calloop_wayland_source::WaylandSource;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -4338,7 +4334,7 @@ impl<T: 'static> WindowState<T> {
     /// Different with running, it receiver a receiver
     pub fn running_with_proxy<F, Message>(
         self,
-        message_receiver: std::sync::mpsc::Receiver<Message>,
+        message_receiver: Channel<Message>,
         event_handler: F,
     ) -> Result<(), LayerEventError>
     where
@@ -4364,7 +4360,7 @@ impl<T: 'static> WindowState<T> {
 
     fn running_with_proxy_option<F, Message>(
         mut self,
-        message_receiver: Option<std::sync::mpsc::Receiver<Message>>,
+        message_receiver: Option<Channel<Message>>,
         mut event_handler: F,
     ) -> Result<(), LayerEventError>
     where
@@ -4436,78 +4432,27 @@ impl<T: 'static> WindowState<T> {
             loop_handle: event_loop.handle(),
         };
 
-        let to_exit = Arc::new(AtomicBool::new(false));
+        let signal = event_loop.get_signal();
 
-        let events: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(Vec::new()));
-
-        // Create a ping source for immediate message processing
-        // The ping source callback runs immediately when pinged from the message thread
-        let (ping_sender, ping_source) = make_ping().expect("Failed to create ping source");
-        let events_for_ping = events.clone();
-
-        event_loop
-            .handle()
-            .insert_source(ping_source, move |_, _, r_window_state| {
-                // Process user events immediately when pinged
-                let window_state = &mut r_window_state.raw;
-                let event_handler = &mut r_window_state.fun;
-
-                let mut local_events = events_for_ping.lock().expect(
-                    "This events only used in callbacks, so it should always be unlockable",
-                );
-                let mut swapped_events: Vec<Message> = vec![];
-                std::mem::swap(&mut *local_events, &mut swapped_events);
-                drop(local_events);
-
-                for event in swapped_events {
+        // Insert message channel as event source (calloop-style)
+        if let Some(channel) = message_receiver {
+            event_loop
+                .handle()
+                .insert_source(channel, |event, _, r_window_state| {
+                    let channel::Event::Msg(event) = event else {
+                        return;
+                    };
+                    let window_state = &mut r_window_state.raw;
+                    let event_handler = &mut r_window_state.fun;
                     window_state.handle_event(
                         &mut *event_handler,
                         LayerShellEvent::UserEvent(event),
                         None,
                     );
-                }
+                })
+                .expect("Failed to insert message channel source");
+        }
 
-                // Trigger NormalDispatch to process the events through iced
-                window_state.handle_event(
-                    &mut *event_handler,
-                    LayerShellEvent::NormalDispatch,
-                    None,
-                );
-            })
-            .expect("Failed to insert ping source");
-
-        // Get the signal early so we can share it with the message receiver thread
-        let signal = event_loop.get_signal();
-
-        let thread = std::thread::spawn({
-            let events = events.clone();
-            let to_exit = to_exit.clone();
-            move || {
-                let Some(message_receiver) = message_receiver else {
-                    return;
-                };
-                loop {
-                    // Block waiting for messages - ping will wake the loop immediately
-                    let message = message_receiver.recv_timeout(Duration::from_millis(500));
-                    if to_exit.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    match message {
-                        Ok(message) => {
-                            let mut events_local = events.lock().unwrap();
-                            events_local.push(message);
-                            drop(events_local); // Release lock before ping
-                            // Ping the event loop to process the message immediately
-                            ping_sender.ping();
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
         event_loop
             .handle()
             .insert_source(
@@ -5183,8 +5128,6 @@ impl<T: 'static> WindowState<T> {
                 },
             )
             .expect("Error during event loop!");
-        to_exit.store(true, Ordering::Relaxed);
-        let _ = thread.join();
         Ok(())
     }
 

@@ -78,11 +78,11 @@ pub(crate) fn send_dismiss_event() {
 /// }
 /// ```
 #[cfg(feature = "foreign-toplevel")]
-pub fn foreign_toplevel_subscription() -> iced::Subscription<ForeignToplevelEvent> {
+pub fn foreign_toplevel_subscription() -> iced_futures::Subscription<ForeignToplevelEvent> {
     #[derive(Hash)]
     struct ForeignToplevelSubscription;
 
-    iced::Subscription::run_with(ForeignToplevelSubscription, |_| {
+    iced_futures::Subscription::run_with(ForeignToplevelSubscription, |_| {
         iced_futures::stream::channel(
             100,
             |mut output: iced_futures::futures::channel::mpsc::Sender<ForeignToplevelEvent>| async move {
@@ -127,11 +127,11 @@ pub fn foreign_toplevel_subscription() -> iced::Subscription<ForeignToplevelEven
 ///         .map(|()| Message::DismissRequested)
 /// }
 /// ```
-pub fn dismiss_subscription() -> iced::Subscription<()> {
+pub fn dismiss_subscription() -> iced_futures::Subscription<()> {
     #[derive(Hash)]
     struct DismissSubscription;
 
-    iced::Subscription::run_with(DismissSubscription, |_| {
+    iced_futures::Subscription::run_with(DismissSubscription, |_| {
         iced_futures::stream::channel(
             100,
             |mut output: iced_futures::futures::channel::mpsc::Sender<()>| async move {
