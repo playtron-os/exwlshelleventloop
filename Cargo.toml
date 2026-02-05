@@ -72,25 +72,25 @@ rwh_05 = { package = "raw-window-handle", version = "0.5.2", features = [
 rwh_06 = { package = "raw-window-handle", version = "0.6", features = ["std"] }
 
 # Use Playtron iced fork
-iced = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced = { path = "../iced" }
-iced_runtime = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_runtime = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_runtime = { path = "../iced/runtime" }
-iced_core = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_core = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_core = { path = "../iced/core" }
-iced_program = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_program = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_program = { path = "../iced/program" }
-iced_renderer = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_renderer = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_renderer = { path = "../iced/renderer" }
-iced_futures = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_futures = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_futures = { path = "../iced/futures" }
-iced_graphics = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_graphics = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_graphics = { path = "../iced/graphics" }
-iced_debug = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_debug = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_debug = { path = "../iced/debug" }
-iced_devtools = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_devtools = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_devtools = { path = "../iced/devtools" }
-iced_widget = { git = "https://github.com/playtron-os/iced.git", rev = "0150adf3" }
+iced_widget = { git = "https://github.com/playtron-os/iced.git", rev = "78f51c85" }
 #iced_widget = { path = "../iced/widget" }
 window_clipboard = "0.5.0"
 
