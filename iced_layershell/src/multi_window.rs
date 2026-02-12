@@ -1327,6 +1327,24 @@ where
                     ev.add_to_dismiss_group(&popup_surface, &main_surface);
                 }
             }
+            LayershellCustomAction::AddAllSurfacesToDismissGroup => {
+                // Get the popup surface
+                let popup_surface = layer_shell_id.and_then(|id| {
+                    ev.get_unit_with_id(id)
+                        .map(|unit| unit.get_wlsurface().clone())
+                });
+                if let Some(popup_surface) = popup_surface {
+                    // Add every known window surface to the dismiss group
+                    let all_surfaces: Vec<_> = ev
+                        .windows()
+                        .iter()
+                        .map(|unit| unit.get_wlsurface().clone())
+                        .collect();
+                    for surface in all_surfaces {
+                        ev.add_to_dismiss_group(&popup_surface, &surface);
+                    }
+                }
+            }
             LayershellCustomAction::RemoveMainSurfaceFromDismissGroup => {
                 // Get the popup surface
                 let popup_surface = layer_shell_id.and_then(|id| {

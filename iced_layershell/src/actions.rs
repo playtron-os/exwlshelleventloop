@@ -137,6 +137,10 @@ pub enum LayershellCustomAction {
     /// When the popup is armed, clicks outside both the popup and the panel
     /// will trigger dismiss.
     AddMainSurfaceToDismissGroup,
+    /// Add ALL panel/window surfaces to this popup's dismiss group.
+    /// In AllScreens mode each monitor has its own panel surface; this
+    /// ensures that clicking any of them won't trigger dismiss.
+    AddAllSurfacesToDismissGroup,
     /// Remove the main panel surface from this popup's dismiss group.
     RemoveMainSurfaceFromDismissGroup,
 }
