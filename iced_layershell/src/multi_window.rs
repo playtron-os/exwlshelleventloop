@@ -21,7 +21,7 @@ use iced_core::{
     Event as IcedEvent, theme, voice_mode as iced_voice_mode,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
-use iced_core::{Size, mouse::Cursor, time::Instant};
+use iced_core::{Size, mouse, mouse::Cursor, time::Instant};
 use iced_futures::{Executor, Runtime};
 use iced_graphics::{Compositor, Shell, compositor};
 use iced_program::Instance;
@@ -1002,6 +1002,30 @@ where
         window
             .state
             .update(&event, self.user_interfaces.application());
+
+        // Reset cached mouse_interaction on cursor leave/enter so the next
+        // UI update will re-send the cursor shape to the compositor.
+        // Per the Wayland protocol, after every wl_pointer::enter the cursor
+        // shape is undefined and must be re-set by the client.  Without this
+        // reset the cached value may match the UI value, causing the shape
+        // request to be skipped (e.g. when a new layer-shell surface is
+        // created and the compositor re-enters the panel surface).
+        if matches!(
+            event,
+            LayerShellWindowEvent::CursorLeft | LayerShellWindowEvent::CursorEnter { .. }
+        ) {
+            tracing::trace!(
+                "Cursor {:?} — resetting cached mouse_interaction for window {:?}",
+                if matches!(event, LayerShellWindowEvent::CursorLeft) {
+                    "left"
+                } else {
+                    "enter"
+                },
+                iced_id,
+            );
+            window.mouse_interaction = mouse::Interaction::Idle;
+        }
+
         if let Some(event) = conversion::window_event(
             &event,
             window.state.application_scale_factor(),
@@ -1469,13 +1493,25 @@ where
         update_ime: bool,
     ) -> bool {
         match ui_state {
-            user_interface::State::Outdated => true,
+            user_interface::State::Outdated => {
+                tracing::trace!(
+                    "handle_ui_state: Outdated for window {:?} (rebuild needed)",
+                    window.iced_id,
+                );
+                true
+            }
             user_interface::State::Updated {
                 redraw_request,
                 input_method,
                 mouse_interaction,
                 ..
             } => {
+                tracing::trace!(
+                    "handle_ui_state: Updated for window {:?}, mouse_interaction={:?}, cached={:?}",
+                    window.iced_id,
+                    mouse_interaction,
+                    window.mouse_interaction,
+                );
                 if unconditional_rendering {
                     ev.request_refresh(window.id, RefreshRequest::NextFrame);
                 } else {
@@ -1523,11 +1559,24 @@ where
                 }
 
                 if mouse_interaction != window.mouse_interaction {
-                    if let Some(pointer) = ev.get_pointer() {
-                        ev.append_return_data(ReturnData::RequestSetCursorShape((
-                            conversion::mouse_interaction(mouse_interaction),
-                            pointer.clone(),
-                        )));
+                    // Only send cursor shape requests when the cursor is
+                    // actually over this window.  Without this guard, newly
+                    // created windows (e.g. popups) that have no cursor would
+                    // override the cursor shape set by the window the pointer
+                    // is really on, because they share the same wl_pointer.
+                    if window.state.mouse_position().is_some() {
+                        tracing::trace!(
+                            "Cursor shape changing for window {:?}: {:?} -> {:?}",
+                            window.id,
+                            window.mouse_interaction,
+                            mouse_interaction,
+                        );
+                        if let Some(pointer) = ev.get_pointer() {
+                            ev.append_return_data(ReturnData::RequestSetCursorShape((
+                                conversion::mouse_interaction(mouse_interaction),
+                                pointer.clone(),
+                            )));
+                        }
                     }
                     window.mouse_interaction = mouse_interaction;
                 }
