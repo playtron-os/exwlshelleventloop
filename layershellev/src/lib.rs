@@ -125,6 +125,7 @@ pub mod foreign_toplevel;
 pub mod home_visibility;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
+pub mod layer_auto_hide;
 pub mod shadow;
 mod strtoshape;
 pub mod voice_mode;
@@ -219,8 +220,7 @@ use wayland_protocols::xdg::decoration::zv1::client::{
 
 pub use calloop;
 use calloop::{
-    Error as CallLoopError, EventLoop, LoopHandle, RegistrationToken,
-    channel,
+    Error as CallLoopError, EventLoop, LoopHandle, RegistrationToken, channel,
     timer::{TimeoutAction, Timer},
 };
 use calloop_wayland_source::WaylandSource;
@@ -918,6 +918,13 @@ pub struct WindowState<T> {
     /// Shadow manager (bound lazily when shadow is enabled)
     shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
 
+    /// Auto-hide manager (bound lazily when needed)
+    auto_hide_manager:
+        Option<layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1>,
+    /// Auto-hide objects per surface (keyed by surface protocol ID)
+    auto_hide_surfaces:
+        HashMap<u32, layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1>,
+
     /// Whether to use home visibility mode (home_only = only visible when at home)
     home_only: bool,
     /// Whether to hide when in home mode (inverse of home_only)
@@ -1326,6 +1333,56 @@ impl<T: 'static> WindowState<T> {
             log::warn!(
                 "Corner radius manager not available - ensure corner_radius was set in settings"
             );
+        }
+    }
+
+    /// Enable compositor-driven auto-hide for a specific surface.
+    /// The compositor will animate hide/show transitions and handle hover detection.
+    /// `edge`: which edge to slide off (0 = bottom)
+    /// `edge_zone`: hover detection zone in pixels at the screen edge
+    pub fn set_auto_hide_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        edge: u32,
+        edge_zone: u32,
+    ) {
+        let surface_id = surface.id().protocol_id();
+        let edge_enum = layer_auto_hide::layer_auto_hide_v1::Edge::try_from(edge)
+            .unwrap_or(layer_auto_hide::layer_auto_hide_v1::Edge::Bottom);
+
+        // Check if we already have an auto-hide object for this surface
+        if let Some(auto_hide_obj) = self.auto_hide_surfaces.get(&surface_id) {
+            auto_hide_obj.set_auto_hide(edge_enum, edge_zone);
+            surface.commit();
+            return;
+        }
+
+        // Need to create a new auto-hide object
+        if let Some(manager) = &self.auto_hide_manager {
+            let auto_hide_data = layer_auto_hide::LayerAutoHideData {
+                surface: surface.clone(),
+            };
+            // Get a queue handle from the first unit (they all share the same queue)
+            if let Some(unit) = self.units.first() {
+                let auto_hide_obj = manager.get_auto_hide(surface, &unit.qh, auto_hide_data);
+                auto_hide_obj.set_auto_hide(edge_enum, edge_zone);
+                self.auto_hide_surfaces.insert(surface_id, auto_hide_obj);
+                surface.commit();
+            }
+        } else {
+            log::warn!(
+                "Auto-hide manager not available - compositor may not support this protocol"
+            );
+        }
+    }
+
+    /// Disable compositor-driven auto-hide for a specific surface.
+    pub fn unset_auto_hide_for_surface(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+
+        if let Some(auto_hide_obj) = self.auto_hide_surfaces.get(&surface_id) {
+            auto_hide_obj.unset_auto_hide();
+            surface.commit();
         }
     }
 
@@ -2004,6 +2061,8 @@ impl<T> Default for WindowState<T> {
             corner_radius_surfaces: HashMap::new(),
             shadow: false,
             shadow_manager: None,
+            auto_hide_manager: None,
+            auto_hide_surfaces: HashMap::new(),
             home_only: false,
             hide_on_home: false,
             home_visibility_manager: None,
@@ -3187,6 +3246,37 @@ impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
     }
 }
 
+// Auto-hide protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1);
+
+// Manual Dispatch impl for auto-hide surface object to handle visibility_changed events
+impl<T: 'static>
+    Dispatch<
+        layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1,
+        layer_auto_hide::LayerAutoHideData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1,
+        event: <layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1 as Proxy>::Event,
+        _data: &layer_auto_hide::LayerAutoHideData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use layer_auto_hide::layer_auto_hide_v1::Event;
+        match event {
+            Event::VisibilityChanged { visible } => {
+                let is_visible = visible != 0;
+                log::debug!("Auto-hide visibility changed: visible={}", is_visible);
+                state
+                    .message
+                    .push((None, DispatchMessageInner::AutoHideVisibilityChanged(is_visible)));
+            }
+        }
+    }
+}
+
 // Home visibility protocol delegates
 // Manager has the home_state event, so we need a proper Dispatch impl
 impl<T: 'static>
@@ -3846,6 +3936,20 @@ impl<T: 'static> WindowState<T> {
             .ok();
         if self.shadow_manager.is_some() {
             log::info!("Successfully bound layer_shadow_manager_v1 protocol for shadow support");
+        }
+
+        // Always try to bind layer auto-hide manager for compositor-driven auto-hide support
+        self.auto_hide_manager = globals
+            .bind::<layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.auto_hide_manager.is_some() {
+            log::info!(
+                "Successfully bound layer_auto_hide_manager_v1 protocol for auto-hide support"
+            );
         }
 
         // Always try to bind layer surface visibility manager for hide/show support

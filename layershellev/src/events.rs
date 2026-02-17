@@ -334,6 +334,8 @@ pub(crate) enum DispatchMessageInner {
     Ime(Ime),
     /// Home state changed from compositor (true = at home, false = windows visible)
     HomeStateChanged(bool),
+    /// Auto-hide visibility changed from compositor (true = visible, false = hidden)
+    AutoHideVisibilityChanged(bool),
     /// Voice mode event from compositor
     VoiceMode(VoiceModeEvent),
     /// Foreign toplevel event
@@ -443,6 +445,11 @@ pub enum DispatchMessage {
     /// is_home: true = at home (no windows visible), false = windows visible
     HomeStateChanged {
         is_home: bool,
+    },
+    /// Auto-hide visibility changed from compositor
+    /// visible: true = surface is fully visible, false = surface is fully hidden
+    AutoHideVisibilityChanged {
+        visible: bool,
     },
     /// Voice mode event from compositor (enabled/disabled, partial result, final result)
     VoiceMode(VoiceModeEvent),
@@ -557,6 +564,9 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::XdgInfoChanged(_) => unimplemented!(),
             DispatchMessageInner::HomeStateChanged(is_home) => {
                 DispatchMessage::HomeStateChanged { is_home }
+            }
+            DispatchMessageInner::AutoHideVisibilityChanged(visible) => {
+                DispatchMessage::AutoHideVisibilityChanged { visible }
             }
             DispatchMessageInner::VoiceMode(event) => DispatchMessage::VoiceMode(event),
             #[cfg(feature = "foreign-toplevel")]

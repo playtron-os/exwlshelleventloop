@@ -18,7 +18,8 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 #[cfg(not(all(feature = "linux-theme-detection", target_os = "linux")))]
 use iced_core::theme::Mode;
 use iced_core::{
-    Event as IcedEvent, theme, voice_mode as iced_voice_mode,
+    Event as IcedEvent, auto_hide as iced_auto_hide, dismiss as iced_dismiss, theme,
+    voice_mode as iced_voice_mode,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
 use iced_core::{Size, mouse, mouse::Cursor, time::Instant};
@@ -981,11 +982,31 @@ where
             return true; // Request refresh
         }
 
-        // Handle dismiss events - send through subscription channel
+        // Handle dismiss events - convert to iced event for immediate delivery
         if let LayerShellWindowEvent::DismissRequested = event {
             tracing::debug!("handle_window_event: received DismissRequested event");
-            crate::event::send_dismiss_event();
-            return true; // Request refresh to process subscription message
+            let iced_event = IcedEvent::Dismiss(iced_dismiss::Event::Requested);
+            if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+                self.iced_events.push((iced_id, iced_event));
+            }
+            return true;
+        }
+
+        // Handle auto-hide visibility events - convert to iced event for immediate delivery
+        if let LayerShellWindowEvent::AutoHideVisibilityChanged { visible } = event {
+            tracing::debug!(
+                "handle_window_event: received AutoHideVisibilityChanged: visible={}",
+                visible
+            );
+            let iced_event = IcedEvent::AutoHide(if visible {
+                iced_auto_hide::Event::Shown
+            } else {
+                iced_auto_hide::Event::Hidden
+            });
+            if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+                self.iced_events.push((iced_id, iced_event));
+            }
+            return true;
         }
 
         let id_and_window = if let Some(layer_shell_id) = layer_shell_id {
@@ -1126,6 +1147,22 @@ where
                     layer_shell_window.get_wlsurface().clone()
                 };
                 ev.set_corner_radius_for_surface(&surface, radii);
+            }
+            LayershellCustomAction::AutoHideChange { edge, edge_zone } => {
+                // Extract surface in a block to drop the borrow before calling mutable method
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_auto_hide_for_surface(&surface, edge, edge_zone);
+            }
+            LayershellCustomAction::AutoHideUnset => {
+                // Extract surface in a block to drop the borrow before calling mutable method
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.unset_auto_hide_for_surface(&surface);
             }
             LayershellCustomAction::ExclusiveZoneChange(zone_size) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
