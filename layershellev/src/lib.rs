@@ -123,9 +123,9 @@ mod events;
 #[cfg(feature = "foreign-toplevel")]
 pub mod foreign_toplevel;
 pub mod home_visibility;
+pub mod layer_auto_hide;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
-pub mod layer_auto_hide;
 pub mod shadow;
 mod strtoshape;
 pub mod voice_mode;
@@ -3273,9 +3273,10 @@ impl<T: 'static>
             Event::VisibilityChanged { visible } => {
                 let is_visible = visible != 0;
                 log::debug!("Auto-hide visibility changed: visible={}", is_visible);
-                state
-                    .message
-                    .push((None, DispatchMessageInner::AutoHideVisibilityChanged(is_visible)));
+                state.message.push((
+                    None,
+                    DispatchMessageInner::AutoHideVisibilityChanged(is_visible),
+                ));
             }
         }
     }
