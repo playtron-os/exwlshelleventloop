@@ -77,12 +77,14 @@ pub enum LayershellCustomAction {
     SizeChange((u32, u32)),
     CornerRadiusChange(Option<[u32; 4]>),
     /// Enable compositor-driven auto-hide for the surface. The compositor will
-    /// animate hide/show transitions when maximized/fullscreen windows are present.
+    /// animate hide/show transitions based on the specified mode.
     /// `edge`: which edge to slide off (0 = bottom)
     /// `edge_zone`: hover detection zone in pixels at the screen edge
+    /// `mode`: 0 = always hide when cursor leaves, 1 = only hide when maximized/fullscreen exists
     AutoHideChange {
         edge: u32,
         edge_zone: u32,
+        mode: u32,
     },
     /// Disable compositor-driven auto-hide for the surface.
     AutoHideUnset,

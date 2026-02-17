@@ -1148,13 +1148,13 @@ where
                 };
                 ev.set_corner_radius_for_surface(&surface, radii);
             }
-            LayershellCustomAction::AutoHideChange { edge, edge_zone } => {
+            LayershellCustomAction::AutoHideChange { edge, edge_zone, mode } => {
                 // Extract surface in a block to drop the borrow before calling mutable method
                 let surface = {
                     ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                     layer_shell_window.get_wlsurface().clone()
                 };
-                ev.set_auto_hide_for_surface(&surface, edge, edge_zone);
+                ev.set_auto_hide_for_surface(&surface, edge, edge_zone, mode);
             }
             LayershellCustomAction::AutoHideUnset => {
                 // Extract surface in a block to drop the borrow before calling mutable method

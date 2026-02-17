@@ -1340,19 +1340,23 @@ impl<T: 'static> WindowState<T> {
     /// The compositor will animate hide/show transitions and handle hover detection.
     /// `edge`: which edge to slide off (0 = bottom)
     /// `edge_zone`: hover detection zone in pixels at the screen edge
+    /// `mode`: 0 = always hide when cursor leaves, 1 = only hide when maximized/fullscreen exists
     pub fn set_auto_hide_for_surface(
         &mut self,
         surface: &WlSurface,
         edge: u32,
         edge_zone: u32,
+        mode: u32,
     ) {
         let surface_id = surface.id().protocol_id();
         let edge_enum = layer_auto_hide::layer_auto_hide_v1::Edge::try_from(edge)
             .unwrap_or(layer_auto_hide::layer_auto_hide_v1::Edge::Bottom);
+        let mode_enum = layer_auto_hide::layer_auto_hide_v1::Mode::try_from(mode)
+            .unwrap_or(layer_auto_hide::layer_auto_hide_v1::Mode::Always);
 
         // Check if we already have an auto-hide object for this surface
         if let Some(auto_hide_obj) = self.auto_hide_surfaces.get(&surface_id) {
-            auto_hide_obj.set_auto_hide(edge_enum, edge_zone);
+            auto_hide_obj.set_auto_hide(edge_enum, edge_zone, mode_enum);
             surface.commit();
             return;
         }
@@ -1365,7 +1369,7 @@ impl<T: 'static> WindowState<T> {
             // Get a queue handle from the first unit (they all share the same queue)
             if let Some(unit) = self.units.first() {
                 let auto_hide_obj = manager.get_auto_hide(surface, &unit.qh, auto_hide_data);
-                auto_hide_obj.set_auto_hide(edge_enum, edge_zone);
+                auto_hide_obj.set_auto_hide(edge_enum, edge_zone, mode_enum);
                 self.auto_hide_surfaces.insert(surface_id, auto_hide_obj);
                 surface.commit();
             }
