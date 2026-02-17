@@ -905,6 +905,8 @@ pub struct WindowState<T> {
     blur: bool,
     /// Blur manager (bound lazily when blur is enabled)
     blur_manager: Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
+    /// Blur objects per surface (keyed by surface protocol ID)
+    blur_surfaces: HashMap<u32, blur::org_kde_kwin_blur::OrgKdeKwinBlur>,
     /// Corner radius for surfaces (all four corners)
     corner_radius: Option<[u32; 4]>,
     /// Corner radius manager (bound lazily when corner_radius is set)
@@ -917,6 +919,8 @@ pub struct WindowState<T> {
     shadow: bool,
     /// Shadow manager (bound lazily when shadow is enabled)
     shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
+    /// Shadow objects per surface (keyed by surface protocol ID)
+    shadow_surfaces: HashMap<u32, shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1>,
 
     /// Auto-hide manager (bound lazily when needed)
     auto_hide_manager:
@@ -1333,6 +1337,114 @@ impl<T: 'static> WindowState<T> {
             log::warn!(
                 "Corner radius manager not available - ensure corner_radius was set in settings"
             );
+        }
+    }
+
+    /// Enable or disable blur effect for a specific surface.
+    /// Requires compositor support for org_kde_kwin_blur protocol.
+    pub fn set_blur_for_surface(&mut self, surface: &WlSurface, enabled: bool) {
+        let surface_id = surface.id().protocol_id();
+
+        if enabled {
+            // Check if blur is already enabled for this surface
+            if self.blur_surfaces.contains_key(&surface_id) {
+                return;
+            }
+
+            // Need to bind the blur manager if not already bound
+            if self.blur_manager.is_none() {
+                if let Some(globals) = &self.globals {
+                    if let Some(unit) = self.units.first() {
+                        self.blur_manager = globals
+                            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
+                                &unit.qh,
+                                1..=1,
+                                (),
+                            )
+                            .ok();
+                        if self.blur_manager.is_some() {
+                            log::info!("Bound blur manager");
+                        }
+                    }
+                }
+            }
+
+            if let Some(manager) = &self.blur_manager {
+                if let Some(unit) = self.units.first() {
+                    let blur_data = blur::BlurData {
+                        surface: surface.clone(),
+                    };
+                    let blur_obj = manager.create(surface, &unit.qh, blur_data);
+                    // Set region to null (entire surface)
+                    blur_obj.set_region(None);
+                    blur_obj.commit();
+                    self.blur_surfaces.insert(surface_id, blur_obj);
+                    surface.commit();
+                    log::info!("Enabled blur for surface");
+                }
+            } else {
+                log::warn!("Blur manager not available - compositor may not support blur");
+            }
+        } else {
+            // Disable blur by releasing the blur object
+            if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
+                blur_obj.release();
+                surface.commit();
+                log::info!("Disabled blur for surface");
+            }
+        }
+    }
+
+    /// Enable or disable shadow effect for a specific surface.
+    /// Requires compositor support for layer_shadow_manager_v1 protocol.
+    pub fn set_shadow_for_surface(&mut self, surface: &WlSurface, enabled: bool) {
+        let surface_id = surface.id().protocol_id();
+
+        if enabled {
+            // Check if shadow is already enabled for this surface
+            if self.shadow_surfaces.contains_key(&surface_id) {
+                return;
+            }
+
+            // Need to bind the shadow manager if not already bound
+            if self.shadow_manager.is_none() {
+                if let Some(globals) = &self.globals {
+                    if let Some(unit) = self.units.first() {
+                        self.shadow_manager = globals
+                            .bind::<shadow::layer_shadow_manager_v1::LayerShadowManagerV1, _, _>(
+                                &unit.qh,
+                                1..=1,
+                                (),
+                            )
+                            .ok();
+                        if self.shadow_manager.is_some() {
+                            log::info!("Bound shadow manager");
+                        }
+                    }
+                }
+            }
+
+            if let Some(manager) = &self.shadow_manager {
+                if let Some(unit) = self.units.first() {
+                    let shadow_data = shadow::ShadowData {
+                        surface: surface.clone(),
+                    };
+                    let shadow_obj = manager.get_shadow(surface, &unit.qh, shadow_data);
+                    shadow_obj.enable();
+                    self.shadow_surfaces.insert(surface_id, shadow_obj);
+                    surface.commit();
+                    log::info!("Enabled shadow for surface");
+                }
+            } else {
+                log::warn!("Shadow manager not available - compositor may not support shadows");
+            }
+        } else {
+            // Disable shadow by removing and destroying the shadow object
+            if let Some(shadow_obj) = self.shadow_surfaces.remove(&surface_id) {
+                shadow_obj.destroy();
+                surface.commit();
+                log::info!("Disabled shadow for surface");
+            }
         }
     }
 
@@ -2060,11 +2172,13 @@ impl<T> Default for WindowState<T> {
             events_transparent: false,
             blur: false,
             blur_manager: None,
+            blur_surfaces: HashMap::new(),
             corner_radius: None,
             corner_radius_manager: None,
             corner_radius_surfaces: HashMap::new(),
             shadow: false,
             shadow_manager: None,
+            shadow_surfaces: HashMap::new(),
             auto_hide_manager: None,
             auto_hide_surfaces: HashMap::new(),
             home_only: false,

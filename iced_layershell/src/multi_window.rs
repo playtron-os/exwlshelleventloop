@@ -1148,6 +1148,20 @@ where
                 };
                 ev.set_corner_radius_for_surface(&surface, radii);
             }
+            LayershellCustomAction::BlurChange(enabled) => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_blur_for_surface(&surface, enabled);
+            }
+            LayershellCustomAction::ShadowChange(enabled) => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_shadow_for_surface(&surface, enabled);
+            }
             LayershellCustomAction::AutoHideChange {
                 edge,
                 edge_zone,

@@ -76,6 +76,10 @@ pub enum LayershellCustomAction {
     MarginChange((i32, i32, i32, i32)),
     SizeChange((u32, u32)),
     CornerRadiusChange(Option<[u32; 4]>),
+    /// Enable or disable blur effect for the surface (requires compositor support).
+    BlurChange(bool),
+    /// Enable or disable shadow effect for the surface (requires compositor support).
+    ShadowChange(bool),
     /// Enable compositor-driven auto-hide for the surface. The compositor will
     /// animate hide/show transitions based on the specified mode.
     /// `edge`: which edge to slide off (0 = bottom)
