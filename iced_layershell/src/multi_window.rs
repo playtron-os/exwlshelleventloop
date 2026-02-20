@@ -581,7 +581,6 @@ where
             &events,
             cursor,
             &mut window.renderer,
-            &mut self.clipboard,
             &mut self.messages,
         );
 
@@ -1120,6 +1119,7 @@ where
             &mut self.system_theme,
             &mut self.runtime,
             ev,
+            &mut self.iced_events,
         );
         if should_exit {
             ev.append_return_data(ReturnData::RequestExit);
@@ -1545,7 +1545,6 @@ where
                     &window_events,
                     window.state.cursor(),
                     &mut window.renderer,
-                    &mut self.clipboard,
                     &mut self.messages,
                 );
 
@@ -1742,8 +1741,12 @@ pub(crate) fn update<P: IcedProgram, E: Executor>(
             // This eliminates ~16-250ms of latency for show/hide actions
             // that would otherwise need to travel:
             //   update() → tokio spawn → channel send → calloop dispatch
+            //
+            // We enter the runtime context so that any futures polled
+            // inline (e.g. zbus property caches) can access the Tokio
+            // reactor if needed.
             loop {
-                match stream.as_mut().poll_next(&mut cx) {
+                match runtime.enter(|| stream.as_mut().poll_next(&mut cx)) {
                     Poll::Ready(Some(action)) => {
                         // Process immediately via run_action's Output path
                         match action {
@@ -1801,6 +1804,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
     system_theme: &mut iced_core::theme::Mode,
     runtime: &mut MultiRuntime<E, P::Message>,
     ev: &mut WindowState<IcedId>,
+    iced_events: &mut Vec<(IcedId, IcedEvent)>,
 ) where
     P: IcedProgram + 'static,
     C: Compositor<Renderer = P::Renderer> + 'static,
@@ -1835,11 +1839,15 @@ pub(crate) fn run_action<P, C, E: Executor>(
             }
         },
         Action::Clipboard(action) => match action {
-            clipboard::Action::Read { target, channel } => {
-                let _ = channel.send(clipboard.read(target));
+            clipboard::Action::Read { kind, channel } => {
+                clipboard.read(kind, move |result| {
+                    let _ = channel.send(result);
+                });
             }
-            clipboard::Action::Write { target, contents } => {
-                clipboard.write(target, contents);
+            clipboard::Action::Write { content, channel } => {
+                clipboard.write(content, move |result| {
+                    let _ = channel.send(result);
+                });
             }
         },
         Action::Widget(action) => {
@@ -1947,6 +1955,9 @@ pub(crate) fn run_action<P, C, E: Executor>(
 
             _ => {}
         },
+        Action::Event { window, event } => {
+            iced_events.push((window, event));
+        }
         Action::Exit => {
             *should_exit = true;
         }

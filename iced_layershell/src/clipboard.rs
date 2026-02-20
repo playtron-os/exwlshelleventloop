@@ -1,6 +1,6 @@
-use iced_core::Clipboard;
-use iced_core::clipboard::Kind;
+use iced_core::clipboard::{Content, Error, Kind};
 use layershellev::WindowWrapper;
+
 pub struct LayerShellClipboard {
     state: State,
 }
@@ -31,44 +31,46 @@ impl LayerShellClipboard {
         }
     }
 
-    /// Reads the current content of the [`Clipboard`] as text.
-    pub fn read(&self, kind: Kind) -> Option<String> {
+    /// Reads the current content of the [`Clipboard`].
+    pub fn read(
+        &self,
+        kind: Kind,
+        callback: impl FnOnce(Result<Content, Error>) + Send + 'static,
+    ) {
         match &self.state {
-            State::Connected(clipboard) => match kind {
-                Kind::Standard => clipboard.read().ok(),
-                Kind::Primary => clipboard.read_primary().and_then(Result::ok),
-            },
-            State::Unavailable => None,
-        }
-    }
-
-    /// Writes the given text contents to the [`Clipboard`].
-    pub fn write(&mut self, kind: Kind, contents: String) {
-        match &mut self.state {
             State::Connected(clipboard) => {
                 let result = match kind {
-                    Kind::Standard => clipboard.write(contents),
-                    Kind::Primary => clipboard.write_primary(contents).unwrap_or(Ok(())),
+                    Kind::Text => clipboard.read().map(Content::Text).map_err(|_| Error::ContentNotAvailable),
+                    _ => Err(Error::ContentNotAvailable),
                 };
-
-                match result {
-                    Ok(()) => {}
-                    Err(error) => {
-                        log::warn!("error writing to clipboard: {error}");
-                    }
-                }
+                callback(result);
             }
-            State::Unavailable => {}
+            State::Unavailable => {
+                callback(Err(Error::ClipboardUnavailable));
+            }
         }
     }
-}
 
-impl Clipboard for LayerShellClipboard {
-    fn read(&self, kind: Kind) -> Option<String> {
-        self.read(kind)
-    }
-
-    fn write(&mut self, kind: Kind, contents: String) {
-        self.write(kind, contents);
+    /// Writes the given content to the [`Clipboard`].
+    pub fn write(
+        &mut self,
+        content: Content,
+        callback: impl FnOnce(Result<(), Error>) + Send + 'static,
+    ) {
+        match &mut self.state {
+            State::Connected(clipboard) => {
+                let result = match content {
+                    Content::Text(text) => clipboard.write(text).map_err(|e| {
+                        log::warn!("error writing to clipboard: {e}");
+                        Error::ContentNotAvailable
+                    }),
+                    _ => Err(Error::ContentNotAvailable),
+                };
+                callback(result);
+            }
+            State::Unavailable => {
+                callback(Err(Error::ClipboardUnavailable));
+            }
+        }
     }
 }

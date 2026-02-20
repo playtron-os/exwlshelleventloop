@@ -1,6 +1,6 @@
 use std::{collections::HashMap, mem};
 
-use iced_core::{Clipboard, renderer::Style, widget::Operation};
+use iced_core::{renderer::Style, widget::Operation};
 use iced_core::{Event, Size, event::Status, mouse::Cursor, window::Id};
 use iced_program::{Instance, Program};
 use iced_runtime::{
@@ -64,11 +64,10 @@ where
         events: &[Event],
         cursor: Cursor,
         renderer: &mut Renderer,
-        clipboard: &mut dyn Clipboard,
         messages: &mut Vec<Message>,
     ) -> (State, Vec<Status>) {
         let mut ui = self.take();
-        let res = ui.update(events, cursor, renderer, clipboard, messages);
+        let res = ui.update(events, cursor, renderer, messages);
         self.ui = Some(ui);
         res
     }

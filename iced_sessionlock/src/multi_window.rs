@@ -420,7 +420,6 @@ where
             &events,
             cursor,
             &mut window.renderer,
-            &mut self.clipboard,
             &mut self.messages,
         );
         let physical_size = window.state.viewport().physical_size();
@@ -628,7 +627,6 @@ where
                     &window_events,
                     window.state.cursor(),
                     &mut window.renderer,
-                    &mut self.clipboard,
                     &mut self.messages,
                 );
 
@@ -798,11 +796,15 @@ pub(crate) fn run_action<P, C, E: Executor>(
             Err(message) => messages.push(message),
         },
         Action::Clipboard(action) => match action {
-            clipboard::Action::Read { target, channel } => {
-                let _ = channel.send(clipboard.read(target));
+            clipboard::Action::Read { kind, channel } => {
+                clipboard.read(kind, move |result| {
+                    let _ = channel.send(result);
+                });
             }
-            clipboard::Action::Write { target, contents } => {
-                clipboard.write(target, contents);
+            clipboard::Action::Write { content, channel } => {
+                clipboard.write(content, move |result| {
+                    let _ = channel.send(result);
+                });
             }
         },
         Action::Image(action) => match action {
