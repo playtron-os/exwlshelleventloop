@@ -467,7 +467,7 @@ where
         draw_span.finish();
 
         let session_lock_id = session_lock_window.id();
-        Self::handle_ui_state(ev, window, ui_state, false, &mut self.clipboard, &mut self.iced_events);
+        Self::handle_ui_state(ev, window, iced_id, ui_state, false, &mut self.clipboard, &mut self.iced_events);
 
         let present_span = debug::present(iced_id);
         match compositor.present(
@@ -541,6 +541,7 @@ where
     fn handle_ui_state(
         ev: &mut WindowState<()>,
         window: &mut Window<P, C>,
+        iced_id: IcedId,
         ui_state: user_interface::State,
         unconditional_rendering: bool,
         clipboard: &mut SessionLockClipboard,
@@ -558,7 +559,7 @@ where
                 run_clipboard(
                     clipboard,
                     clipboard_requests,
-                    window.iced_id,
+                    iced_id,
                     iced_events,
                 );
                 if unconditional_rendering {
@@ -644,7 +645,7 @@ where
             let unconditional_rendering = true;
             #[cfg(not(feature = "unconditional-rendering"))]
             let unconditional_rendering = false;
-            if Self::handle_ui_state(ev, window, ui_state, unconditional_rendering, &mut self.clipboard, &mut self.iced_events) {
+            if Self::handle_ui_state(ev, window, iced_id, ui_state, unconditional_rendering, &mut self.clipboard, &mut self.iced_events) {
                 rebuilds.push((iced_id, window));
             }
 
