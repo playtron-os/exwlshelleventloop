@@ -467,7 +467,7 @@ where
         draw_span.finish();
 
         let session_lock_id = session_lock_window.id();
-        Self::handle_ui_state(ev, window, ui_state, false);
+        Self::handle_ui_state(ev, window, ui_state, false, &mut self.clipboard, &mut self.iced_events);
 
         let present_span = debug::present(iced_id);
         match compositor.present(
@@ -543,14 +543,24 @@ where
         window: &mut Window<P, C>,
         ui_state: user_interface::State,
         unconditional_rendering: bool,
+        clipboard: &mut SessionLockClipboard,
+        iced_events: &mut Vec<(IcedId, IcedEvent)>,
     ) -> bool {
         match ui_state {
             user_interface::State::Outdated => true,
             user_interface::State::Updated {
                 redraw_request,
                 mouse_interaction,
+                clipboard: clipboard_requests,
                 ..
             } => {
+                // Process clipboard requests from widgets
+                run_clipboard(
+                    clipboard,
+                    clipboard_requests,
+                    window.iced_id,
+                    iced_events,
+                );
                 if unconditional_rendering {
                     ev.request_refresh(window.id, RefreshRequest::NextFrame);
                 } else {
@@ -634,7 +644,7 @@ where
             let unconditional_rendering = true;
             #[cfg(not(feature = "unconditional-rendering"))]
             let unconditional_rendering = false;
-            if Self::handle_ui_state(ev, window, ui_state, unconditional_rendering) {
+            if Self::handle_ui_state(ev, window, ui_state, unconditional_rendering, &mut self.clipboard, &mut self.iced_events) {
                 rebuilds.push((iced_id, window));
             }
 
@@ -763,6 +773,30 @@ pub(crate) fn update<P: Program, E: Executor>(
     let recipes = iced_futures::subscription::into_recipes(subscription.map(Action::Output));
     debug::subscriptions_tracked(recipes.len());
     runtime.track(recipes);
+}
+
+/// Process clipboard requests from widget updates and feed results back as events.
+fn run_clipboard(
+    clipboard: &mut SessionLockClipboard,
+    requests: iced_core::Clipboard,
+    window: IcedId,
+    iced_events: &mut Vec<(IcedId, IcedEvent)>,
+) {
+    for kind in requests.reads {
+        let result = clipboard.read_sync(kind);
+        iced_events.push((
+            window,
+            IcedEvent::Clipboard(iced_core::clipboard::Event::Read(result.map(Arc::new))),
+        ));
+    }
+
+    if let Some(content) = requests.write {
+        let result = clipboard.write_sync(content);
+        iced_events.push((
+            window,
+            IcedEvent::Clipboard(iced_core::clipboard::Event::Written(result)),
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

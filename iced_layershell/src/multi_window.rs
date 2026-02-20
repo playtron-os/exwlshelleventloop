@@ -906,7 +906,7 @@ where
         // get layer_shell_id so that layer_shell_window can be drop, and ev can be borrow mut
         let layer_shell_id = layer_shell_window.id();
 
-        Self::handle_ui_state(ev, window, ui_state, false, true);
+        Self::handle_ui_state(ev, window, ui_state, false, true, &mut self.clipboard, &mut self.iced_events);
 
         window.draw_preedit();
 
@@ -1552,7 +1552,7 @@ where
             let unconditional_rendering = true;
             #[cfg(not(feature = "unconditional-rendering"))]
             let unconditional_rendering = false;
-            if Self::handle_ui_state(ev, window, ui_state, unconditional_rendering, false) {
+            if Self::handle_ui_state(ev, window, ui_state, unconditional_rendering, false, &mut self.clipboard, &mut self.iced_events) {
                 rebuilds.push((iced_id, window));
             }
 
@@ -1619,6 +1619,8 @@ where
         ui_state: user_interface::State,
         unconditional_rendering: bool,
         update_ime: bool,
+        clipboard: &mut LayerShellClipboard,
+        iced_events: &mut Vec<(IcedId, IcedEvent)>,
     ) -> bool {
         match ui_state {
             user_interface::State::Outdated => {
@@ -1632,8 +1634,17 @@ where
                 redraw_request,
                 input_method,
                 mouse_interaction,
+                clipboard: clipboard_requests,
                 ..
             } => {
+                // Process clipboard requests from widgets
+                run_clipboard(
+                    clipboard,
+                    clipboard_requests,
+                    window.iced_id,
+                    iced_events,
+                );
+
                 tracing::trace!(
                     "handle_ui_state: Updated for window {:?}, mouse_interaction={:?}, cached={:?}",
                     window.iced_id,
@@ -1789,6 +1800,32 @@ pub(crate) fn update<P: IcedProgram, E: Executor>(
 
     iced_debug::subscriptions_tracked(recipes.len());
     runtime.track(recipes);
+}
+
+/// Process clipboard requests from widget updates and feed results back as events.
+fn run_clipboard(
+    clipboard: &mut LayerShellClipboard,
+    requests: iced_core::Clipboard,
+    window: IcedId,
+    iced_events: &mut Vec<(IcedId, IcedEvent)>,
+) {
+    use std::sync::Arc;
+
+    for kind in requests.reads {
+        let result = clipboard.read_sync(kind);
+        iced_events.push((
+            window,
+            IcedEvent::Clipboard(iced_core::clipboard::Event::Read(result.map(Arc::new))),
+        ));
+    }
+
+    if let Some(content) = requests.write {
+        let result = clipboard.write_sync(content);
+        iced_events.push((
+            window,
+            IcedEvent::Clipboard(iced_core::clipboard::Event::Written(result)),
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

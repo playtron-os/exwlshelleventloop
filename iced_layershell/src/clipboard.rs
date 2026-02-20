@@ -31,6 +31,17 @@ impl LayerShellClipboard {
         }
     }
 
+    /// Reads the current content of the [`Clipboard`] synchronously.
+    pub fn read_sync(&self, kind: Kind) -> Result<Content, Error> {
+        match &self.state {
+            State::Connected(clipboard) => match kind {
+                Kind::Text => clipboard.read().map(Content::Text).map_err(|_| Error::ContentNotAvailable),
+                _ => Err(Error::ContentNotAvailable),
+            },
+            State::Unavailable => Err(Error::ClipboardUnavailable),
+        }
+    }
+
     /// Reads the current content of the [`Clipboard`].
     pub fn read(
         &self,
@@ -48,6 +59,20 @@ impl LayerShellClipboard {
             State::Unavailable => {
                 callback(Err(Error::ClipboardUnavailable));
             }
+        }
+    }
+
+    /// Writes the given content to the [`Clipboard`] synchronously.
+    pub fn write_sync(&mut self, content: Content) -> Result<(), Error> {
+        match &mut self.state {
+            State::Connected(clipboard) => match content {
+                Content::Text(text) => clipboard.write(text).map_err(|e| {
+                    log::warn!("error writing to clipboard: {e}");
+                    Error::ContentNotAvailable
+                }),
+                _ => Err(Error::ContentNotAvailable),
+            },
+            State::Unavailable => Err(Error::ClipboardUnavailable),
         }
     }
 
