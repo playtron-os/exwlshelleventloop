@@ -18,7 +18,8 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 #[cfg(not(all(feature = "linux-theme-detection", target_os = "linux")))]
 use iced_core::theme::Mode;
 use iced_core::{
-    Event as IcedEvent, auto_hide as iced_auto_hide, dismiss as iced_dismiss, theme,
+    Event as IcedEvent, auto_hide as iced_auto_hide, dismiss as iced_dismiss,
+    surface_visibility as iced_surface_visibility, theme,
     voice_mode as iced_voice_mode,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
@@ -343,6 +344,8 @@ where
     auto_size_last_content: HashMap<IcedId, (u32, u32)>,
     /// Maximum size for auto_size windows (from original LayerShellSettings.size)
     auto_size_max: HashMap<IcedId, (u32, u32)>,
+    /// Deferred shadow/corner_radius for auto_size windows (applied after resize completes)
+    auto_size_deferred_effects: HashMap<IcedId, (bool, Option<[u32; 4]>)>,
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
@@ -381,6 +384,7 @@ where
             auto_size_enabled: std::collections::HashSet::new(),
             auto_size_last_content: HashMap::new(),
             auto_size_max: HashMap::new(),
+            auto_size_deferred_effects: HashMap::new(),
             clipboard: LayerShellClipboard::unconnected(),
             wl_input_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
@@ -768,6 +772,21 @@ where
                     target_h
                 );
                 self.auto_size_hidden.remove(&iced_id);
+                // Re-apply deferred shadow/corner_radius now that surface has its final size
+                if let Some((shadow, corner_radius)) =
+                    self.auto_size_deferred_effects.remove(&iced_id)
+                {
+                    if shadow {
+                        self.waiting_layer_shell_actions
+                            .push((Some(iced_id), LayershellCustomAction::ShadowChange(true)));
+                    }
+                    if corner_radius.is_some() {
+                        self.waiting_layer_shell_actions.push((
+                            Some(iced_id),
+                            LayershellCustomAction::CornerRadiusChange(corner_radius),
+                        ));
+                    }
+                }
                 false
             } else {
                 *frame_count += 1;
@@ -789,6 +808,21 @@ where
                         target_h
                     );
                     self.auto_size_hidden.remove(&iced_id);
+                    // Re-apply deferred shadow/corner_radius even on timeout
+                    if let Some((shadow, corner_radius)) =
+                        self.auto_size_deferred_effects.remove(&iced_id)
+                    {
+                        if shadow {
+                            self.waiting_layer_shell_actions
+                                .push((Some(iced_id), LayershellCustomAction::ShadowChange(true)));
+                        }
+                        if corner_radius.is_some() {
+                            self.waiting_layer_shell_actions.push((
+                                Some(iced_id),
+                                LayershellCustomAction::CornerRadiusChange(corner_radius),
+                            ));
+                        }
+                    }
                     false
                 } else {
                     true
@@ -798,14 +832,17 @@ where
             false
         };
 
-        ui.draw(
-            &mut window.renderer,
-            window.state.theme(),
-            &iced_core::renderer::Style {
-                text_color: window.state.text_color(),
-            },
-            cursor,
-        );
+        // Skip drawing widget content when waiting for auto-size resize.
+        if !skip_present {
+            ui.draw(
+                &mut window.renderer,
+                window.state.theme(),
+                &iced_core::renderer::Style {
+                    text_color: window.state.text_color(),
+                },
+                cursor,
+            );
+        }
 
         // Check for dynamic content size changes on auto_size windows
         if self.auto_size_enabled.contains(&iced_id) && initial_auto_size_target.is_none() {
@@ -874,18 +911,12 @@ where
 
         window.draw_preedit();
 
-        // Use fully transparent background while waiting for auto-size resize
-        // This prevents the "flash" of the large popup before resize completes
+        // When waiting for auto-size resize, present a transparent buffer
         let background_color = if skip_present {
-            tracing::trace!(
-                "Using transparent background for {:?} (waiting for auto-size)",
-                iced_id
-            );
             iced_core::Color::TRANSPARENT
         } else {
             window.state.background_color()
         };
-
         let present_span = iced_debug::present(iced_id);
         match compositor.present(
             &mut window.renderer,
@@ -927,6 +958,7 @@ where
         self.auto_size_enabled.remove(&iced_id);
         self.auto_size_last_content.remove(&iced_id);
         self.auto_size_max.remove(&iced_id);
+        self.auto_size_deferred_effects.remove(&iced_id);
         self.window_manager.remove(iced_id);
         self.user_interfaces.remove(&iced_id);
         self.runtime
@@ -1002,6 +1034,23 @@ where
                 iced_auto_hide::Event::Shown
             } else {
                 iced_auto_hide::Event::Hidden
+            });
+            if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+                self.iced_events.push((iced_id, iced_event));
+            }
+            return true;
+        }
+
+        // Handle layer-surface-visibility events - convert to iced event
+        if let LayerShellWindowEvent::SurfaceVisibilityChanged { visible } = event {
+            tracing::debug!(
+                "handle_window_event: received SurfaceVisibilityChanged: visible={}",
+                visible
+            );
+            let iced_event = IcedEvent::SurfaceVisibility(if visible {
+                iced_surface_visibility::Event::Shown
+            } else {
+                iced_surface_visibility::Event::Hidden
             });
             if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
                 self.iced_events.push((iced_id, iced_event));
@@ -1239,6 +1288,14 @@ where
                     // Force initial size to 1x1 to avoid visual flash before auto-size completes
                     // The surface will be resized to content size on first render
                     settings.size = Some((1, 1));
+                    let deferred_shadow = settings.shadow;
+                    let deferred_corner_radius = settings.corner_radius;
+                    settings.shadow = false;
+                    settings.corner_radius = None;
+                    if deferred_shadow || deferred_corner_radius.is_some() {
+                        self.auto_size_deferred_effects
+                            .insert(iced_id, (deferred_shadow, deferred_corner_radius));
+                    }
                 }
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewLayerShell((
@@ -1268,7 +1325,13 @@ where
                 settings: menusettings,
                 id: iced_id,
             } => {
-                let IcedNewPopupSettings { size, position } = menusettings;
+                let IcedNewPopupSettings {
+                    size,
+                    position,
+                    shadow,
+                    corner_radius,
+                    auto_size,
+                } = menusettings;
                 let Some(parent_layer_shell_id) = ev.current_surface_id() else {
                     return;
                 };
@@ -1276,6 +1339,9 @@ where
                     size,
                     position,
                     id: parent_layer_shell_id,
+                    shadow,
+                    corner_radius,
+                    auto_size,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1307,6 +1373,9 @@ where
                     size: menu_setting.size,
                     position: (x, y),
                     id: parent_layer_shell_id,
+                    shadow: false,
+                    corner_radius: None,
+                    auto_size: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1504,7 +1573,12 @@ where
             let (caches, application) = self.user_interfaces.extract_all();
 
             // Update application
-            update(application, &mut self.runtime, &mut self.messages);
+            update(
+                application,
+                &mut self.runtime,
+                &mut self.messages,
+                &mut self.waiting_layer_shell_actions,
+            );
 
             for (_, window) in self.window_manager.iter_mut() {
                 window.state.synchronize(application);
@@ -1646,15 +1720,64 @@ pub(crate) fn update<P: IcedProgram, E: Executor>(
     application: &mut Instance<P>,
     runtime: &mut MultiRuntime<E, P::Message>,
     messages: &mut Vec<P::Message>,
+    waiting_layer_shell_actions: &mut Vec<(Option<iced_core::window::Id>, LayershellCustomAction)>,
 ) where
     P::Theme: DefaultStyle,
-    P::Message: 'static,
+    P::Message: 'static + TryInto<LayershellCustomActionWithId, Error = P::Message>,
 {
-    for message in messages.drain(..) {
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+
+    let pending: Vec<_> = messages.drain(..).collect();
+    for message in pending {
         let task = runtime.enter(|| application.update(message));
 
-        if let Some(stream) = iced_runtime::task::into_stream(task) {
-            runtime.run(stream);
+        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+            // Synchronously drain any immediately-ready actions from the
+            // task stream.  This is critical for `Task::done(msg)` which
+            // wraps `future::ready` — the single item resolves on first
+            // poll, so we can process it inline instead of spawning it on
+            // the async executor and waiting for a channel roundtrip.
+            //
+            // This eliminates ~16-250ms of latency for show/hide actions
+            // that would otherwise need to travel:
+            //   update() → tokio spawn → channel send → calloop dispatch
+            loop {
+                match stream.as_mut().poll_next(&mut cx) {
+                    Poll::Ready(Some(action)) => {
+                        // Process immediately via run_action's Output path
+                        match action {
+                            Action::Output(msg) => match msg.try_into() {
+                                Ok(action) => {
+                                    let LayershellCustomActionWithId(id, action) = action;
+                                    waiting_layer_shell_actions.push((id, action));
+                                }
+                                Err(msg) => {
+                                    // Not a layer shell action — re-queue as message
+                                    messages.push(msg);
+                                }
+                            },
+                            other => {
+                                // Non-Output actions (clipboard, widget, window, etc.)
+                                // still need to go through the runtime since we don't
+                                // have all the context needed to handle them here.
+                                // Wrap it back into a stream for the runtime.
+                                let remaining = futures::stream::once(async move { other })
+                                    .chain(stream)
+                                    .boxed();
+                                runtime.run(remaining);
+                                break;
+                            }
+                        }
+                    }
+                    Poll::Ready(None) => break, // stream exhausted
+                    Poll::Pending => {
+                        // Async items remain — hand the rest to the runtime
+                        runtime.run(stream);
+                        break;
+                    }
+                }
+            }
         }
     }
 

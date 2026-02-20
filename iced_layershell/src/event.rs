@@ -193,6 +193,11 @@ pub enum WindowEvent {
     AutoHideVisibilityChanged {
         visible: bool,
     },
+    /// Layer-surface visibility changed via hide/show protocol
+    /// visible: true = surface visible, false = surface hidden
+    SurfaceVisibilityChanged {
+        visible: bool,
+    },
     /// Voice mode event from compositor (started, stopped, cancelled, orb attached/detached)
     VoiceMode(VoiceModeEvent),
     /// Foreign toplevel event (window created, changed, or closed)
@@ -304,6 +309,9 @@ impl From<&DispatchMessage> for WindowEvent {
             }
             DispatchMessage::AutoHideVisibilityChanged { visible } => {
                 WindowEvent::AutoHideVisibilityChanged { visible: *visible }
+            }
+            DispatchMessage::SurfaceVisibilityChanged { visible } => {
+                WindowEvent::SurfaceVisibilityChanged { visible: *visible }
             }
             DispatchMessage::VoiceMode(event) => WindowEvent::VoiceMode(event.clone()),
             #[cfg(feature = "foreign-toplevel")]

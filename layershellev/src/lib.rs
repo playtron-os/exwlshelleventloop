@@ -224,7 +224,7 @@ use calloop::{
     timer::{TimeoutAction, Timer},
 };
 use calloop_wayland_source::WaylandSource;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::time::Duration;
 use std::time::Instant;
@@ -460,6 +460,7 @@ impl<T> WindowStateUnitBuilder<T> {
                 wl_output: Default::default(),
                 binding: Default::default(),
                 becreated: Default::default(),
+                initial_refresh_sent: false,
                 // Unknown why it is 120
                 scale: 120,
                 request_flag: Default::default(),
@@ -544,6 +545,11 @@ pub struct WindowStateUnit<T> {
     wl_output: Option<WlOutput>,
     binding: Option<T>,
     becreated: bool,
+    /// Whether this unit has had its initial Refresh event dispatched.
+    /// Surfaces created with `start_hidden` need at least one Refresh
+    /// so the iced window_manager registers them (even when all
+    /// surfaces are hidden and the normal refresh cycle is skipped).
+    initial_refresh_sent: bool,
 
     scale: u32,
     request_flag: WindowStateUnitRequestFlag,
@@ -928,6 +934,11 @@ pub struct WindowState<T> {
     /// Auto-hide objects per surface (keyed by surface protocol ID)
     auto_hide_surfaces:
         HashMap<u32, layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1>,
+    /// Whether the compositor currently considers us visible via auto-hide.
+    /// Updated immediately when the compositor sends a visibility-changed event.
+    /// Defaults to `true` (visible) until auto-hide is configured and the
+    /// compositor tells us otherwise.
+    auto_hide_visible: bool,
 
     /// Whether to use home visibility mode (home_only = only visible when at home)
     home_only: bool,
@@ -962,6 +973,11 @@ pub struct WindowState<T> {
         u32,
         layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
     >,
+    /// Surface protocol IDs that are currently hidden via the
+    /// `layer_surface_visibility` protocol.  Updated immediately on
+    /// `hide_surface`/`show_surface` calls and confirmed by the
+    /// compositor's `VisibilityChanged` events.
+    hidden_surfaces: HashSet<u32>,
 
     /// Layer surface dismiss manager (bound lazily when needed)
     layer_surface_dismiss_manager: Option<
@@ -1039,6 +1055,40 @@ impl<T> WindowState<T> {
             .units
             .iter()
             .position(|unit| unit.id == id && unit.becreated)?;
+
+        // Clean up per-surface protocol objects BEFORE destroying the surface.
+        // Protocol objects reference the wl_surface; using them after destruction
+        // causes "surface_destroyed" protocol errors. Wayland reuses protocol IDs,
+        // so stale entries would be found by new surfaces with the same ID.
+        let surface_id = self.units[index].wl_surface.id().protocol_id();
+        if let Some(corner_obj) = self.corner_radius_surfaces.remove(&surface_id) {
+            corner_obj.destroy();
+        }
+        if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
+            blur_obj.release();
+        }
+        if let Some(shadow_obj) = self.shadow_surfaces.remove(&surface_id) {
+            shadow_obj.destroy();
+        }
+        if let Some(auto_hide_obj) = self.auto_hide_surfaces.remove(&surface_id) {
+            auto_hide_obj.destroy();
+        }
+        if let Some(visibility_obj) = self
+            .layer_surface_visibility_controllers
+            .remove(&surface_id)
+        {
+            visibility_obj.destroy();
+        }
+        self.hidden_surfaces.remove(&surface_id);
+        if let Some(dismiss_obj) = self.layer_surface_dismiss_controllers.remove(&surface_id) {
+            dismiss_obj.destroy();
+        }
+        if let Some(home_obj) = self.home_visibility_controllers.remove(&surface_id) {
+            home_obj.destroy();
+        }
+        if let Some(voice_obj) = self.voice_mode_receivers.remove(&surface_id) {
+            voice_obj.destroy();
+        }
 
         self.units[index].shell.destroy();
         self.units[index].wl_surface.destroy();
@@ -1546,11 +1596,26 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
+    /// Returns `true` when every live surface unit is currently hidden via the
+    /// `layer_surface_visibility` protocol.  When this returns `true` the
+    /// compositor is not rendering us, so we can save CPU by throttling updates.
+    pub fn all_surfaces_hidden(&self) -> bool {
+        !self.units.is_empty()
+            && self.units.iter().all(|u| {
+                self.hidden_surfaces
+                    .contains(&u.wl_surface.id().protocol_id())
+            })
+    }
+
     /// Hide a surface without destroying it (using layer_surface_visibility protocol)
     /// The surface will not be rendered and won't receive input events.
     /// Use show_surface to make it visible again.
     pub fn hide_surface(&mut self, surface: &WlSurface) {
         let surface_id = surface.id().protocol_id();
+
+        // Track locally immediately so the timer can throttle before the
+        // compositor round-trip confirms.
+        self.hidden_surfaces.insert(surface_id);
 
         // Check if we already have a visibility controller for this surface
         if let Some(controller) = self.layer_surface_visibility_controllers.get(&surface_id) {
@@ -1591,6 +1656,20 @@ impl<T: 'static> WindowState<T> {
     /// Show a surface that was previously hidden
     pub fn show_surface(&mut self, surface: &WlSurface) {
         let surface_id = surface.id().protocol_id();
+
+        // Track locally immediately so the timer wakes up without waiting
+        // for the compositor round-trip.
+        self.hidden_surfaces.remove(&surface_id);
+
+        // Request a refresh on the affected unit so the very next timer tick
+        // renders a fresh frame, instead of waiting for the compositor's
+        // visibility_changed round-trip to trigger one.
+        for unit in &mut self.units {
+            if unit.wl_surface.id().protocol_id() == surface_id {
+                unit.request_refresh(RefreshRequest::NextFrame);
+                break;
+            }
+        }
 
         // Check if we have a visibility controller for this surface
         if let Some(controller) = self.layer_surface_visibility_controllers.get(&surface_id) {
@@ -2181,6 +2260,7 @@ impl<T> Default for WindowState<T> {
             shadow_surfaces: HashMap::new(),
             auto_hide_manager: None,
             auto_hide_surfaces: HashMap::new(),
+            auto_hide_visible: true,
             home_only: false,
             hide_on_home: false,
             home_visibility_manager: None,
@@ -2194,6 +2274,7 @@ impl<T> Default for WindowState<T> {
 
             layer_surface_visibility_manager: None,
             layer_surface_visibility_controllers: HashMap::new(),
+            hidden_surfaces: HashSet::new(),
 
             layer_surface_dismiss_manager: None,
             layer_surface_dismiss_controllers: HashMap::new(),
@@ -3387,6 +3468,7 @@ impl<T: 'static>
             Event::VisibilityChanged { visible } => {
                 let is_visible = visible != 0;
                 log::debug!("Auto-hide visibility changed: visible={}", is_visible);
+                state.auto_hide_visible = is_visible;
                 state.message.push((
                     None,
                     DispatchMessageInner::AutoHideVisibilityChanged(is_visible),
@@ -3469,7 +3551,7 @@ impl<T: 'static>
     > for WindowState<T>
 {
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _proxy: &layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
         event: <layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1 as Proxy>::Event,
         data: &layer_surface_visibility::LayerSurfaceVisibilityData,
@@ -3479,12 +3561,22 @@ impl<T: 'static>
         use layer_surface_visibility::zcosmic_layer_surface_visibility_v1::Event;
         let Event::VisibilityChanged { visible } = event;
         let visible = visible != 0;
+        let surface_id = data.surface.id().protocol_id();
         log::debug!(
-            "Layer surface visibility changed: surface={:?}, visible={}",
-            data.surface.id().protocol_id(),
+            "Layer surface visibility changed: surface={}, visible={}",
+            surface_id,
             visible
         );
-        // We just log the event - the client controls visibility, not the compositor
+        // Authoritative update from compositor – overwrite optimistic local state.
+        if visible {
+            state.hidden_surfaces.remove(&surface_id);
+        } else {
+            state.hidden_surfaces.insert(surface_id);
+        }
+        state.message.push((
+            None,
+            DispatchMessageInner::SurfaceVisibilityChanged(visible),
+        ));
     }
 }
 
@@ -4823,6 +4915,7 @@ impl<T: 'static> WindowState<T> {
                                         shadow,
                                         corner_radius,
                                         auto_size: _, // Auto-size is handled at the iced level
+                                        start_hidden,
                                     },
                                     id,
                                     info,
@@ -4888,6 +4981,21 @@ impl<T: 'static> WindowState<T> {
 
                                     // Apply blur if requested
                                     if blur {
+                                        // Lazily bind blur manager if not already bound
+                                        if window_state.blur_manager.is_none() {
+                                            window_state.blur_manager = globals
+                                                .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
+                                                    &qh,
+                                                    1..=1,
+                                                    (),
+                                                )
+                                                .ok();
+                                            if window_state.blur_manager.is_some() {
+                                                log::info!("Lazily bound blur manager for NewLayerShell surface");
+                                            } else {
+                                                log::warn!("Blur requested but compositor does not support org_kde_kwin_blur_manager protocol");
+                                            }
+                                        }
                                         apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh);
                                     }
 
@@ -4944,6 +5052,34 @@ impl<T: 'static> WindowState<T> {
                                         }
                                     }
 
+                                    // If start_hidden is requested, create a visibility
+                                    // controller and set hidden BEFORE the first commit so
+                                    // the compositor already knows the surface is hidden
+                                    // when it processes the initial buffer.
+                                    //
+                                    // We create the controller directly here instead of
+                                    // going through hide_surface() because at daemon boot
+                                    // self.units may be empty (no QueueHandle available).
+                                    if start_hidden {
+                                        let surface_id = wl_surface.id().protocol_id();
+                                        window_state.hidden_surfaces.insert(surface_id);
+                                        if let Some(manager) = &window_state.layer_surface_visibility_manager {
+                                            let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
+                                                surface: wl_surface.clone(),
+                                                hidden: true,
+                                            };
+                                            let controller = manager.get_visibility_controller(&wl_surface, &qh, visibility_data);
+                                            controller.set_hidden();
+                                            window_state.layer_surface_visibility_controllers.insert(surface_id, controller);
+                                            if let Some(ref conn) = window_state.connection {
+                                                let _ = conn.flush();
+                                            }
+                                            log::debug!("start_hidden: created controller and hid surface {}", surface_id);
+                                        } else {
+                                            log::warn!("start_hidden: visibility manager not available");
+                                        }
+                                    }
+
                                     wl_surface.commit();
 
                                     let mut fractional_scale = None;
@@ -4986,6 +5122,9 @@ impl<T: 'static> WindowState<T> {
                                         size: (width, height),
                                         position: (x, y),
                                         id,
+                                        shadow,
+                                        corner_radius,
+                                        auto_size: _, // Auto-size is handled at the iced level
                                     },
                                     targetid,
                                     info,
@@ -5011,6 +5150,24 @@ impl<T: 'static> WindowState<T> {
                                         unreachable!()
                                     };
                                     shell.get_popup(&popup);
+
+                                    // Apply corner radius to popup surface if set
+                                    let surface_id = wl_surface.id().protocol_id();
+                                    if corner_radius.is_some() {
+                                        if let Some(corner_obj) = apply_corner_radius_to_surface(
+                                            &window_state.corner_radius_manager,
+                                            corner_radius,
+                                            &wl_surface,
+                                            &qh,
+                                        ) {
+                                            window_state.corner_radius_surfaces.insert(surface_id, corner_obj);
+                                        }
+                                    }
+
+                                    // Apply shadow to popup surface if enabled
+                                    if shadow || window_state.shadow {
+                                        apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
+                                    }
 
                                     let mut fractional_scale = None;
                                     if let Some(ref fractional_scale_manager) =
@@ -5219,11 +5376,35 @@ impl<T: 'static> WindowState<T> {
                     window_state.closed_ids.clear();
 
 
+                    // Re-check hidden state AFTER NormalDispatch + action
+                    // processing.  show_surface() may have been called (e.g.
+                    // via the calloop channel between timer ticks, or during
+                    // NormalDispatch via a synchronous Task resolution), which
+                    // removes the surface from hidden_surfaces.  Using a fresh
+                    // check ensures we don't skip the Refresh loop with a
+                    // stale all_hidden=true.
+                    let all_hidden = window_state.all_surfaces_hidden();
+
+                    // When every surface is hidden via the layer-surface-visibility
+                    // protocol the compositor is not rendering us.  Skip the
+                    // (expensive) per-unit refresh / present cycle and idle
+                    // at a low rate so we still wake up for protocol events
+                    // (e.g. show requests).
+                    //
+                    // Exception: newly created units that have never been
+                    // through a refresh cycle must still get their initial
+                    // Refresh event so the iced window_manager registers them.
+                    // Without this, surfaces created with `start_hidden` would
+                    // never be findable by ShowWindow.
                     for idx in 0..window_state.units.len() {
                         let unit = &mut window_state.units[idx];
                         let (width, height) = unit.size;
                         if width == 0 || height == 0 {
                             // don't refresh, if size is 0.
+                            continue;
+                        }
+                        // Skip already-initialized units when all hidden.
+                        if all_hidden && unit.initial_refresh_sent {
                             continue;
                         }
                         if unit.take_present_slot() {
@@ -5256,17 +5437,34 @@ impl<T: 'static> WindowState<T> {
                                 }),
                                 Some(unit_id),
                             );
+                            window_state.units[idx].initial_refresh_sent = true;
                             // reset if the slot is not used
                             window_state.units[idx].reset_present_slot();
                         }
                     }
-                    TimeoutAction::ToDuration(std::time::Duration::from_millis(50))
+
+                    // Choose timer interval:
+                    //  - All surfaces hidden: idle at 16ms (one frame) so that
+                    //    a show request is serviced within ~1 frame instead of
+                    //    waiting up to 250ms for the next tick.
+                    //  - Visible with pending refresh (animation): tight 1ms for smooth frames
+                    //  - Visible idle: 50ms
+                    if all_hidden {
+                        TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
+                    } else {
+                        let has_pending_refresh = window_state.units.iter().any(|u| u.should_refresh());
+                        if has_pending_refresh {
+                            TimeoutAction::ToDuration(std::time::Duration::from_millis(1))
+                        } else {
+                            TimeoutAction::ToDuration(std::time::Duration::from_millis(50))
+                        }
+                    }
                 },
             )
             .expect("Cannot insert_source");
         event_loop
             .run(
-                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(4),
                 &mut state,
                 move |r_window_state| {
                     let window_state = &mut r_window_state.raw;

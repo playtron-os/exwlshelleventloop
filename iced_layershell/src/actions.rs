@@ -31,6 +31,13 @@ impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
 pub struct IcedNewPopupSettings {
     pub size: (u32, u32),
     pub position: (i32, i32),
+    /// Request shadow effect for this popup (requires compositor support for layer_shadow_manager_v1)
+    pub shadow: bool,
+    /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
+    /// (requires compositor support for layer_corner_radius_manager_v1)
+    pub corner_radius: Option<[u32; 4]>,
+    /// Auto-size the popup to fit content after first layout.
+    pub auto_size: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

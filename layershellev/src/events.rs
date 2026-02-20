@@ -113,10 +113,15 @@ pub struct NewLayerShellSettings {
     /// When true, the initial size is used as a maximum, and the surface will be resized
     /// to match the actual content size after the first render.
     pub auto_size: bool,
+    /// Start the surface hidden (using layer_surface_visibility protocol).
+    /// The compositor will not render or give focus to the surface until
+    /// `ShowWindow` is sent.  Useful for daemon-mode GPU warm-up where the
+    /// first frame should never be visible.
+    pub start_hidden: bool,
 }
 
 /// be used to create a new popup
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct NewPopUpSettings {
     /// the size of the popup
     pub size: (u32, u32),
@@ -124,6 +129,15 @@ pub struct NewPopUpSettings {
     pub position: (i32, i32),
     /// It means where the popup is, on which surface. It is the id of that layershell
     pub id: id::Id,
+    /// Request shadow effect for this popup surface (requires compositor support for layer_shadow_manager_v1)
+    pub shadow: bool,
+    /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
+    /// (requires compositor support for layer_corner_radius_manager_v1)
+    pub corner_radius: Option<[u32; 4]>,
+    /// Auto-size the popup to fit content after first layout.
+    /// When true, the initial size is used as a maximum, and the surface will be resized
+    /// to match the actual content size after the first render.
+    pub auto_size: bool,
 }
 /// be used to create a new popup
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -163,6 +177,7 @@ impl Default for NewLayerShellSettings {
             shadow: false,
             corner_radius: None,
             auto_size: false,
+            start_hidden: false,
         }
     }
 }
@@ -336,6 +351,8 @@ pub(crate) enum DispatchMessageInner {
     HomeStateChanged(bool),
     /// Auto-hide visibility changed from compositor (true = visible, false = hidden)
     AutoHideVisibilityChanged(bool),
+    /// Layer-surface visibility changed via hide/show protocol (true = visible, false = hidden)
+    SurfaceVisibilityChanged(bool),
     /// Voice mode event from compositor
     VoiceMode(VoiceModeEvent),
     /// Foreign toplevel event
@@ -449,6 +466,11 @@ pub enum DispatchMessage {
     /// Auto-hide visibility changed from compositor
     /// visible: true = surface is fully visible, false = surface is fully hidden
     AutoHideVisibilityChanged {
+        visible: bool,
+    },
+    /// Layer-surface visibility changed via hide/show protocol
+    /// visible: true = surface visible, false = surface hidden
+    SurfaceVisibilityChanged {
         visible: bool,
     },
     /// Voice mode event from compositor (enabled/disabled, partial result, final result)
@@ -567,6 +589,9 @@ impl From<DispatchMessageInner> for DispatchMessage {
             }
             DispatchMessageInner::AutoHideVisibilityChanged(visible) => {
                 DispatchMessage::AutoHideVisibilityChanged { visible }
+            }
+            DispatchMessageInner::SurfaceVisibilityChanged(visible) => {
+                DispatchMessage::SurfaceVisibilityChanged { visible }
             }
             DispatchMessageInner::VoiceMode(event) => DispatchMessage::VoiceMode(event),
             #[cfg(feature = "foreign-toplevel")]
