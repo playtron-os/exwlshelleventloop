@@ -548,7 +548,16 @@ where
         iced_events: &mut Vec<(IcedId, IcedEvent)>,
     ) -> bool {
         match ui_state {
-            user_interface::State::Outdated => true,
+            user_interface::State::Outdated { clipboard: clipboard_requests } => {
+                // Process clipboard requests even when rebuilding
+                run_clipboard(
+                    clipboard,
+                    clipboard_requests,
+                    iced_id,
+                    iced_events,
+                );
+                true
+            }
             user_interface::State::Updated {
                 redraw_request,
                 mouse_interaction,

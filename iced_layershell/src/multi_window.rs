@@ -1623,7 +1623,14 @@ where
         iced_events: &mut Vec<(IcedId, IcedEvent)>,
     ) -> bool {
         match ui_state {
-            user_interface::State::Outdated => {
+            user_interface::State::Outdated { clipboard: clipboard_requests } => {
+                // Process clipboard requests even when rebuilding
+                run_clipboard(
+                    clipboard,
+                    clipboard_requests,
+                    window.iced_id,
+                    iced_events,
+                );
                 tracing::trace!(
                     "handle_ui_state: Outdated for window {:?} (rebuild needed)",
                     window.iced_id,
