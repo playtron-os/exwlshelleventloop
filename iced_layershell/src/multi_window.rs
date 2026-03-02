@@ -2029,5 +2029,8 @@ pub(crate) fn run_action<P, C, E: Executor>(
         Action::Tick => {
             // Tick is handled internally by the runtime
         }
+        Action::PlatformSpecific(_) => {
+            // Platform-specific actions (e.g., xdg_popup) are not used in the layer shell event loop
+        }
     }
 }
