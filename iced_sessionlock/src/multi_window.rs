@@ -416,12 +416,8 @@ where
             Instant::now(),
         )));
         let draw_span = debug::draw(iced_id);
-        let (ui_state, statuses) = ui.update(
-            &events,
-            cursor,
-            &mut window.renderer,
-            &mut self.messages,
-        );
+        let (ui_state, statuses) =
+            ui.update(&events, cursor, &mut window.renderer, &mut self.messages);
         let physical_size = window.state.viewport().physical_size();
 
         if self
@@ -467,7 +463,15 @@ where
         draw_span.finish();
 
         let session_lock_id = session_lock_window.id();
-        Self::handle_ui_state(ev, window, iced_id, ui_state, false, &mut self.clipboard, &mut self.iced_events);
+        Self::handle_ui_state(
+            ev,
+            window,
+            iced_id,
+            ui_state,
+            false,
+            &mut self.clipboard,
+            &mut self.iced_events,
+        );
 
         let present_span = debug::present(iced_id);
         match compositor.present(
@@ -548,14 +552,11 @@ where
         iced_events: &mut Vec<(IcedId, IcedEvent)>,
     ) -> bool {
         match ui_state {
-            user_interface::State::Outdated { clipboard: clipboard_requests } => {
+            user_interface::State::Outdated {
+                clipboard: clipboard_requests,
+            } => {
                 // Process clipboard requests even when rebuilding
-                run_clipboard(
-                    clipboard,
-                    clipboard_requests,
-                    iced_id,
-                    iced_events,
-                );
+                run_clipboard(clipboard, clipboard_requests, iced_id, iced_events);
                 true
             }
             user_interface::State::Updated {
@@ -565,12 +566,7 @@ where
                 ..
             } => {
                 // Process clipboard requests from widgets
-                run_clipboard(
-                    clipboard,
-                    clipboard_requests,
-                    iced_id,
-                    iced_events,
-                );
+                run_clipboard(clipboard, clipboard_requests, iced_id, iced_events);
                 if unconditional_rendering {
                     ev.request_refresh(window.id, RefreshRequest::NextFrame);
                 } else {
@@ -654,7 +650,15 @@ where
             let unconditional_rendering = true;
             #[cfg(not(feature = "unconditional-rendering"))]
             let unconditional_rendering = false;
-            if Self::handle_ui_state(ev, window, iced_id, ui_state, unconditional_rendering, &mut self.clipboard, &mut self.iced_events) {
+            if Self::handle_ui_state(
+                ev,
+                window,
+                iced_id,
+                ui_state,
+                unconditional_rendering,
+                &mut self.clipboard,
+                &mut self.iced_events,
+            ) {
                 rebuilds.push((iced_id, window));
             }
 

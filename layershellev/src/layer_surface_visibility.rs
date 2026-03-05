@@ -53,9 +53,9 @@ impl<D>
     > for ()
 where
     D: Dispatch<
-        zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
-        LayerSurfaceVisibilityManagerData,
-    >,
+            zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
+            LayerSurfaceVisibilityManagerData,
+        >,
 {
     fn event(
         _state: &mut D,

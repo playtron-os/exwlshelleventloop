@@ -29,6 +29,11 @@ pub mod reexport {
     pub use layershellev::voice_mode::{
         OrbState, VoiceModeEvent, is_voice_active, set_voice_active,
     };
+
+    /// Wayland xdg_popup support
+    pub mod popup {
+        pub use iced_runtime::platform_specific::wayland::popup::*;
+    }
 }
 
 mod ime_preedit;

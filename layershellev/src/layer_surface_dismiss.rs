@@ -50,9 +50,9 @@ impl<D>
     > for ()
 where
     D: Dispatch<
-        zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1,
-        LayerSurfaceDismissManagerData,
-    >,
+            zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1,
+            LayerSurfaceDismissManagerData,
+        >,
 {
     fn event(
         _state: &mut D,

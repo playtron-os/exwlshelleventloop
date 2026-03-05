@@ -1,5 +1,5 @@
-use iced_core::{renderer::Style, widget::Operation};
 use iced_core::{Event, Size, event::Status, mouse::Cursor, window::Id};
+use iced_core::{renderer::Style, widget::Operation};
 use iced_program::{Instance, Program};
 use iced_runtime::{
     UserInterface as IcedUserInterface,

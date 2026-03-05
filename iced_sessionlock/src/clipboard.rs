@@ -35,7 +35,10 @@ impl SessionLockClipboard {
     pub fn read_sync(&self, kind: Kind) -> Result<Content, Error> {
         match &self.state {
             State::Connected(clipboard) => match kind {
-                Kind::Text => clipboard.read().map(Content::Text).map_err(|_| Error::ContentNotAvailable),
+                Kind::Text => clipboard
+                    .read()
+                    .map(Content::Text)
+                    .map_err(|_| Error::ContentNotAvailable),
                 _ => Err(Error::ContentNotAvailable),
             },
             State::Unavailable => Err(Error::ClipboardUnavailable),
@@ -43,15 +46,14 @@ impl SessionLockClipboard {
     }
 
     /// Reads the current content of the [`Clipboard`].
-    pub fn read(
-        &self,
-        kind: Kind,
-        callback: impl FnOnce(Result<Content, Error>) + Send + 'static,
-    ) {
+    pub fn read(&self, kind: Kind, callback: impl FnOnce(Result<Content, Error>) + Send + 'static) {
         match &self.state {
             State::Connected(clipboard) => {
                 let result = match kind {
-                    Kind::Text => clipboard.read().map(Content::Text).map_err(|_| Error::ContentNotAvailable),
+                    Kind::Text => clipboard
+                        .read()
+                        .map(Content::Text)
+                        .map_err(|_| Error::ContentNotAvailable),
                     _ => Err(Error::ContentNotAvailable),
                 };
                 callback(result);

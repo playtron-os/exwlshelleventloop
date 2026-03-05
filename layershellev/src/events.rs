@@ -138,6 +138,21 @@ pub struct NewPopUpSettings {
     /// When true, the initial size is used as a maximum, and the surface will be resized
     /// to match the actual content size after the first render.
     pub auto_size: bool,
+    /// Anchor rectangle width/height (defaults to size if not set).
+    /// The anchor_rect position is taken from `position`.
+    pub anchor_rect_size: Option<(i32, i32)>,
+    /// xdg_positioner anchor edge (protocol enum value, 0 = none)
+    pub anchor: u32,
+    /// xdg_positioner gravity direction (protocol enum value, 0 = none)
+    pub gravity: u32,
+    /// xdg_positioner constraint adjustment flags
+    pub constraint_adjustment: u32,
+    /// Offset from the calculated anchor point
+    pub offset: Option<(i32, i32)>,
+    /// Whether the popup should reposition when parent moves
+    pub reactive: bool,
+    /// Whether to grab keyboard/pointer focus
+    pub grab: bool,
 }
 /// be used to create a new popup
 #[derive(Debug, PartialEq, Eq, Clone, Default)]

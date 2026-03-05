@@ -100,17 +100,10 @@ pub trait VoiceModeHandler {
 }
 
 /// Blanket implementation for voice mode manager dispatch
-impl<D>
-    Dispatch<
-        zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1,
-        VoiceModeManagerData,
-        D,
-    > for ()
+impl<D> Dispatch<zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1, VoiceModeManagerData, D>
+    for ()
 where
-    D: Dispatch<
-            zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1,
-            VoiceModeManagerData,
-        >,
+    D: Dispatch<zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1, VoiceModeManagerData>,
 {
     fn event(
         _state: &mut D,
@@ -139,8 +132,11 @@ where
         _conn: &Connection,
         _qhandle: &QueueHandle<D>,
     ) {
-        debug!("Voice mode receiver event: {:?}, is_default: {}", event, data.is_default);
-        
+        debug!(
+            "Voice mode receiver event: {:?}, is_default: {}",
+            event, data.is_default
+        );
+
         let voice_event = match event {
             zcosmic_voice_mode_v1::Event::Start { orb_state } => {
                 let orb_state = match orb_state {
@@ -167,8 +163,16 @@ where
                 width,
                 height,
             } => {
-                debug!("Voice orb attached: x={}, y={}, width={}, height={}", x, y, width, height);
-                VoiceModeEvent::OrbAttached { x, y, width, height }
+                debug!(
+                    "Voice orb attached: x={}, y={}, width={}, height={}",
+                    x, y, width, height
+                );
+                VoiceModeEvent::OrbAttached {
+                    x,
+                    y,
+                    width,
+                    height,
+                }
             }
             zcosmic_voice_mode_v1::Event::OrbDetached => {
                 debug!("Voice orb detached");
@@ -178,7 +182,10 @@ where
                 // Immediately respond with cached voice active state
                 // This avoids round-trip through iced's event loop
                 let freeze = is_voice_active();
-                info!("Voice mode will_stop, serial: {}, auto-responding with freeze: {}", serial, freeze);
+                info!(
+                    "Voice mode will_stop, serial: {}, auto-responding with freeze: {}",
+                    serial, freeze
+                );
                 _proxy.ack_stop(serial, if freeze { 1 } else { 0 });
                 VoiceModeEvent::WillStop { serial }
             }
@@ -187,7 +194,7 @@ where
                 VoiceModeEvent::FocusInput
             }
         };
-        
+
         state.voice_mode_event(voice_event);
     }
 }

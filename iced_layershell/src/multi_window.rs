@@ -19,8 +19,7 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 use iced_core::theme::Mode;
 use iced_core::{
     Event as IcedEvent, auto_hide as iced_auto_hide, dismiss as iced_dismiss,
-    surface_visibility as iced_surface_visibility, theme,
-    voice_mode as iced_voice_mode,
+    surface_visibility as iced_surface_visibility, theme, voice_mode as iced_voice_mode,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
 use iced_core::{Size, mouse, mouse::Cursor, time::Instant};
@@ -353,6 +352,14 @@ where
     iced_events: Vec<(IcedId, IcedEvent)>,
     messages: Vec<P::Message>,
     proxy: IcedProxy<Action<P::Message>>,
+    /// Maps popup iced ID → layershell ID for popups that have been created
+    /// (Show action processed) but not yet registered in window_manager
+    /// (WindowOpened not yet received). This allows Hide to close popups
+    /// even when they haven't fully initialized yet.
+    pending_popups: HashMap<IcedId, layershellev::id::Id>,
+    /// Popup IDs where Hide was requested before Show was processed.
+    /// When Show arrives for one of these IDs, skip creation entirely.
+    cancelled_popups: std::collections::HashSet<IcedId>,
 }
 
 impl<P, E, C> Context<P, E, C>
@@ -392,6 +399,8 @@ where
             iced_events: Default::default(),
             messages: Default::default(),
             proxy,
+            pending_popups: HashMap::new(),
+            cancelled_popups: std::collections::HashSet::new(),
         }
     }
 
@@ -542,6 +551,20 @@ where
                 self.system_theme,
             );
 
+            tracing::debug!(
+                "New window registered: iced_id={:?}, size=({}, {}), scale_float={}, viewport_physical={:?}, viewport_logical={:?}, viewport_scale_factor={}",
+                iced_id,
+                width,
+                height,
+                scale_float,
+                window.state.viewport().physical_size(),
+                window.state.viewport().logical_size(),
+                window.state.viewport().scale_factor()
+            );
+
+            // Popup is now in window_manager; remove from pending tracking
+            self.pending_popups.remove(&iced_id);
+
             self.user_interfaces.build(
                 iced_id,
                 user_interface::Cache::default(),
@@ -577,12 +600,8 @@ where
         )));
 
         let draw_span = iced_debug::draw(iced_id);
-        let (ui_state, statuses) = ui.update(
-            &events,
-            cursor,
-            &mut window.renderer,
-            &mut self.messages,
-        );
+        let (ui_state, statuses) =
+            ui.update(&events, cursor, &mut window.renderer, &mut self.messages);
 
         let physical_size = window.state.viewport().physical_size();
 
@@ -906,7 +925,15 @@ where
         // get layer_shell_id so that layer_shell_window can be drop, and ev can be borrow mut
         let layer_shell_id = layer_shell_window.id();
 
-        Self::handle_ui_state(ev, window, ui_state, false, true, &mut self.clipboard, &mut self.iced_events);
+        Self::handle_ui_state(
+            ev,
+            window,
+            ui_state,
+            false,
+            true,
+            &mut self.clipboard,
+            &mut self.iced_events,
+        );
 
         window.draw_preedit();
 
@@ -1120,6 +1147,8 @@ where
             &mut self.runtime,
             ev,
             &mut self.iced_events,
+            &mut self.pending_popups,
+            &mut self.cancelled_popups,
         );
         if should_exit {
             ev.append_return_data(ReturnData::RequestExit);
@@ -1342,6 +1371,13 @@ where
                     shadow,
                     corner_radius,
                     auto_size,
+                    anchor_rect_size: None,
+                    anchor: 0,
+                    gravity: 0,
+                    constraint_adjustment: 0,
+                    offset: None,
+                    reactive: false,
+                    grab: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1376,6 +1412,13 @@ where
                     shadow: false,
                     corner_radius: None,
                     auto_size: false,
+                    anchor_rect_size: None,
+                    anchor: 0,
+                    gravity: 0,
+                    constraint_adjustment: 0,
+                    offset: None,
+                    reactive: false,
+                    grab: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1552,7 +1595,15 @@ where
             let unconditional_rendering = true;
             #[cfg(not(feature = "unconditional-rendering"))]
             let unconditional_rendering = false;
-            if Self::handle_ui_state(ev, window, ui_state, unconditional_rendering, false, &mut self.clipboard, &mut self.iced_events) {
+            if Self::handle_ui_state(
+                ev,
+                window,
+                ui_state,
+                unconditional_rendering,
+                false,
+                &mut self.clipboard,
+                &mut self.iced_events,
+            ) {
                 rebuilds.push((iced_id, window));
             }
 
@@ -1623,14 +1674,11 @@ where
         iced_events: &mut Vec<(IcedId, IcedEvent)>,
     ) -> bool {
         match ui_state {
-            user_interface::State::Outdated { clipboard: clipboard_requests } => {
+            user_interface::State::Outdated {
+                clipboard: clipboard_requests,
+            } => {
                 // Process clipboard requests even when rebuilding
-                run_clipboard(
-                    clipboard,
-                    clipboard_requests,
-                    window.iced_id,
-                    iced_events,
-                );
+                run_clipboard(clipboard, clipboard_requests, window.iced_id, iced_events);
                 tracing::trace!(
                     "handle_ui_state: Outdated for window {:?} (rebuild needed)",
                     window.iced_id,
@@ -1645,12 +1693,7 @@ where
                 ..
             } => {
                 // Process clipboard requests from widgets
-                run_clipboard(
-                    clipboard,
-                    clipboard_requests,
-                    window.iced_id,
-                    iced_events,
-                );
+                run_clipboard(clipboard, clipboard_requests, window.iced_id, iced_events);
 
                 tracing::trace!(
                     "handle_ui_state: Updated for window {:?}, mouse_interaction={:?}, cached={:?}",
@@ -1849,6 +1892,8 @@ pub(crate) fn run_action<P, C, E: Executor>(
     runtime: &mut MultiRuntime<E, P::Message>,
     ev: &mut WindowState<IcedId>,
     iced_events: &mut Vec<(IcedId, IcedEvent)>,
+    pending_popups: &mut HashMap<IcedId, layershellev::id::Id>,
+    cancelled_popups: &mut std::collections::HashSet<IcedId>,
 ) where
     P: IcedProgram + 'static,
     C: Compositor<Renderer = P::Renderer> + 'static,
@@ -2029,8 +2074,132 @@ pub(crate) fn run_action<P, C, E: Executor>(
         Action::Tick => {
             // Tick is handled internally by the runtime
         }
-        Action::PlatformSpecific(_) => {
-            // Platform-specific actions (e.g., xdg_popup) are not used in the layer shell event loop
+        Action::PlatformSpecific(platform_action) => {
+            use iced_runtime::platform_specific;
+            match platform_action {
+                platform_specific::Action::Wayland(wayland_action) => match wayland_action {
+                    platform_specific::wayland::Action::Popup(popup_action) => {
+                        use iced_runtime::platform_specific::wayland::popup;
+                        match popup_action {
+                            popup::Action::Show { settings } => {
+                                let parent_iced_id = settings.parent;
+                                let popup_iced_id = settings.id;
+                                let positioner = &settings.positioner;
+
+                                // If this popup was already cancelled by a Hide
+                                // that arrived before this Show, skip creation.
+                                if cancelled_popups.remove(&popup_iced_id) {
+                                    tracing::debug!(
+                                        popup = ?popup_iced_id,
+                                        "xdg_popup: Show skipped — popup was pre-cancelled by Hide"
+                                    );
+                                    return;
+                                }
+
+                                tracing::debug!(
+                                    parent = ?parent_iced_id,
+                                    popup = ?popup_iced_id,
+                                    size = ?positioner.size,
+                                    anchor = ?positioner.anchor,
+                                    gravity = ?positioner.gravity,
+                                    anchor_rect = ?positioner.anchor_rect,
+                                    offset = ?positioner.offset,
+                                    "xdg_popup: processing Show action"
+                                );
+
+                                // Look up the parent's layershell ID
+                                let Some(parent_window) = window_manager.get(parent_iced_id) else {
+                                    tracing::warn!(
+                                        parent = ?parent_iced_id,
+                                        "xdg_popup show: parent window not found"
+                                    );
+                                    return;
+                                };
+                                let parent_layer_shell_id = parent_window.id;
+
+                                // Convert iced Positioner to NewPopUpSettings
+                                let (width, height) = positioner.size.unwrap_or((
+                                    positioner.size_limits.max().width as u32,
+                                    positioner.size_limits.max().height as u32,
+                                ));
+
+                                let popup_settings = NewPopUpSettings {
+                                    size: (width, height),
+                                    position: (positioner.anchor_rect.x, positioner.anchor_rect.y),
+                                    id: parent_layer_shell_id,
+                                    shadow: false,
+                                    corner_radius: None,
+                                    auto_size: positioner.size.is_none(),
+                                    anchor_rect_size: Some((
+                                        positioner.anchor_rect.width,
+                                        positioner.anchor_rect.height,
+                                    )),
+                                    anchor: positioner.anchor as u32,
+                                    gravity: positioner.gravity as u32,
+                                    constraint_adjustment: positioner.constraint_adjustment,
+                                    offset: if positioner.offset != (0, 0) {
+                                        Some(positioner.offset)
+                                    } else {
+                                        None
+                                    },
+                                    reactive: positioner.reactive,
+                                    grab: settings.grab,
+                                };
+
+                                let layer_shell_id = layershellev::id::Id::unique();
+                                // Track popup before it's registered in window_manager
+                                // so that a Hide arriving before WindowOpened can still
+                                // find and close the layershell surface.
+                                pending_popups.insert(popup_iced_id, layer_shell_id);
+                                ev.append_return_data(ReturnData::NewPopUp((
+                                    popup_settings,
+                                    layer_shell_id,
+                                    Some(popup_iced_id),
+                                )));
+                            }
+                            popup::Action::Hide { id } => {
+                                // Map from iced ID to layershell ID and request close.
+                                // Check window_manager first (popup fully initialized),
+                                // then pending_popups (Show processed but WindowOpened
+                                // not yet received).
+                                if let Some(window) = window_manager.get(id) {
+                                    tracing::debug!(
+                                        iced_id = ?id,
+                                        layer_id = ?window.id,
+                                        "xdg_popup: Hide via window_manager"
+                                    );
+                                    pending_popups.remove(&id);
+                                    ev.request_close(window.id);
+                                } else if let Some(layer_id) = pending_popups.remove(&id) {
+                                    tracing::debug!(
+                                        iced_id = ?id,
+                                        layer_id = ?layer_id,
+                                        "xdg_popup: Hide via pending_popups (before WindowOpened)"
+                                    );
+                                    ev.request_close(layer_id);
+                                } else {
+                                    // Hide arrived before Show was processed.
+                                    // Remember this ID so when Show arrives later
+                                    // we skip creating the popup entirely.
+                                    tracing::debug!(
+                                        iced_id = ?id,
+                                        "xdg_popup: Hide before Show — marking as cancelled"
+                                    );
+                                    cancelled_popups.insert(id);
+                                }
+                            }
+                            popup::Action::Resize { id, width, height } => {
+                                // Resize is not yet supported for xdg_popup surfaces
+                                tracing::debug!(
+                                    popup = ?id,
+                                    width, height,
+                                    "xdg_popup resize: not yet implemented"
+                                );
+                            }
+                        }
+                    }
+                },
+            }
         }
     }
 }

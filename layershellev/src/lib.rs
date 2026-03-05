@@ -3091,11 +3091,14 @@ impl<T> Dispatch<xdg_popup::XdgPopup, ()> for WindowState<T> {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        if let xdg_popup::Event::Configure { width, height, .. } = event {
+        if let xdg_popup::Event::Configure { width, height, x, y } = event {
             let Some(unit_index) = state.units.iter().position(|unit| unit.shell == *surface)
             else {
                 return;
             };
+            log::debug!(
+                "xdg_popup configure: width={width}, height={height}, x={x}, y={y}, unit_index={unit_index}"
+            );
             state.units[unit_index].size = (width as u32, height as u32);
 
             state.units[unit_index].request_refresh(RefreshRequest::NextFrame)
@@ -3191,6 +3194,10 @@ impl<T> Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for WindowStat
             }) else {
                 return;
             };
+            log::debug!(
+                "fractional_scale PreferredScale: unit_id={:?}, is_popup={}, scale_raw={}, scale_float={}, size={:?}",
+                unit.id, unit.is_popup(), scale, scale as f64 / 120., unit.get_size()
+            );
             unit.scale = scale;
             unit.request_refresh(RefreshRequest::NextFrame);
             state.message.push((
@@ -5125,6 +5132,13 @@ impl<T: 'static> WindowState<T> {
                                         shadow,
                                         corner_radius,
                                         auto_size: _, // Auto-size is handled at the iced level
+                                        anchor_rect_size,
+                                        anchor,
+                                        gravity,
+                                        constraint_adjustment,
+                                        offset,
+                                        reactive,
+                                        grab,
                                     },
                                     targetid,
                                     info,
@@ -5139,7 +5153,23 @@ impl<T: 'static> WindowState<T> {
                                     let wl_surface = wmcompositer.create_surface(&qh, ());
                                     let positioner = wmbase.create_positioner(&qh, ());
                                     positioner.set_size(width as i32, height as i32);
-                                    positioner.set_anchor_rect(x, y, width as i32, height as i32);
+                                    let (ar_w, ar_h) = anchor_rect_size.unwrap_or((width as i32, height as i32));
+                                    positioner.set_anchor_rect(x, y, ar_w, ar_h);
+                                    if anchor != 0 {
+                                        positioner.set_anchor(wayland_protocols::xdg::shell::client::xdg_positioner::Anchor::try_from(anchor).unwrap_or(wayland_protocols::xdg::shell::client::xdg_positioner::Anchor::None));
+                                    }
+                                    if gravity != 0 {
+                                        positioner.set_gravity(wayland_protocols::xdg::shell::client::xdg_positioner::Gravity::try_from(gravity).unwrap_or(wayland_protocols::xdg::shell::client::xdg_positioner::Gravity::None));
+                                    }
+                                    if constraint_adjustment != 0 {
+                                        positioner.set_constraint_adjustment(wayland_protocols::xdg::shell::client::xdg_positioner::ConstraintAdjustment::from_bits_truncate(constraint_adjustment));
+                                    }
+                                    if let Some((ox, oy)) = offset {
+                                        positioner.set_offset(ox, oy);
+                                    }
+                                    if reactive {
+                                        positioner.set_reactive();
+                                    }
                                     let wl_xdg_surface =
                                         wmbase.get_xdg_surface(&wl_surface, &qh, ());
                                     let popup =
@@ -5150,6 +5180,12 @@ impl<T: 'static> WindowState<T> {
                                         unreachable!()
                                     };
                                     shell.get_popup(&popup);
+
+                                    if grab {
+                                        if let Some(seat) = window_state.seat.as_ref() {
+                                            popup.grab(seat, window_state.enter_serial.unwrap_or(0));
+                                        }
+                                    }
 
                                     // Apply corner radius to popup surface if set
                                     let surface_id = wl_surface.id().protocol_id();
