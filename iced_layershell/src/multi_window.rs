@@ -1378,6 +1378,10 @@ where
                     offset: None,
                     reactive: false,
                     grab: false,
+                    input_passthrough: false,
+                    // tooltip_offset: None,
+                    // tooltip_anchor: None,
+                    // tooltip_delay_ms: None,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1419,6 +1423,10 @@ where
                     offset: None,
                     reactive: false,
                     grab: false,
+                    input_passthrough: false,
+                    // tooltip_offset: None,
+                    // tooltip_anchor: None,
+                    // tooltip_delay_ms: None,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -2144,6 +2152,10 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     },
                                     reactive: positioner.reactive,
                                     grab: settings.grab,
+                                    input_passthrough: settings.input_passthrough,
+                                    // tooltip_offset: settings.tooltip_offset,
+                                    // tooltip_anchor: settings.tooltip_anchor,
+                                    // tooltip_delay_ms: settings.tooltip_delay_ms,
                                 };
 
                                 let layer_shell_id = layershellev::id::Id::unique();
@@ -2195,6 +2207,56 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     width, height,
                                     "xdg_popup resize: not yet implemented"
                                 );
+                            }
+                            popup::Action::Reposition { id, positioner } => {
+                                // Look up the popup's layershell ID
+                                let layer_shell_id = window_manager
+                                    .get(id)
+                                    .map(|w| w.id)
+                                    .or_else(|| pending_popups.get(&id).copied());
+
+                                let Some(layer_id) = layer_shell_id else {
+                                    tracing::warn!(
+                                        popup = ?id,
+                                        "xdg_popup reposition: popup not found"
+                                    );
+                                    return;
+                                };
+
+                                let (width, height) = positioner.size.unwrap_or((
+                                    positioner.size_limits.max().width as u32,
+                                    positioner.size_limits.max().height as u32,
+                                ));
+
+                                let reposition_settings = layershellev::RepositionPopUpSettings {
+                                    popup_id: layer_id,
+                                    size: (width, height),
+                                    position: (positioner.anchor_rect.x, positioner.anchor_rect.y),
+                                    anchor_rect_size: Some((
+                                        positioner.anchor_rect.width,
+                                        positioner.anchor_rect.height,
+                                    )),
+                                    anchor: positioner.anchor as u32,
+                                    gravity: positioner.gravity as u32,
+                                    constraint_adjustment: positioner.constraint_adjustment,
+                                    offset: if positioner.offset != (0, 0) {
+                                        Some(positioner.offset)
+                                    } else {
+                                        None
+                                    },
+                                    reactive: positioner.reactive,
+                                };
+
+                                tracing::debug!(
+                                    popup = ?id,
+                                    layer_id = ?layer_id,
+                                    position = ?(positioner.anchor_rect.x, positioner.anchor_rect.y),
+                                    "xdg_popup: processing Reposition action"
+                                );
+
+                                ev.append_return_data(ReturnData::RepositionPopUp(
+                                    reposition_settings,
+                                ));
                             }
                         }
                     }

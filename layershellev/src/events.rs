@@ -153,7 +153,46 @@ pub struct NewPopUpSettings {
     pub reactive: bool,
     /// Whether to grab keyboard/pointer focus
     pub grab: bool,
+    /// When true, the popup surface gets an empty input region so pointer
+    /// events pass through to the surface below (e.g. for tooltips).
+    pub input_passthrough: bool,
+    // /// When set, the compositor will position this popup at the pointer cursor
+    // /// plus the given (x, y) offset, eliminating client-side reposition round-trips.
+    // /// Requires compositor support for zcosmic_tooltip_manager_v1.
+    // pub tooltip_offset: Option<(i32, i32)>,
+    // /// Tooltip anchor corner (protocol enum value):
+    // /// 0 = top_left (default), 1 = top_right, 2 = bottom_left, 3 = bottom_right.
+    // /// Determines which corner of the tooltip aligns to the computed position.
+    // pub tooltip_anchor: Option<u32>,
+    // /// Show delay in milliseconds. When set to a non-zero value, the tooltip
+    // /// appears only after the pointer has hovered over the parent surface for
+    // /// this duration. 0 or None = immediate (follows pointer).
+    // pub tooltip_delay_ms: Option<u32>,
 }
+
+/// Settings to reposition an existing popup via xdg_popup.reposition (v3).
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct RepositionPopUpSettings {
+    /// The layershellev ID of the popup to reposition
+    pub popup_id: id::Id,
+    /// New popup size
+    pub size: (u32, u32),
+    /// New anchor rectangle position (x, y) relative to the parent surface
+    pub position: (i32, i32),
+    /// New anchor rectangle width/height
+    pub anchor_rect_size: Option<(i32, i32)>,
+    /// xdg_positioner anchor edge (protocol enum value, 0 = none)
+    pub anchor: u32,
+    /// xdg_positioner gravity direction (protocol enum value, 0 = none)
+    pub gravity: u32,
+    /// xdg_positioner constraint adjustment flags
+    pub constraint_adjustment: u32,
+    /// Offset from the calculated anchor point
+    pub offset: Option<(i32, i32)>,
+    /// Whether the popup should reposition when parent moves
+    pub reactive: bool,
+}
+
 /// be used to create a new popup
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct NewXdgWindowSettings {
@@ -221,6 +260,7 @@ pub enum ReturnData<INFO> {
     RequestSetCursorShape((String, WlPointer)),
     NewLayerShell((NewLayerShellSettings, id::Id, Option<INFO>)),
     NewPopUp((NewPopUpSettings, id::Id, Option<INFO>)),
+    RepositionPopUp(RepositionPopUpSettings),
     NewXdgBase((NewXdgWindowSettings, id::Id, Option<INFO>)),
     NewInputPanel((NewInputPanelSettings, id::Id, Option<INFO>)),
     None,

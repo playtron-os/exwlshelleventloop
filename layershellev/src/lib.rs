@@ -113,6 +113,7 @@ pub use events::NewLayerShellSettings;
 pub use events::NewPopUpSettings;
 pub use events::NewXdgWindowSettings;
 pub use events::OutputOption;
+pub use events::RepositionPopUpSettings;
 pub use waycrate_xkbkeycode::keyboard;
 pub use waycrate_xkbkeycode::xkb_keyboard;
 
@@ -128,6 +129,7 @@ pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
 pub mod shadow;
 mod strtoshape;
+pub mod tooltip;
 pub mod voice_mode;
 
 use events::DispatchMessageInner;
@@ -940,6 +942,13 @@ pub struct WindowState<T> {
     /// compositor tells us otherwise.
     auto_hide_visible: bool,
 
+    /// Tooltip manager (bound lazily when tooltip popup is created)
+    tooltip_manager:
+        Option<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1>,
+    /// Tooltip objects per popup surface (keyed by surface protocol ID)
+    tooltip_surfaces:
+        HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
+
     /// Whether to use home visibility mode (home_only = only visible when at home)
     home_only: bool,
     /// Whether to hide when in home mode (inverse of home_only)
@@ -1072,6 +1081,9 @@ impl<T> WindowState<T> {
         }
         if let Some(auto_hide_obj) = self.auto_hide_surfaces.remove(&surface_id) {
             auto_hide_obj.destroy();
+        }
+        if let Some(tooltip_obj) = self.tooltip_surfaces.remove(&surface_id) {
+            tooltip_obj.destroy();
         }
         if let Some(visibility_obj) = self
             .layer_surface_visibility_controllers
@@ -2261,6 +2273,8 @@ impl<T> Default for WindowState<T> {
             auto_hide_manager: None,
             auto_hide_surfaces: HashMap::new(),
             auto_hide_visible: true,
+            tooltip_manager: None,
+            tooltip_surfaces: HashMap::new(),
             home_only: false,
             hide_on_home: false,
             home_visibility_manager: None,
@@ -3091,17 +3105,30 @@ impl<T> Dispatch<xdg_popup::XdgPopup, ()> for WindowState<T> {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        if let xdg_popup::Event::Configure { width, height, x, y } = event {
-            let Some(unit_index) = state.units.iter().position(|unit| unit.shell == *surface)
-            else {
-                return;
-            };
-            log::debug!(
-                "xdg_popup configure: width={width}, height={height}, x={x}, y={y}, unit_index={unit_index}"
-            );
-            state.units[unit_index].size = (width as u32, height as u32);
+        match event {
+            xdg_popup::Event::Configure {
+                width,
+                height,
+                x,
+                y,
+            } => {
+                let Some(unit_index) = state.units.iter().position(|unit| unit.shell == *surface)
+                else {
+                    return;
+                };
+                log::debug!(
+                    "xdg_popup configure: width={width}, height={height}, x={x}, y={y}, unit_index={unit_index}"
+                );
+                state.units[unit_index].size = (width as u32, height as u32);
 
-            state.units[unit_index].request_refresh(RefreshRequest::NextFrame)
+                state.units[unit_index].request_refresh(RefreshRequest::NextFrame)
+            }
+            xdg_popup::Event::Repositioned { token } => {
+                log::debug!("xdg_popup repositioned: token={token}");
+                // The compositor has repositioned the popup. The new position
+                // will take effect with the next configure event.
+            }
+            _ => {}
         }
     }
 }
@@ -3196,7 +3223,11 @@ impl<T> Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for WindowStat
             };
             log::debug!(
                 "fractional_scale PreferredScale: unit_id={:?}, is_popup={}, scale_raw={}, scale_float={}, size={:?}",
-                unit.id, unit.is_popup(), scale, scale as f64 / 120., unit.get_size()
+                unit.id,
+                unit.is_popup(),
+                scale,
+                scale as f64 / 120.,
+                unit.get_size()
             );
             unit.scale = scale;
             unit.request_refresh(RefreshRequest::NextFrame);
@@ -3454,6 +3485,31 @@ impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
 
 // Auto-hide protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1);
+
+// Tooltip protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
+
+// Manual Dispatch impl for tooltip object to handle reposition events
+impl<T: 'static>
+    Dispatch<tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1, tooltip::TooltipData>
+    for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1,
+        event: <tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1 as Proxy>::Event,
+        _data: &tooltip::TooltipData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use tooltip::zcosmic_tooltip_v1::Event;
+        match event {
+            Event::Reposition { x: _, y: _ } => {
+                // Informational only — compositor handles positioning
+            }
+        }
+    }
+}
 
 // Manual Dispatch impl for auto-hide surface object to handle visibility_changed events
 impl<T: 'static>
@@ -5139,6 +5195,10 @@ impl<T: 'static> WindowState<T> {
                                         offset,
                                         reactive,
                                         grab,
+                                        input_passthrough,
+                                        // tooltip_offset,
+                                        // tooltip_anchor,
+                                        // tooltip_delay_ms,
                                     },
                                     targetid,
                                     info,
@@ -5205,6 +5265,51 @@ impl<T: 'static> WindowState<T> {
                                         apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
                                     }
 
+                                    // Set empty input region so pointer events pass through
+                                    if input_passthrough {
+                                        let region = wmcompositer.create_region(&qh, ());
+                                        wl_surface.set_input_region(Some(&region));
+                                        region.destroy();
+                                    }
+
+                                    // Register with compositor-driven tooltip protocol if offset is set
+                                    // if let Some((tx, ty)) = tooltip_offset {
+                                    //     // Lazily bind the tooltip manager
+                                    //     if window_state.tooltip_manager.is_none() {
+                                    //         if let Ok(manager) = globals
+                                    //             .bind::<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, _, _>(
+                                    //                 &qh, 1..=1, (),
+                                    //             ) {
+                                    //             window_state.tooltip_manager = Some(manager);
+                                    //             log::info!("Bound zcosmic_tooltip_manager_v1");
+                                    //         }
+                                    //     }
+                                    //     if let Some(manager) = &window_state.tooltip_manager {
+                                    //         // let parent_surface = &window_state.units[index].wl_surface;
+                                    //         // let tooltip_data = tooltip::TooltipData {
+                                    //         //     tooltip_surface: wl_surface.clone(),
+                                    //         //     parent_surface: parent_surface.clone(),
+                                    //         // };
+                                    //         // let tooltip_obj = manager.get_tooltip(
+                                    //         //     &wl_surface,
+                                    //         //     parent_surface,
+                                    //         //     &qh,
+                                    //         //     tooltip_data,
+                                    //         // );
+                                    //         // tooltip_obj.set_offset(tx, ty);
+                                    //         // if let Some(anchor_val) = tooltip_anchor {
+                                    //         //     if let Ok(a) = tooltip::zcosmic_tooltip_v1::Anchor::try_from(anchor_val) {
+                                    //         //         tooltip_obj.set_anchor(a);
+                                    //         //     }
+                                    //         // }
+                                    //         // if let Some(delay_ms) = tooltip_delay_ms {
+                                    //         //     tooltip_obj.set_show_delay(delay_ms);
+                                    //         // }
+                                    //         // window_state.tooltip_surfaces.insert(surface_id, tooltip_obj);
+                                    //         // log::debug!("Created tooltip object for popup surface {} with offset ({}, {})", surface_id, tx, ty);
+                                    //     }
+                                    // }
+
                                     let mut fractional_scale = None;
                                     if let Some(ref fractional_scale_manager) =
                                         fractional_scale_manager
@@ -5236,6 +5341,64 @@ impl<T: 'static> WindowState<T> {
                                         .becreated(true)
                                         .build(),
                                     );
+                                },
+                                ReturnData::RepositionPopUp(settings) => {
+                                    use events::RepositionPopUpSettings;
+                                    let RepositionPopUpSettings {
+                                        popup_id,
+                                        size: (width, height),
+                                        position: (x, y),
+                                        anchor_rect_size,
+                                        anchor,
+                                        gravity,
+                                        constraint_adjustment,
+                                        offset,
+                                        reactive,
+                                    } = settings;
+
+                                    let Some(unit) = window_state
+                                        .units
+                                        .iter()
+                                        .find(|unit| unit.id == popup_id)
+                                    else {
+                                        log::warn!("RepositionPopUp: popup unit not found for id {:?}", popup_id);
+                                        continue;
+                                    };
+
+                                    let Shell::PopUp((ref xdg_popup, _)) = unit.shell else {
+                                        log::warn!("RepositionPopUp: unit is not a popup");
+                                        continue;
+                                    };
+
+                                    let positioner = wmbase.create_positioner(&qh, ());
+                                    positioner.set_size(width as i32, height as i32);
+                                    let (ar_w, ar_h) = anchor_rect_size.unwrap_or((width as i32, height as i32));
+                                    positioner.set_anchor_rect(x, y, ar_w, ar_h);
+                                    if anchor != 0 {
+                                        positioner.set_anchor(wayland_protocols::xdg::shell::client::xdg_positioner::Anchor::try_from(anchor).unwrap_or(wayland_protocols::xdg::shell::client::xdg_positioner::Anchor::None));
+                                    }
+                                    if gravity != 0 {
+                                        positioner.set_gravity(wayland_protocols::xdg::shell::client::xdg_positioner::Gravity::try_from(gravity).unwrap_or(wayland_protocols::xdg::shell::client::xdg_positioner::Gravity::None));
+                                    }
+                                    if constraint_adjustment != 0 {
+                                        positioner.set_constraint_adjustment(wayland_protocols::xdg::shell::client::xdg_positioner::ConstraintAdjustment::from_bits_truncate(constraint_adjustment));
+                                    }
+                                    if let Some((ox, oy)) = offset {
+                                        positioner.set_offset(ox, oy);
+                                    }
+                                    if reactive {
+                                        positioner.set_reactive();
+                                    }
+
+                                    // Use a monotonically increasing token for reposition
+                                    static REPOSITION_TOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+                                    let token = REPOSITION_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    xdg_popup.reposition(&positioner, token);
+
+                                    // Destroy the temporary positioner
+                                    positioner.destroy();
+
+                                    log::debug!("RepositionPopUp: repositioned popup {:?} with token {}", popup_id, token);
                                 },
                                 ReturnData::NewXdgBase((
                                 NewXdgWindowSettings { maximized, title, size },
