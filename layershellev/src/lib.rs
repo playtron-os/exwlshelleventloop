@@ -942,7 +942,7 @@ pub struct WindowState<T> {
     /// compositor tells us otherwise.
     auto_hide_visible: bool,
 
-    /// Tooltip manager (bound lazily when tooltip popup is created)
+    /// Tooltip manager (bound lazily when a popup with tooltip settings is created)
     tooltip_manager:
         Option<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1>,
     /// Tooltip objects per popup surface (keyed by surface protocol ID)
@@ -2057,6 +2057,11 @@ impl<T> WindowState<T> {
         self
     }
 
+    /// Returns whether shadow is enabled for this window state.
+    pub fn has_shadow(&self) -> bool {
+        self.shadow
+    }
+
     /// Set home-only visibility mode for surfaces (requires compositor support for zcosmic_home_visibility_v1)
     /// When enabled, the surface will only be visible when the compositor is in "home" mode
     /// (no regular windows visible, like the iOS home screen).
@@ -3121,6 +3126,13 @@ impl<T> Dispatch<xdg_popup::XdgPopup, ()> for WindowState<T> {
                 );
                 state.units[unit_index].size = (width as u32, height as u32);
 
+                // Set the viewport destination so the compositor knows the
+                // logical size of the popup surface.  Without this, a buffer
+                // rendered at physical resolution would be treated as that
+                // many logical pixels, causing the surface to appear too large
+                // and its position to be wrong on HiDPI outputs.
+                state.units[unit_index].try_set_viewport_destination(width, height);
+
                 state.units[unit_index].request_refresh(RefreshRequest::NextFrame)
             }
             xdg_popup::Event::Repositioned { token } => {
@@ -3490,8 +3502,7 @@ delegate_noop!(@<T> WindowState<T>: ignore layer_auto_hide::layer_auto_hide_mana
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
 
 // Manual Dispatch impl for tooltip object to handle reposition events
-impl<T: 'static>
-    Dispatch<tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1, tooltip::TooltipData>
+impl<T: 'static> Dispatch<tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1, tooltip::TooltipData>
     for WindowState<T>
 {
     fn event(
@@ -5196,9 +5207,9 @@ impl<T: 'static> WindowState<T> {
                                         reactive,
                                         grab,
                                         input_passthrough,
-                                        // tooltip_offset,
-                                        // tooltip_anchor,
-                                        // tooltip_delay_ms,
+                                        tooltip_offset,
+                                        tooltip_anchor,
+                                        tooltip_delay_ms,
                                     },
                                     targetid,
                                     info,
@@ -5260,9 +5271,60 @@ impl<T: 'static> WindowState<T> {
                                         }
                                     }
 
-                                    // Apply shadow to popup surface if enabled
-                                    if shadow || window_state.shadow {
-                                        apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
+                                    // Shadow for popups is deferred until the first
+                                    // content frame to avoid a visible flash of
+                                    // shadow around an empty/transparent surface.
+                                    // iced_layershell applies ShadowChange after
+                                    // the popup's first present.
+
+                                    // Create tooltip object if tooltip settings are provided
+                                    let has_tooltip = tooltip_offset.is_some()
+                                        || tooltip_anchor.is_some()
+                                        || tooltip_delay_ms.is_some();
+                                    if has_tooltip {
+                                        // Bind the tooltip manager lazily
+                                        if window_state.tooltip_manager.is_none() {
+                                            if let Some(globals) = &window_state.globals {
+                                                window_state.tooltip_manager = globals
+                                                    .bind::<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, _, _>(
+                                                        &qh,
+                                                        1..=1,
+                                                        (),
+                                                    )
+                                                    .ok();
+                                                if window_state.tooltip_manager.is_some() {
+                                                    log::info!("Bound tooltip manager");
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(manager) = &window_state.tooltip_manager {
+                                            let parent_surface = &window_state.units[index].wl_surface;
+                                            let tooltip_data = tooltip::TooltipData {
+                                                tooltip_surface: wl_surface.clone(),
+                                                parent_surface: parent_surface.clone(),
+                                            };
+                                            let tooltip_obj = manager.get_tooltip(
+                                                &wl_surface,
+                                                parent_surface,
+                                                &qh,
+                                                tooltip_data,
+                                            );
+                                            if let Some((ox, oy)) = tooltip_offset {
+                                                tooltip_obj.set_offset(ox, oy);
+                                            }
+                                            if let Some(a) = tooltip_anchor {
+                                                if let Ok(anchor_val) = tooltip::zcosmic_tooltip_v1::Anchor::try_from(a) {
+                                                    tooltip_obj.set_anchor(anchor_val);
+                                                }
+                                            }
+                                            if let Some(delay) = tooltip_delay_ms {
+                                                tooltip_obj.set_show_delay(delay);
+                                            }
+                                            window_state.tooltip_surfaces.insert(surface_id, tooltip_obj);
+                                        } else {
+                                            log::warn!("Tooltip manager not available — compositor may not support tooltips");
+                                        }
                                     }
 
                                     // Set empty input region so pointer events pass through
@@ -5272,43 +5334,10 @@ impl<T: 'static> WindowState<T> {
                                         region.destroy();
                                     }
 
-                                    // Register with compositor-driven tooltip protocol if offset is set
-                                    // if let Some((tx, ty)) = tooltip_offset {
-                                    //     // Lazily bind the tooltip manager
-                                    //     if window_state.tooltip_manager.is_none() {
-                                    //         if let Ok(manager) = globals
-                                    //             .bind::<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, _, _>(
-                                    //                 &qh, 1..=1, (),
-                                    //             ) {
-                                    //             window_state.tooltip_manager = Some(manager);
-                                    //             log::info!("Bound zcosmic_tooltip_manager_v1");
-                                    //         }
-                                    //     }
-                                    //     if let Some(manager) = &window_state.tooltip_manager {
-                                    //         // let parent_surface = &window_state.units[index].wl_surface;
-                                    //         // let tooltip_data = tooltip::TooltipData {
-                                    //         //     tooltip_surface: wl_surface.clone(),
-                                    //         //     parent_surface: parent_surface.clone(),
-                                    //         // };
-                                    //         // let tooltip_obj = manager.get_tooltip(
-                                    //         //     &wl_surface,
-                                    //         //     parent_surface,
-                                    //         //     &qh,
-                                    //         //     tooltip_data,
-                                    //         // );
-                                    //         // tooltip_obj.set_offset(tx, ty);
-                                    //         // if let Some(anchor_val) = tooltip_anchor {
-                                    //         //     if let Ok(a) = tooltip::zcosmic_tooltip_v1::Anchor::try_from(anchor_val) {
-                                    //         //         tooltip_obj.set_anchor(a);
-                                    //         //     }
-                                    //         // }
-                                    //         // if let Some(delay_ms) = tooltip_delay_ms {
-                                    //         //     tooltip_obj.set_show_delay(delay_ms);
-                                    //         // }
-                                    //         // window_state.tooltip_surfaces.insert(surface_id, tooltip_obj);
-                                    //         // log::debug!("Created tooltip object for popup surface {} with offset ({}, {})", surface_id, tx, ty);
-                                    //     }
-                                    // }
+                                    // Always set window geometry so the compositor
+                                    // knows the visible content bounds for anchor
+                                    // calculations/constraint adjustment.
+                                    wl_xdg_surface.set_window_geometry(0, 0, width as i32, height as i32);
 
                                     let mut fractional_scale = None;
                                     if let Some(ref fractional_scale_manager) =

@@ -360,6 +360,10 @@ where
     /// Popup IDs where Hide was requested before Show was processed.
     /// When Show arrives for one of these IDs, skip creation entirely.
     cancelled_popups: std::collections::HashSet<IcedId>,
+    /// Popup IDs that need shadow applied after their first content frame.
+    /// Shadow is deferred to avoid a visible flash of shadow around an
+    /// empty/transparent surface before the popup content is drawn.
+    popup_pending_shadow: std::collections::HashSet<IcedId>,
 }
 
 impl<P, E, C> Context<P, E, C>
@@ -401,6 +405,7 @@ where
             proxy,
             pending_popups: HashMap::new(),
             cancelled_popups: std::collections::HashSet::new(),
+            popup_pending_shadow: std::collections::HashSet::new(),
         }
     }
 
@@ -955,6 +960,13 @@ where
         ) {
             Ok(()) => {
                 present_span.finish();
+
+                // Apply deferred shadow for popups after their first
+                // content frame to avoid shadow-around-empty-surface flash.
+                if self.popup_pending_shadow.remove(&iced_id) {
+                    self.waiting_layer_shell_actions
+                        .push((Some(iced_id), LayershellCustomAction::ShadowChange(true)));
+                }
             }
             Err(error) => match error {
                 compositor::SurfaceError::OutOfMemory => {
@@ -1149,6 +1161,7 @@ where
             &mut self.iced_events,
             &mut self.pending_popups,
             &mut self.cancelled_popups,
+            &mut self.popup_pending_shadow,
         );
         if should_exit {
             ev.append_return_data(ReturnData::RequestExit);
@@ -1379,9 +1392,9 @@ where
                     reactive: false,
                     grab: false,
                     input_passthrough: false,
-                    // tooltip_offset: None,
-                    // tooltip_anchor: None,
-                    // tooltip_delay_ms: None,
+                    tooltip_offset: None,
+                    tooltip_anchor: None,
+                    tooltip_delay_ms: None,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1424,9 +1437,9 @@ where
                     reactive: false,
                     grab: false,
                     input_passthrough: false,
-                    // tooltip_offset: None,
-                    // tooltip_anchor: None,
-                    // tooltip_delay_ms: None,
+                    tooltip_offset: None,
+                    tooltip_anchor: None,
+                    tooltip_delay_ms: None,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -1902,6 +1915,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
     iced_events: &mut Vec<(IcedId, IcedEvent)>,
     pending_popups: &mut HashMap<IcedId, layershellev::id::Id>,
     cancelled_popups: &mut std::collections::HashSet<IcedId>,
+    popup_pending_shadow: &mut std::collections::HashSet<IcedId>,
 ) where
     P: IcedProgram + 'static,
     C: Compositor<Renderer = P::Renderer> + 'static,
@@ -2097,6 +2111,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 // If this popup was already cancelled by a Hide
                                 // that arrived before this Show, skip creation.
                                 if cancelled_popups.remove(&popup_iced_id) {
+                                    popup_pending_shadow.remove(&popup_iced_id);
                                     tracing::debug!(
                                         popup = ?popup_iced_id,
                                         "xdg_popup: Show skipped — popup was pre-cancelled by Hide"
@@ -2153,9 +2168,9 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     reactive: positioner.reactive,
                                     grab: settings.grab,
                                     input_passthrough: settings.input_passthrough,
-                                    // tooltip_offset: settings.tooltip_offset,
-                                    // tooltip_anchor: settings.tooltip_anchor,
-                                    // tooltip_delay_ms: settings.tooltip_delay_ms,
+                                    tooltip_offset: settings.tooltip_offset,
+                                    tooltip_anchor: settings.tooltip_anchor,
+                                    tooltip_delay_ms: settings.tooltip_delay_ms,
                                 };
 
                                 let layer_shell_id = layershellev::id::Id::unique();
@@ -2163,6 +2178,11 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 // so that a Hide arriving before WindowOpened can still
                                 // find and close the layershell surface.
                                 pending_popups.insert(popup_iced_id, layer_shell_id);
+                                // Defer shadow for popups so it's applied after
+                                // the first content frame (avoids transparent flash).
+                                if ev.has_shadow() {
+                                    popup_pending_shadow.insert(popup_iced_id);
+                                }
                                 ev.append_return_data(ReturnData::NewPopUp((
                                     popup_settings,
                                     layer_shell_id,
@@ -2181,6 +2201,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                         "xdg_popup: Hide via window_manager"
                                     );
                                     pending_popups.remove(&id);
+                                    popup_pending_shadow.remove(&id);
                                     ev.request_close(window.id);
                                 } else if let Some(layer_id) = pending_popups.remove(&id) {
                                     tracing::debug!(
@@ -2188,6 +2209,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                         layer_id = ?layer_id,
                                         "xdg_popup: Hide via pending_popups (before WindowOpened)"
                                     );
+                                    popup_pending_shadow.remove(&id);
                                     ev.request_close(layer_id);
                                 } else {
                                     // Hide arrived before Show was processed.
