@@ -3226,11 +3226,17 @@ impl<T> Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for WindowStat
         _qhandle: &QueueHandle<Self>,
     ) {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            log::trace!(
+                "fractional_scale PreferredScale RECEIVED: scale_raw={}, scale_float={}",
+                scale,
+                scale as f64 / 120.
+            );
             let Some(unit) = state.units.iter_mut().find(|info| {
                 info.fractional_scale
                     .as_ref()
                     .is_some_and(|fractional_scale| fractional_scale == proxy)
             }) else {
+                log::warn!("PreferredScale: could not find unit for fractional_scale proxy");
                 return;
             };
             log::debug!(

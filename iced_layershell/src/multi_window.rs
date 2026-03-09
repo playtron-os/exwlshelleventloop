@@ -581,6 +581,17 @@ where
                 position: None,
                 size: window.state.window_size_f32(),
             }));
+
+            // Emit Rescaled event so apps can read the compositor scale via
+            // window::scale_factor(). PreferredScale typically arrives before
+            // the window is registered, so handle_window_event never fires
+            // for the initial scale. Emit it here instead.
+            if scale_float != 1.0 {
+                events.push(IcedEvent::Window(IcedWindowEvent::Rescaled(
+                    scale_float as f32,
+                )));
+            }
+
             (iced_id, window)
         };
 
@@ -2021,7 +2032,9 @@ pub(crate) fn run_action<P, C, E: Executor>(
             }
             WindowAction::GetScaleFactor(id, channel) => {
                 if let Some(window) = window_manager.get_mut(id) {
-                    let _ = channel.send(window.state.wayland_scale_factor() as f32);
+                    let sf = window.state.wayland_scale_factor() as f32;
+                    tracing::trace!("GetScaleFactor: id={:?}, wayland_scale_factor={}", id, sf);
+                    let _ = channel.send(sf);
                 };
             }
             WindowAction::RedrawAll => {

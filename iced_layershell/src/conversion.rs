@@ -145,6 +145,9 @@ pub fn window_event(
         )),
         LayerShellEvent::Unfocus => Some(IcedEvent::Window(iced_core::window::Event::Unfocused)),
         LayerShellEvent::Focused => Some(IcedEvent::Window(iced_core::window::Event::Focused)),
+        LayerShellEvent::ScaleFactorChanged { scale_float, .. } => Some(IcedEvent::Window(
+            iced_core::window::Event::Rescaled(*scale_float as f32),
+        )),
         LayerShellEvent::Ime(event) => Some(IcedEvent::InputMethod(match event {
             layershellev::Ime::Enabled => input_method::Event::Opened,
             layershellev::Ime::Preedit(content, size) => {

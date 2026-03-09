@@ -179,6 +179,10 @@ where
                 scale_float,
                 scale_u32: _,
             } => {
+                tracing::trace!(
+                    "State::update ScaleFactorChanged: scale_float={}, prev={}",
+                    scale_float, self.wayland_scale_factor
+                );
                 self.wayland_scale_factor = *scale_float;
                 self.resize_viewport();
             }
