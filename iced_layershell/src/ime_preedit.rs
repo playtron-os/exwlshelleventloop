@@ -73,6 +73,7 @@ where
                 wrapping: text::Wrapping::None,
                 ellipsis: text::Ellipsis::None,
                 hint_factor: Some(1.0),
+                letter_spacing: None,
             });
 
             self.spans.clear();
