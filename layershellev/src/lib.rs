@@ -5202,7 +5202,7 @@ impl<T: 'static> WindowState<T> {
                                         size: (width, height),
                                         position: (x, y),
                                         id,
-                                        shadow,
+                                        shadow: _,
                                         corner_radius,
                                         auto_size: _, // Auto-size is handled at the iced level
                                         anchor_rect_size,
