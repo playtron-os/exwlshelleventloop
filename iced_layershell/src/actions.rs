@@ -110,6 +110,10 @@ pub enum LayershellCustomAction {
         id: IcedId,
     },
     SetInputRegion(ActionCallback),
+    /// Set a specific blur region for the surface. The callback receives a `WlRegion`
+    /// to which the caller adds rectangles defining where blur should be applied.
+    /// To clear blur, add no rectangles.
+    SetBlurRegion(ActionCallback),
     NewPopUp {
         settings: IcedNewPopupSettings,
         id: IcedId,

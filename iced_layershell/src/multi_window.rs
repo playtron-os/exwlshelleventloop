@@ -1257,6 +1257,27 @@ where
                 };
                 ev.set_blur_for_surface(&surface, enabled);
             }
+            LayershellCustomAction::SetBlurRegion(set_region) => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let set_region = set_region.0;
+                let Some(region) = &self.wl_input_region else {
+                    tracing::warn!(
+                        "wl_input_region is not set, ignore SetBlurRegion, window_id: {:?}",
+                        iced_id
+                    );
+                    return;
+                };
+
+                let window_size = layer_shell_window.get_size();
+                let width: i32 = window_size.0.try_into().unwrap_or_default();
+                let height: i32 = window_size.1.try_into().unwrap_or_default();
+
+                // Clear region first, then let callback add blur rectangles
+                region.subtract(0, 0, width, height);
+
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.set_blur_region_for_surface(&surface, region, |r| set_region(r));
+            }
             LayershellCustomAction::ShadowChange(enabled) => {
                 let surface = {
                     ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);

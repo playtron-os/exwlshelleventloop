@@ -1457,6 +1457,67 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
+    /// Set a specific blur region for a surface. The callback receives a WlRegion
+    /// to which the caller adds rectangles. If no rectangles are added, blur is
+    /// disabled for the surface.
+    ///
+    /// This creates/replaces the blur object each time to update the region.
+    pub fn set_blur_region_for_surface<F>(
+        &mut self,
+        surface: &WlSurface,
+        region: &WlRegion,
+        set_region: F,
+    ) where
+        F: FnOnce(&WlRegion),
+    {
+        let surface_id = surface.id().protocol_id();
+
+        // Ensure blur manager is bound
+        if self.blur_manager.is_none() {
+            if let Some(globals) = &self.globals {
+                if let Some(unit) = self.units.first() {
+                    self.blur_manager = globals
+                        .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
+                            &unit.qh,
+                            1..=1,
+                            (),
+                        )
+                        .ok();
+                    if self.blur_manager.is_some() {
+                        log::info!("Bound blur manager");
+                    }
+                }
+            }
+        }
+
+        let Some(manager) = &self.blur_manager else {
+            log::warn!("Blur manager not available - compositor may not support blur");
+            return;
+        };
+
+        // Release old blur object if any
+        if let Some(old_blur) = self.blur_surfaces.remove(&surface_id) {
+            old_blur.release();
+        }
+
+        let Some(unit) = self.units.first() else {
+            return;
+        };
+
+        let blur_data = blur::BlurData {
+            surface: surface.clone(),
+        };
+        let blur_obj = manager.create(surface, &unit.qh, blur_data);
+
+        // Let the caller define the blur region via the WlRegion
+        set_region(region);
+        blur_obj.set_region(Some(region));
+        blur_obj.commit();
+        self.blur_surfaces.insert(surface_id, blur_obj);
+        surface.commit();
+        log::info!("Set blur region for surface");
+    }
+
     /// Enable or disable shadow effect for a specific surface.
     /// Requires compositor support for layer_shadow_manager_v1 protocol.
     pub fn set_shadow_for_surface(&mut self, surface: &WlSurface, enabled: bool) {
