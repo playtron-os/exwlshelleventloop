@@ -1309,6 +1309,10 @@ where
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 layer_shell_window.set_exclusive_zone(zone_size);
             }
+            LayershellCustomAction::KeyboardInteractivityChange(interactivity) => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                layer_shell_window.set_keyboard_interactivity(interactivity);
+            }
             LayershellCustomAction::SetInputRegion(set_region) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let set_region = set_region.0;

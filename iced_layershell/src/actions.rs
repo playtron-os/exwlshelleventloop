@@ -1,4 +1,4 @@
-use crate::reexport::{Anchor, Layer, WlRegion};
+use crate::reexport::{Anchor, KeyboardInteractivity, Layer, WlRegion};
 use iced_core::window::Id as IcedId;
 use layershellev::{NewInputPanelSettings, NewLayerShellSettings, NewXdgWindowSettings};
 
@@ -100,6 +100,7 @@ pub enum LayershellCustomAction {
     /// Disable compositor-driven auto-hide for the surface.
     AutoHideUnset,
     ExclusiveZoneChange(i32),
+    KeyboardInteractivityChange(KeyboardInteractivity),
     VirtualKeyboardPressed {
         time: u32,
         key: u32,

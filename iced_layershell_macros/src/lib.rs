@@ -48,6 +48,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange{id: iced_layershell::reexport::IcedId, radii: Option<[u32; 4]>},
                 ExclusiveZoneChange{id: iced_layershell::reexport::IcedId, zone_size: i32},
+                KeyboardInteractivityChange{id: iced_layershell::reexport::IcedId, interactivity: iced_layershell::reexport::KeyboardInteractivity},
                 VirtualKeyboardPressed {
                     time: u32,
                     key: u32,
@@ -118,6 +119,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::SizeChange { id, size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange { id, radii } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::CornerRadiusChange(radii))),
                             Self::ExclusiveZoneChange { id, zone_size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ExclusiveZoneChange(zone_size))),
+                            Self::KeyboardInteractivityChange { id, interactivity } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(
                                 None,
                                 LayershellCustomAction::VirtualKeyboardPressed { time, key })
@@ -155,6 +157,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange(Option<[u32; 4]>),
                 ExclusiveZoneChange(i32),
+                KeyboardInteractivityChange(iced_layershell::reexport::KeyboardInteractivity),
                 VirtualKeyboardPressed {
                     time: u32,
                     key: u32,
@@ -184,6 +187,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::SizeChange(size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange(radii) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::CornerRadiusChange(radii))),
                             Self::ExclusiveZoneChange(zone_size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ExclusiveZoneChange(zone_size))),
+                            Self::KeyboardInteractivityChange(interactivity) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VirtualKeyboardPressed {
                                 time,
                                 key

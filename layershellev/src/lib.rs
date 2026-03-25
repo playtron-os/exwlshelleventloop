@@ -717,6 +717,17 @@ impl<T> WindowStateUnit<T> {
         }
     }
 
+    /// set keyboard interactivity for the layer surface
+    pub fn set_keyboard_interactivity(
+        &self,
+        interactivity: zwlr_layer_surface_v1::KeyboardInteractivity,
+    ) {
+        if let Shell::LayerShell(layer_shell) = &self.shell {
+            layer_shell.set_keyboard_interactivity(interactivity);
+            self.wl_surface.commit();
+        }
+    }
+
     /// you can use this function to set a binding data. the message passed back contain
     /// a index, you can use that to get the unit. It will be very useful, because you can
     /// use the binding data to operate the file binding to the buffer. you can take
