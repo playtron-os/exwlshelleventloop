@@ -60,6 +60,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 NewInputPanel { settings: iced_layershell::reexport::NewInputPanelSettings, id: iced_layershell::reexport::IcedId },
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
+                /// Hide the window without destroying it (uses layer_surface_visibility protocol)
+                HideWindow(iced_layershell::reexport::IcedId),
+                /// Show the window if it was previously hidden
+                ShowWindow(iced_layershell::reexport::IcedId),
                 VisibilityModeChange { id: iced::window::Id, mode: iced_layershell::actions::VisibilityMode },
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
@@ -131,6 +135,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::NewInputPanel {settings, id } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::NewInputPanel { settings, id })),
                             Self::RemoveWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
+                            Self::HideWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::HideWindow)),
+                            Self::ShowWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ShowWindow)),
                             Self::VisibilityModeChange { id, mode } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
@@ -162,6 +168,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                     time: u32,
                     key: u32,
                 },
+                /// Hide the window without destroying it (uses layer_surface_visibility protocol)
+                HideWindow,
+                /// Show the window if it was previously hidden
+                ShowWindow,
                 VisibilityModeChange(iced_layershell::actions::VisibilityMode),
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
@@ -192,6 +202,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                                 time,
                                 key
                             })),
+                            Self::HideWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::HideWindow)),
+                            Self::ShowWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ShowWindow)),
                             Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),

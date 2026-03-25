@@ -1499,34 +1499,19 @@ where
                 ev.forget_last_output();
             }
             LayershellCustomAction::HideWindow => {
-                // Get the surface to hide
-                let surface = layer_shell_id.and_then(|id| {
-                    ev.get_unit_with_id(id)
-                        .map(|unit| unit.get_wlsurface().clone())
-                });
-                if let Some(surface) = surface {
-                    ev.hide_surface(&surface);
-                }
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.hide_surface(&surface);
             }
             LayershellCustomAction::ShowWindow => {
-                // Get the surface to show
-                let surface = layer_shell_id.and_then(|id| {
-                    ev.get_unit_with_id(id)
-                        .map(|unit| unit.get_wlsurface().clone())
-                });
-                if let Some(surface) = surface {
-                    ev.show_surface(&surface);
-                }
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.show_surface(&surface);
             }
             LayershellCustomAction::VisibilityModeChange(mode) => {
-                // Get the surface first to avoid borrow conflict
-                let surface = layer_shell_id.and_then(|id| {
-                    ev.get_unit_with_id(id)
-                        .map(|unit| unit.get_wlsurface().clone())
-                });
-                if let Some(surface) = surface {
-                    ev.set_visibility_mode_for_surface(&surface, mode);
-                }
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.set_visibility_mode_for_surface(&surface, mode);
             }
             #[cfg(feature = "foreign-toplevel")]
             LayershellCustomAction::ToplevelAction(action) => {
