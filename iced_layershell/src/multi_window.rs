@@ -1530,9 +1530,6 @@ where
                 let result = ev.execute_toplevel_action(action);
                 log::info!("ToplevelAction result: {}", result);
             }
-            LayershellCustomAction::SetVoiceAudioLevel(level) => {
-                ev.send_voice_audio_level(level);
-            }
             LayershellCustomAction::VoiceAckStop(serial, freeze) => {
                 ev.voice_ack_stop(serial, freeze);
             }

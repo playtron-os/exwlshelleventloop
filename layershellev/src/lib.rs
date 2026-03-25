@@ -1144,16 +1144,6 @@ impl<T> WindowState<T> {
         self.is_home
     }
 
-    /// Send audio level to compositor for voice orb visualization.
-    /// Level should be 0-1000 (0=silence, 1000=max amplitude).
-    /// Only has effect when voice mode is active.
-    pub fn send_voice_audio_level(&self, level: u32) {
-        // Send to all registered receivers
-        for receiver in self.voice_mode_receivers.values() {
-            receiver.set_audio_level(level.min(1000));
-        }
-    }
-
     /// Acknowledge a will_stop event from the compositor.
     /// serial - the serial from the will_stop event
     /// freeze - if true, freeze the orb in place for processing.

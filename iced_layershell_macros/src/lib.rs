@@ -60,7 +60,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
                 VisibilityModeChange { id: iced::window::Id, mode: iced_layershell::actions::VisibilityMode },
-                SetVoiceAudioLevel(u32),
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
                 #[cfg(feature = "foreign-toplevel")]
@@ -131,7 +130,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::RemoveWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::VisibilityModeChange { id, mode } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::VisibilityModeChange(mode))),
-                            Self::SetVoiceAudioLevel(level) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetVoiceAudioLevel(level))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
                             #[cfg(feature = "foreign-toplevel")]
@@ -162,7 +160,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                     key: u32,
                 },
                 VisibilityModeChange(iced_layershell::actions::VisibilityMode),
-                SetVoiceAudioLevel(u32),
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
                 #[cfg(feature = "foreign-toplevel")]
@@ -192,7 +189,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                                 key
                             })),
                             Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
-                            Self::SetVoiceAudioLevel(level) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetVoiceAudioLevel(level))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
                             #[cfg(feature = "foreign-toplevel")]

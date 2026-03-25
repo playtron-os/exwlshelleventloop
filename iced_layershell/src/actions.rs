@@ -140,8 +140,6 @@ pub enum LayershellCustomAction {
     ShowWindow,
     /// Change the home visibility mode for the surface
     VisibilityModeChange(VisibilityMode),
-    /// Send audio level to compositor for voice orb visualization (0-1000)
-    SetVoiceAudioLevel(u32),
     /// Acknowledge a will_stop event from the compositor.
     /// serial - the serial from the will_stop event
     /// freeze - if true, freeze the orb in place for processing.
