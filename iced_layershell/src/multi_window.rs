@@ -485,7 +485,13 @@ where
                 }
             }
             IcedLayerShellEvent::UserAction(user_action) => {
-                self.handle_user_action(ev, user_action)
+                self.handle_user_action(ev, user_action);
+                // Immediately dispatch any messages added by subscription output
+                // (e.g., keyboard events) to avoid waiting for the next timer-based
+                // NormalDispatch (~50ms delay).
+                if !self.messages.is_empty() {
+                    self.handle_normal_dispatch(ev);
+                }
             }
             IcedLayerShellEvent::NormalDispatch => self.handle_normal_dispatch(ev),
         }
