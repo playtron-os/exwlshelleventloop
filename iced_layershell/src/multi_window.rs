@@ -1036,6 +1036,13 @@ where
             return true; // Request refresh to process subscription message
         }
 
+        // Handle screencopy events - they go through a subscription channel
+        #[cfg(feature = "screencopy")]
+        if let LayerShellWindowEvent::Screencopy(ref screencopy_event) = event {
+            crate::event::send_screencopy_event(screencopy_event.clone());
+            return true;
+        }
+
         // Handle voice mode events - convert to iced event and push to iced_events for immediate processing
         if let LayerShellWindowEvent::VoiceMode(ref voice_event) = event {
             tracing::debug!(
@@ -1518,6 +1525,11 @@ where
                 log::info!("Processing ToplevelAction: {:?}", action);
                 let result = ev.execute_toplevel_action(action);
                 log::info!("ToplevelAction result: {}", result);
+            }
+            #[cfg(feature = "screencopy")]
+            LayershellCustomAction::ScreencopyAction(action) => {
+                log::debug!("Processing ScreencopyAction: {:?}", action);
+                ev.execute_screencopy_action_internal(action);
             }
             LayershellCustomAction::VoiceAckStop(serial, freeze) => {
                 ev.voice_ack_stop(serial, freeze);

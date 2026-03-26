@@ -17,6 +17,8 @@ use wayland_client::{
 
 #[cfg(feature = "foreign-toplevel")]
 use crate::foreign_toplevel::ForeignToplevelEvent;
+#[cfg(feature = "screencopy")]
+use crate::screencopy::ScreencopyEvent;
 use crate::voice_mode::VoiceModeEvent;
 use crate::{id, xkb_keyboard::KeyEvent};
 
@@ -413,6 +415,9 @@ pub(crate) enum DispatchMessageInner {
     /// Foreign toplevel event
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
+    /// Screencopy event (captured frame or failure)
+    #[cfg(feature = "screencopy")]
+    Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
 }
@@ -533,6 +538,9 @@ pub enum DispatchMessage {
     /// Foreign toplevel event (new window, window changed, window closed)
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
+    /// Screencopy event (captured frame ready or capture failed)
+    #[cfg(feature = "screencopy")]
+    Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
 }
@@ -651,6 +659,8 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::VoiceMode(event) => DispatchMessage::VoiceMode(event),
             #[cfg(feature = "foreign-toplevel")]
             DispatchMessageInner::ForeignToplevel(event) => DispatchMessage::ForeignToplevel(event),
+            #[cfg(feature = "screencopy")]
+            DispatchMessageInner::Screencopy(event) => DispatchMessage::Screencopy(event),
             DispatchMessageInner::DismissRequested => DispatchMessage::DismissRequested,
         }
     }

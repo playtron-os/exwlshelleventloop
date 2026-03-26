@@ -13,6 +13,7 @@ description = "extra shell binding for layershell with winit like eventloop"
 default = []
 foreign-toplevel = []
 cosmic-toplevel = ["foreign-toplevel", "dep:cosmic-protocols"]
+screencopy = ["foreign-toplevel"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

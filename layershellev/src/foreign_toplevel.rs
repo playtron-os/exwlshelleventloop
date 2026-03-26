@@ -141,6 +141,15 @@ pub trait ForeignToplevelHandler {
     /// Get a stored toplevel handle (for sending commands)
     fn get_toplevel_handle(&self, id: u32) -> Option<&ZwlrForeignToplevelHandleV1>;
 
+    /// Store an ext_foreign_toplevel_handle_v1 for later use (screencopy, etc.)
+    fn store_ext_toplevel_handle(&mut self, id: u32, handle: ExtForeignToplevelHandleV1);
+
+    /// Remove an ext_foreign_toplevel_handle_v1
+    fn remove_ext_toplevel_handle(&mut self, id: u32);
+
+    /// Get a stored ext_foreign_toplevel_handle_v1
+    fn get_ext_toplevel_handle(&self, id: u32) -> Option<&ExtForeignToplevelHandleV1>;
+
     /// Store a COSMIC toplevel handle for later use (internal use)
     #[cfg(feature = "cosmic-toplevel")]
     fn store_cosmic_toplevel_handle(&mut self, id: u32, handle: ZcosmicToplevelHandleV1);
@@ -369,6 +378,9 @@ where
                     );
                     state.store_cosmic_toplevel_handle(id, cosmic_handle);
                 }
+
+                // Store the ext handle for screencopy and other ext-protocol uses
+                state.store_ext_toplevel_handle(id, toplevel);
             }
             ext_foreign_toplevel_list_v1::Event::Finished => {
                 log::trace!("ext_foreign_toplevel_list: finished");
@@ -416,6 +428,9 @@ where
                 log::trace!("ext_foreign_toplevel_list: new toplevel handle id={}", id);
                 // Initialize empty state for this toplevel
                 let _ = state.get_toplevel_data(id);
+
+                // Store the ext handle for screencopy and other ext-protocol uses
+                state.store_ext_toplevel_handle(id, toplevel);
             }
             ext_foreign_toplevel_list_v1::Event::Finished => {
                 log::trace!("ext_foreign_toplevel_list: finished");
@@ -493,6 +508,7 @@ where
             ext_foreign_toplevel_handle_v1::Event::Closed => {
                 let info = state.get_toplevel_data(id).to_info(id);
                 state.remove_toplevel_data(id);
+                state.remove_ext_toplevel_handle(id);
                 state.foreign_toplevel_event(ForeignToplevelEvent::Closed(info.id));
                 proxy.destroy();
             }

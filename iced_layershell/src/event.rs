@@ -5,11 +5,13 @@ use layershellev::DispatchMessage;
 use layershellev::foreign_toplevel::ForeignToplevelEvent;
 use layershellev::keyboard::ModifiersState;
 use layershellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlRegion};
+#[cfg(feature = "screencopy")]
+pub use layershellev::screencopy::{CapturedFrame, ScreencopyEvent};
 pub use layershellev::voice_mode::VoiceModeEvent;
 use layershellev::xkb_keyboard::KeyEvent as LayerShellKeyEvent;
-#[cfg(feature = "foreign-toplevel")]
+#[cfg(any(feature = "foreign-toplevel", feature = "screencopy"))]
 use std::sync::OnceLock;
-#[cfg(feature = "foreign-toplevel")]
+#[cfg(any(feature = "foreign-toplevel", feature = "screencopy"))]
 use std::sync::mpsc;
 
 use iced_core::keyboard::Modifiers as IcedModifiers;
@@ -84,6 +86,71 @@ pub fn foreign_toplevel_subscription() -> iced_futures::Subscription<ForeignTopl
                     }
 
                     // Small async delay to avoid busy-waiting (~60fps polling)
+                    futures_timer::Delay::new(std::time::Duration::from_millis(16)).await;
+                }
+            },
+        )
+    })
+}
+
+// Global channel for screencopy events
+#[cfg(feature = "screencopy")]
+static SCREENCOPY_CHANNEL: OnceLock<(
+    std::sync::Mutex<mpsc::Sender<ScreencopyEvent>>,
+    std::sync::Mutex<mpsc::Receiver<ScreencopyEvent>>,
+)> = OnceLock::new();
+
+#[cfg(feature = "screencopy")]
+fn get_screencopy_channel() -> &'static (
+    std::sync::Mutex<mpsc::Sender<ScreencopyEvent>>,
+    std::sync::Mutex<mpsc::Receiver<ScreencopyEvent>>,
+) {
+    SCREENCOPY_CHANNEL.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send a screencopy event (called by the event loop)
+#[cfg(feature = "screencopy")]
+pub(crate) fn send_screencopy_event(event: ScreencopyEvent) {
+    let (tx, _) = get_screencopy_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for screencopy events
+///
+/// Use this to receive captured frame data from toplevel windows.
+/// Requires `screencopy: true` and `foreign_toplevel: true` in the layer shell settings.
+#[cfg(feature = "screencopy")]
+pub fn screencopy_subscription() -> iced_futures::Subscription<ScreencopyEvent> {
+    #[derive(Hash)]
+    struct ScreencopySubscription;
+
+    iced_futures::Subscription::run_with(ScreencopySubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<ScreencopyEvent>| async move {
+                use iced_futures::futures::SinkExt;
+                let (_, rx) = get_screencopy_channel();
+
+                loop {
+                    let events: Vec<ScreencopyEvent> = {
+                        if let Ok(rx) = rx.lock() {
+                            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+
+                    if !events.is_empty() {
+                        for event in events {
+                            let _ = output.send(event).await;
+                        }
+                    }
+
                     futures_timer::Delay::new(std::time::Duration::from_millis(16)).await;
                 }
             },
@@ -203,6 +270,9 @@ pub enum WindowEvent {
     /// Foreign toplevel event (window created, changed, or closed)
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
+    /// Screencopy event (captured frame or failure)
+    #[cfg(feature = "screencopy")]
+    Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
 }
@@ -316,6 +386,8 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::VoiceMode(event) => WindowEvent::VoiceMode(event.clone()),
             #[cfg(feature = "foreign-toplevel")]
             DispatchMessage::ForeignToplevel(event) => WindowEvent::ForeignToplevel(event.clone()),
+            #[cfg(feature = "screencopy")]
+            DispatchMessage::Screencopy(event) => WindowEvent::Screencopy(event.clone()),
             DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
         }
     }

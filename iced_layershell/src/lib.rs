@@ -21,6 +21,8 @@ pub mod reexport {
     pub use layershellev::reexport::KeyboardInteractivity;
     pub use layershellev::reexport::Layer;
     pub use layershellev::reexport::wayland_client::{WlRegion, wl_keyboard};
+    #[cfg(feature = "screencopy")]
+    pub use layershellev::screencopy::{CapturedFrame, ScreencopyAction, ScreencopyEvent};
     pub mod core {
         pub use iced_core::*;
     }

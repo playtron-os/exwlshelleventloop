@@ -9,6 +9,10 @@ pub use layershellev::home_visibility::VisibilityMode;
 #[cfg(feature = "foreign-toplevel")]
 pub use layershellev::foreign_toplevel::ToplevelAction;
 
+// Re-export ScreencopyAction for consumers
+#[cfg(feature = "screencopy")]
+pub use layershellev::screencopy::ScreencopyAction;
+
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -153,6 +157,9 @@ pub enum LayershellCustomAction {
     /// Execute a toplevel action (activate, close, minimize, etc.)
     #[cfg(feature = "foreign-toplevel")]
     ToplevelAction(ToplevelAction),
+    /// Execute a screencopy action (capture a toplevel window screenshot)
+    #[cfg(feature = "screencopy")]
+    ScreencopyAction(ScreencopyAction),
     /// Arm dismiss notifications for this window.
     /// Once armed, a DismissRequested event will be sent when the user
     /// clicks/touches outside the window's dismiss group.

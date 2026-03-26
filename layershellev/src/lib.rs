@@ -127,6 +127,8 @@ pub mod home_visibility;
 pub mod layer_auto_hide;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
+#[cfg(feature = "screencopy")]
+pub mod screencopy;
 pub mod shadow;
 mod strtoshape;
 pub mod tooltip;
@@ -1055,6 +1057,20 @@ pub struct WindowState<T> {
     #[cfg(feature = "foreign-toplevel")]
     foreign_toplevel_handles: HashMap<u32, wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1>,
 
+    /// Ext foreign toplevel handles (for screencopy capture sources)
+    #[cfg(feature = "foreign-toplevel")]
+    ext_toplevel_handles: HashMap<u32, wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1>,
+
+    /// Screencopy protocol state
+    #[cfg(feature = "screencopy")]
+    screencopy: screencopy::ScreencopyState,
+    /// Cached QueueHandle for use after event_queue is taken by the event loop
+    #[cfg(feature = "screencopy")]
+    queue_handle: Option<wayland_client::QueueHandle<WindowState<T>>>,
+    /// Cached WlShm for use after shm is taken by the event loop
+    #[cfg(feature = "screencopy")]
+    screencopy_shm: Option<wayland_client::protocol::wl_shm::WlShm>,
+
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
     text_inputs: Vec<ZwpTextInputV3>,
@@ -1288,6 +1304,44 @@ impl<T> WindowState<T> {
         T: 'static,
     {
         foreign_toplevel::execute_toplevel_action(self, action, self.seat.as_ref())
+    }
+
+    /// Execute a screencopy action (capture a toplevel window screenshot)
+    ///
+    /// Requires the `screencopy` feature.
+    #[cfg(feature = "screencopy")]
+    pub fn execute_screencopy_action(
+        &mut self,
+        action: screencopy::ScreencopyAction,
+        qh: &QueueHandle<Self>,
+    ) where
+        T: 'static,
+    {
+        match action {
+            screencopy::ScreencopyAction::Capture(toplevel_id) => {
+                screencopy::start_capture(self, toplevel_id, qh);
+            }
+        }
+    }
+
+    /// Execute a screencopy action using the internal event queue handle
+    #[cfg(feature = "screencopy")]
+    pub fn execute_screencopy_action_internal(&mut self, action: screencopy::ScreencopyAction)
+    where
+        T: 'static,
+    {
+        let qh = match self.queue_handle.as_ref() {
+            Some(qh) => qh.clone(),
+            None => {
+                log::warn!("Screencopy action dropped: queue_handle not yet initialized");
+                return;
+            }
+        };
+        match action {
+            screencopy::ScreencopyAction::Capture(toplevel_id) => {
+                screencopy::start_capture(self, toplevel_id, &qh);
+            }
+        }
     }
 
     pub fn ime_allowed(&self) -> bool {
@@ -2379,6 +2433,14 @@ impl<T> Default for WindowState<T> {
             foreign_toplevel_data: HashMap::new(),
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel_handles: HashMap::new(),
+            #[cfg(feature = "foreign-toplevel")]
+            ext_toplevel_handles: HashMap::new(),
+            #[cfg(feature = "screencopy")]
+            screencopy: screencopy::ScreencopyState::new(),
+            #[cfg(feature = "screencopy")]
+            queue_handle: None,
+            #[cfg(feature = "screencopy")]
+            screencopy_shm: None,
 
             text_input_manager: None,
             text_input: None,
@@ -3938,6 +4000,22 @@ impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
         self.foreign_toplevel_handles.get(&id)
     }
 
+    fn store_ext_toplevel_handle(
+        &mut self,
+        id: u32,
+        handle: wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+    ) {
+        self.ext_toplevel_handles.insert(id, handle);
+    }
+
+    fn remove_ext_toplevel_handle(&mut self, id: u32) {
+        self.ext_toplevel_handles.remove(&id);
+    }
+
+    fn get_ext_toplevel_handle(&self, id: u32) -> Option<&wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1>{
+        self.ext_toplevel_handles.get(&id)
+    }
+
     #[cfg(feature = "cosmic-toplevel")]
     fn store_cosmic_toplevel_handle(
         &mut self,
@@ -3966,6 +4044,37 @@ impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
     #[cfg(feature = "cosmic-toplevel")]
     fn cosmic_toplevel_info(&self) -> Option<&cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>{
         self.cosmic_toplevel_info.as_ref()
+    }
+}
+
+// Screencopy handler implementation
+#[cfg(feature = "screencopy")]
+impl<T: 'static> screencopy::ScreencopyHandler for WindowState<T> {
+    fn screencopy_event(&mut self, event: screencopy::ScreencopyEvent) {
+        log::trace!("Queuing screencopy event");
+        self.message
+            .push((None, DispatchMessageInner::Screencopy(event)));
+    }
+
+    fn screencopy_state(&self) -> &screencopy::ScreencopyState {
+        &self.screencopy
+    }
+
+    fn screencopy_state_mut(&mut self) -> &mut screencopy::ScreencopyState {
+        &mut self.screencopy
+    }
+
+    fn get_shm(&self) -> Option<&wayland_client::protocol::wl_shm::WlShm> {
+        self.shm.as_ref().or(self.screencopy_shm.as_ref())
+    }
+
+    fn get_ext_toplevel_handle(
+        &self,
+        id: u32,
+    ) -> Option<
+        &wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+    >{
+        self.ext_toplevel_handles.get(&id)
     }
 }
 
@@ -4193,6 +4302,162 @@ impl<T: 'static>
         <() as Dispatch<
             cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
             foreign_toplevel::CosmicToplevelManagerData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+// Screencopy protocol dispatches
+#[cfg(feature = "screencopy")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
+        screencopy::CaptureManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
+        event: <wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1 as Proxy>::Event,
+        data: &screencopy::CaptureManagerData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
+            screencopy::CaptureManagerData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+#[cfg(feature = "screencopy")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::image_capture_source::v1::client::ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
+        screencopy::CaptureSourceManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::image_capture_source::v1::client::ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
+        event: <wayland_protocols::ext::image_capture_source::v1::client::ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1 as Proxy>::Event,
+        data: &screencopy::CaptureSourceManagerData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols::ext::image_capture_source::v1::client::ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
+            screencopy::CaptureSourceManagerData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+#[cfg(feature = "screencopy")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::image_capture_source::v1::client::ext_image_capture_source_v1::ExtImageCaptureSourceV1,
+        screencopy::ImageCaptureSourceData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::image_capture_source::v1::client::ext_image_capture_source_v1::ExtImageCaptureSourceV1,
+        event: <wayland_protocols::ext::image_capture_source::v1::client::ext_image_capture_source_v1::ExtImageCaptureSourceV1 as Proxy>::Event,
+        data: &screencopy::ImageCaptureSourceData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols::ext::image_capture_source::v1::client::ext_image_capture_source_v1::ExtImageCaptureSourceV1,
+            screencopy::ImageCaptureSourceData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+#[cfg(feature = "screencopy")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
+        screencopy::CaptureSessionData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
+        event: wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::Event,
+        data: &screencopy::CaptureSessionData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
+            screencopy::CaptureSessionData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+#[cfg(feature = "screencopy")]
+impl<T: 'static>
+    Dispatch<
+        wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
+        screencopy::CaptureFrameData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
+        event: wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::Event,
+        data: &screencopy::CaptureFrameData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
+            screencopy::CaptureFrameData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+#[cfg(feature = "screencopy")]
+impl<T: 'static> Dispatch<wayland_client::protocol::wl_buffer::WlBuffer, screencopy::BufferData>
+    for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_client::protocol::wl_buffer::WlBuffer,
+        event: <wayland_client::protocol::wl_buffer::WlBuffer as Proxy>::Event,
+        data: &screencopy::BufferData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_client::protocol::wl_buffer::WlBuffer,
+            screencopy::BufferData,
+            Self,
+        >>::event(state, proxy, event, data, conn, qhandle)
+    }
+}
+
+#[cfg(feature = "screencopy")]
+impl<T: 'static> Dispatch<wayland_client::protocol::wl_shm_pool::WlShmPool, screencopy::ShmPoolData>
+    for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        proxy: &wayland_client::protocol::wl_shm_pool::WlShmPool,
+        event: <wayland_client::protocol::wl_shm_pool::WlShmPool as Proxy>::Event,
+        data: &screencopy::ShmPoolData,
+        conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        <() as Dispatch<
+            wayland_client::protocol::wl_shm_pool::WlShmPool,
+            screencopy::ShmPoolData,
             Self,
         >>::event(state, proxy, event, data, conn, qhandle)
     }
@@ -4474,6 +4739,42 @@ impl<T: 'static> WindowState<T> {
             if !has_control {
                 log::warn!(
                     "Foreign toplevel control (activate, close, etc.) not available - no supported protocol found"
+                );
+            }
+        }
+
+        // Bind screencopy protocols if enabled
+        #[cfg(feature = "screencopy")]
+        if self.foreign_toplevel_enabled {
+            self.screencopy.capture_manager = globals
+                .bind::<wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1, _, _>(
+                    &qh,
+                    1..=1,
+                    screencopy::CaptureManagerData::default(),
+                )
+                .ok();
+            if self.screencopy.capture_manager.is_some() {
+                log::info!("Successfully bound ext_image_copy_capture_manager_v1 for screencopy");
+            }
+
+            self.screencopy.source_manager = globals
+                .bind::<wayland_protocols::ext::image_capture_source::v1::client::ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1, _, _>(
+                    &qh,
+                    1..=1,
+                    screencopy::CaptureSourceManagerData::default(),
+                )
+                .ok();
+            if self.screencopy.source_manager.is_some() {
+                log::info!(
+                    "Successfully bound ext_foreign_toplevel_image_capture_source_manager_v1 for screencopy"
+                );
+            }
+
+            if self.screencopy.is_available() {
+                log::info!("Screencopy support is available");
+            } else {
+                log::debug!(
+                    "Screencopy not fully available (missing one or both protocol globals)"
                 );
             }
         }
@@ -4828,8 +5129,16 @@ impl<T: 'static> WindowState<T> {
         let globals = self.globals.take().unwrap();
         let mut event_queue_origin = self.event_queue.take().unwrap();
         let qh = event_queue_origin.handle();
+        #[cfg(feature = "screencopy")]
+        {
+            self.queue_handle = Some(qh.clone());
+        }
         let wmcompositer = self.wl_compositor.take().unwrap();
         let shm = self.shm.take().unwrap();
+        #[cfg(feature = "screencopy")]
+        {
+            self.screencopy_shm = Some(shm.clone());
+        }
         let fractional_scale_manager = self.fractional_scale_manager.take();
         let cursor_manager: Option<WpCursorShapeManagerV1> = self.cursor_manager.take();
         let xdg_output_manager = self.xdg_output_manager.take().unwrap();

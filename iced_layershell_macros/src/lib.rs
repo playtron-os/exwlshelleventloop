@@ -69,6 +69,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 VoiceDismiss,
                 #[cfg(feature = "foreign-toplevel")]
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
+                #[cfg(feature = "screencopy")]
+                ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
 
             let impl_quote = quote! {
@@ -142,6 +144,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
                             #[cfg(feature = "foreign-toplevel")]
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
+                            #[cfg(feature = "screencopy")]
+                            Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)
                         }
                     }
@@ -177,6 +181,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 VoiceDismiss,
                 #[cfg(feature = "foreign-toplevel")]
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
+                #[cfg(feature = "screencopy")]
+                ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
             let impl_quote = quote! {
                 impl #impl_gen TryInto<iced_layershell::actions::LayershellCustomActionWithId> for #ident #ty_gen #where_gen {
@@ -209,6 +215,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
                             #[cfg(feature = "foreign-toplevel")]
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
+                            #[cfg(feature = "screencopy")]
+                            Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)
                         }
                     }
