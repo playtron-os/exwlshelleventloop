@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::AsFd;
+use std::time::Instant;
 
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_shm;
@@ -53,7 +54,21 @@ pub enum ScreencopyEvent {
 pub enum ScreencopyAction {
     /// Capture a single frame from the toplevel with the given ext handle ID
     Capture(u32),
+    /// Start continuous capture for all active sessions.
+    /// Frames auto-recapture at the wayland level without round-tripping through iced.
+    /// The target dimensions are used for server-side downscaling so only small
+    /// thumbnail data (≈500KB) flows through the event channel instead of
+    /// full-resolution frames (14+ MB).
+    StartContinuous {
+        target_width: u32,
+        target_height: u32,
+    },
+    /// Stop continuous capture. No more auto-recapture after current in-flight frames.
+    StopContinuous,
 }
+
+/// Minimum interval between captures per toplevel (~30fps)
+const MIN_CAPTURE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 // ============================================================================
 // Internal state
@@ -67,23 +82,50 @@ pub(crate) struct SessionConstraints {
     pub shm_format: Option<wl_shm::Format>,
 }
 
-/// Pending frame: SHM file + metadata for reading pixels after the ready event
-pub(crate) struct PendingFrame {
-    pub toplevel_id: u32,
+/// One SHM-backed buffer in the double-buffer swapchain
+pub(crate) struct ShmBuffer {
+    pub file: std::fs::File,
+    pub wl_buffer: WlBuffer,
     pub width: u32,
     pub height: u32,
     pub shm_format: wl_shm::Format,
-    pub file: std::fs::File,
 }
 
-impl std::fmt::Debug for PendingFrame {
+impl std::fmt::Debug for ShmBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingFrame")
-            .field("toplevel_id", &self.toplevel_id)
+        f.debug_struct("ShmBuffer")
             .field("width", &self.width)
             .field("height", &self.height)
             .field("shm_format", &self.shm_format)
             .finish()
+    }
+}
+
+impl Drop for ShmBuffer {
+    fn drop(&mut self) {
+        self.wl_buffer.destroy();
+    }
+}
+
+/// Double-buffer swapchain for a toplevel capture session
+#[derive(Debug)]
+pub(crate) struct BufferSwapchain {
+    pub buffers: [ShmBuffer; 2],
+    /// Index of the back buffer (being captured into)
+    pub back: usize,
+    /// Whether a capture is currently in flight (waiting for Ready)
+    pub capture_in_flight: bool,
+}
+
+impl BufferSwapchain {
+    /// Get the back buffer (compositor writes here)
+    pub fn back_buffer(&self) -> &ShmBuffer {
+        &self.buffers[self.back]
+    }
+
+    /// Swap: current back becomes front, current front becomes back
+    pub fn swap(&mut self) {
+        self.back = 1 - self.back;
     }
 }
 
@@ -98,8 +140,14 @@ pub(crate) struct ScreencopyState {
     pub sessions: HashMap<u32, ExtImageCopyCaptureSessionV1>,
     /// Per-session constraints (updated by session events, consumed on done)
     pub constraints: HashMap<u32, SessionConstraints>,
-    /// Pending frames waiting for ready event
-    pub pending_frames: HashMap<u32, PendingFrame>,
+    /// Double-buffer swapchains keyed by toplevel ID
+    pub swapchains: HashMap<u32, BufferSwapchain>,
+    /// Whether continuous capture is active (auto-recapture on Ready)
+    pub continuous: bool,
+    /// Target thumbnail dimensions for downscaling (set by StartContinuous)
+    pub target_size: Option<(u32, u32)>,
+    /// Last capture timestamp per toplevel (for throttling)
+    pub last_capture: HashMap<u32, Instant>,
 }
 
 impl ScreencopyState {
@@ -109,7 +157,10 @@ impl ScreencopyState {
             capture_manager: None,
             sessions: HashMap::new(),
             constraints: HashMap::new(),
-            pending_frames: HashMap::new(),
+            swapchains: HashMap::new(),
+            continuous: false,
+            target_size: None,
+            last_capture: HashMap::new(),
         }
     }
 
@@ -137,13 +188,28 @@ pub(crate) trait ScreencopyHandler {
 // ============================================================================
 
 /// Start a capture for a toplevel.
+/// If a session already exists, reuses it and just requests a new frame.
 pub(crate) fn start_capture<D>(state: &mut D, toplevel_id: u32, qh: &QueueHandle<D>)
 where
     D: ScreencopyHandler
         + Dispatch<ExtImageCaptureSourceV1, ImageCaptureSourceData>
         + Dispatch<ExtImageCopyCaptureSessionV1, CaptureSessionData>
+        + Dispatch<ExtImageCopyCaptureFrameV1, CaptureFrameData>
+        + Dispatch<WlBuffer, BufferData>
+        + Dispatch<WlShmPool, ShmPoolData>
         + 'static,
 {
+    // If we already have a session with constraints, just capture another frame
+    if state.screencopy_state().sessions.contains_key(&toplevel_id)
+        && state
+            .screencopy_state()
+            .constraints
+            .get(&toplevel_id)
+            .is_some_and(|c| c.width > 0 && c.shm_format.is_some())
+    {
+        capture_frame(state, toplevel_id, qh);
+        return;
+    }
     // Check availability
     let (has_source_mgr, has_capture_mgr) = {
         let sc = state.screencopy_state();
@@ -242,11 +308,10 @@ fn convert_to_rgba(data: &mut [u8], format: wl_shm::Format) {
     }
 }
 
-/// Allocate an SHM buffer and start capturing a frame
-fn capture_frame<D>(state: &mut D, toplevel_id: u32, qh: &QueueHandle<D>)
+/// Create a double-buffer swapchain for a toplevel session
+fn create_swapchain<D>(state: &mut D, toplevel_id: u32, qh: &QueueHandle<D>)
 where
     D: ScreencopyHandler
-        + Dispatch<ExtImageCopyCaptureFrameV1, CaptureFrameData>
         + Dispatch<WlBuffer, BufferData>
         + Dispatch<WlShmPool, ShmPoolData>
         + 'static,
@@ -258,11 +323,6 @@ where
     let width = constraints.width;
     let height = constraints.height;
     let Some(shm_format) = constraints.shm_format else {
-        log::warn!("No SHM format for toplevel={}", toplevel_id);
-        state.screencopy_event(ScreencopyEvent::Failed {
-            toplevel_id,
-            reason: "No SHM format provided by compositor".to_string(),
-        });
         return;
     };
 
@@ -274,108 +334,195 @@ where
 
     let buf_size = (width as i32) * (height as i32) * 4;
 
-    // Create temp file for the SHM buffer
-    let file = match tempfile::tempfile() {
-        Ok(f) => f,
-        Err(e) => {
-            log::error!("Failed to create tempfile for screencopy: {}", e);
-            state.screencopy_event(ScreencopyEvent::Failed {
-                toplevel_id,
-                reason: format!("tempfile creation failed: {e}"),
-            });
-            return;
-        }
+    let make_buffer = || -> Option<ShmBuffer> {
+        let file = tempfile::tempfile().ok()?;
+        file.set_len(buf_size as u64).ok()?;
+        let pool = shm.create_pool(file.as_fd(), buf_size, qh, ShmPoolData);
+        let wl_buffer = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            (width as i32) * 4,
+            shm_format,
+            qh,
+            BufferData,
+        );
+        pool.destroy();
+        Some(ShmBuffer {
+            file,
+            wl_buffer,
+            width,
+            height,
+            shm_format,
+        })
     };
 
-    // Size the file
-    if let Err(e) = file.set_len(buf_size as u64) {
-        log::error!("Failed to set tempfile size: {}", e);
+    let Some(buf0) = make_buffer() else {
+        log::error!("Failed to allocate screencopy buffer 0");
         return;
+    };
+    let Some(buf1) = make_buffer() else {
+        log::error!("Failed to allocate screencopy buffer 1");
+        return;
+    };
+
+    state.screencopy_state_mut().swapchains.insert(
+        toplevel_id,
+        BufferSwapchain {
+            buffers: [buf0, buf1],
+            back: 0,
+            capture_in_flight: false,
+        },
+    );
+}
+
+/// Start capturing into the back buffer of the swapchain
+fn capture_frame<D>(state: &mut D, toplevel_id: u32, qh: &QueueHandle<D>)
+where
+    D: ScreencopyHandler + Dispatch<ExtImageCopyCaptureFrameV1, CaptureFrameData> + 'static,
+{
+    // Don't start a new capture if one is already in flight
+    {
+        let sc = state.screencopy_state();
+        if let Some(swap) = sc.swapchains.get(&toplevel_id) {
+            if swap.capture_in_flight {
+                return;
+            }
+        } else {
+            return;
+        }
     }
 
-    // Create wl_shm_pool → wl_buffer
-    let pool = shm.create_pool(file.as_fd(), buf_size, qh, ShmPoolData);
-    let buffer = pool.create_buffer(
-        0,
-        width as i32,
-        height as i32,
-        (width as i32) * 4,
-        shm_format,
-        qh,
-        BufferData,
-    );
-    pool.destroy();
-
-    // Get session and create frame
     let sc = state.screencopy_state();
     let Some(session) = sc.sessions.get(&toplevel_id) else {
-        log::warn!("No session for toplevel={}", toplevel_id);
-        buffer.destroy();
         return;
     };
 
     let frame = session.create_frame(qh, CaptureFrameData { toplevel_id });
 
-    // Attach buffer, damage full area, capture
-    frame.attach_buffer(&buffer);
-    frame.damage_buffer(0, 0, width as i32, height as i32);
+    // Attach back buffer
+    let swap = state
+        .screencopy_state()
+        .swapchains
+        .get(&toplevel_id)
+        .unwrap();
+    let back = swap.back_buffer();
+    frame.attach_buffer(&back.wl_buffer);
+    frame.damage_buffer(0, 0, back.width as i32, back.height as i32);
     frame.capture();
 
-    // Store pending frame for reading pixels on ready
-    state.screencopy_state_mut().pending_frames.insert(
-        toplevel_id,
-        PendingFrame {
-            toplevel_id,
-            width,
-            height,
-            shm_format,
-            file,
-        },
-    );
-
-    // Buffer will be destroyed after we read the pixels
-    buffer.destroy();
+    state
+        .screencopy_state_mut()
+        .swapchains
+        .get_mut(&toplevel_id)
+        .unwrap()
+        .capture_in_flight = true;
 }
 
-/// Read pixels from a pending frame's SHM file and emit the event
+/// Read pixels from the back buffer (just captured), swap, and emit the event.
+/// If a target_size is set, downscales and converts format in a single pass
+/// so only small thumbnail data flows through the event channel.
 fn read_frame_pixels(state: &mut impl ScreencopyHandler, toplevel_id: u32) {
-    let Some(mut pending) = state
-        .screencopy_state_mut()
-        .pending_frames
-        .remove(&toplevel_id)
-    else {
+    let sc = state.screencopy_state_mut();
+    let Some(swap) = sc.swapchains.get_mut(&toplevel_id) else {
         return;
     };
 
-    let byte_count = (pending.width as usize) * (pending.height as usize) * 4;
-    let mut rgba = vec![0u8; byte_count];
+    swap.capture_in_flight = false;
 
-    if let Err(e) = pending.file.seek(SeekFrom::Start(0)) {
+    let back = &mut swap.buffers[swap.back];
+    let src_w = back.width;
+    let src_h = back.height;
+    let shm_format = back.shm_format;
+
+    let byte_count = (src_w as usize) * (src_h as usize) * 4;
+    let mut raw = vec![0u8; byte_count];
+
+    if let Err(e) = back.file.seek(SeekFrom::Start(0)) {
         log::error!("Failed to seek screencopy buffer: {}", e);
         return;
     }
-    if let Err(e) = pending.file.read_exact(&mut rgba) {
+    if let Err(e) = back.file.read_exact(&mut raw) {
         log::error!("Failed to read screencopy buffer: {}", e);
         return;
     }
 
-    convert_to_rgba(&mut rgba, pending.shm_format);
+    // Swap buffers — the just-read back becomes front, old front becomes back
+    swap.swap();
 
-    // Clean up session
-    if let Some(session) = state.screencopy_state_mut().sessions.remove(&toplevel_id) {
-        session.destroy();
-    }
-    state
-        .screencopy_state_mut()
-        .constraints
-        .remove(&toplevel_id);
+    let target_size = sc.target_size;
+
+    // Downscale + convert in one pass if a target size is set
+    let (rgba, out_w, out_h) = if let Some((tw, th)) = target_size {
+        downscale_and_convert(&raw, src_w, src_h, tw, th, shm_format)
+    } else {
+        convert_to_rgba(&mut raw, shm_format);
+        (raw, src_w, src_h)
+    };
 
     state.screencopy_event(ScreencopyEvent::Ready(CapturedFrame {
         toplevel_id,
-        width: pending.width,
-        height: pending.height,
+        width: out_w,
+        height: out_h,
         rgba,
     }));
+}
+
+/// Downscale source pixels to fit within target dimensions and convert from
+/// SHM format to RGBA in a single pass. Uses nearest-neighbor sampling for
+/// speed (the result is displayed at thumbnail size so quality loss is minimal).
+fn downscale_and_convert(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    target_w: u32,
+    target_h: u32,
+    format: wl_shm::Format,
+) -> (Vec<u8>, u32, u32) {
+    if src_w <= target_w && src_h <= target_h {
+        let mut data = src.to_vec();
+        convert_to_rgba(&mut data, format);
+        return (data, src_w, src_h);
+    }
+
+    // Maintain aspect ratio
+    let scale = (target_w as f32 / src_w as f32).min(target_h as f32 / src_h as f32);
+    let dst_w = ((src_w as f32 * scale).round() as u32).max(1);
+    let dst_h = ((src_h as f32 * scale).round() as u32).max(1);
+
+    let src_stride = src_w as usize * 4;
+    let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+
+    // Determine byte-level swizzle for the SHM format → RGBA conversion.
+    // On LE: Argb8888 memory = [B,G,R,A], Xrgb8888 = [B,G,R,X], etc.
+    let (ri, gi, bi, ai, force_alpha) = match format {
+        wl_shm::Format::Abgr8888 => (0, 1, 2, 3, false), // already RGBA
+        wl_shm::Format::Argb8888 => (2, 1, 0, 3, false), // BGRA→RGBA
+        wl_shm::Format::Xrgb8888 => (2, 1, 0, 3, true),  // BGRX→RGB+255
+        wl_shm::Format::Xbgr8888 => (0, 1, 2, 3, true),  // RGBX→RGB+255
+        _ => (0, 1, 2, 3, false),
+    };
+
+    // Nearest-neighbor sampling
+    for dy in 0..dst_h {
+        let sy = ((dy as f32 + 0.5) / scale) as u32;
+        let sy = sy.min(src_h - 1);
+        let src_row = sy as usize * src_stride;
+
+        for dx in 0..dst_w {
+            let sx = ((dx as f32 + 0.5) / scale) as u32;
+            let sx = sx.min(src_w - 1);
+            let si = src_row + sx as usize * 4;
+            let di = (dy * dst_w + dx) as usize * 4;
+
+            dst[di] = src[si + ri];
+            dst[di + 1] = src[si + gi];
+            dst[di + 2] = src[si + bi];
+            dst[di + 3] = if force_alpha { 255 } else { src[si + ai] };
+        }
+    }
+
+    (dst, dst_w, dst_h)
 }
 
 // ============================================================================
@@ -504,12 +651,17 @@ where
             }
             ext_image_copy_capture_session_v1::Event::Done => {
                 log::debug!("Screencopy constraints done toplevel={}", tid);
+                // Allocate double-buffer swapchain if not yet created
+                if !state.screencopy_state().swapchains.contains_key(&tid) {
+                    create_swapchain(state, tid, qh);
+                }
                 capture_frame(state, tid, qh);
             }
             ext_image_copy_capture_session_v1::Event::Stopped => {
                 log::debug!("Screencopy session stopped toplevel={}", tid);
                 state.screencopy_state_mut().sessions.remove(&tid);
                 state.screencopy_state_mut().constraints.remove(&tid);
+                state.screencopy_state_mut().swapchains.remove(&tid);
                 proxy.destroy();
             }
             _ => {}
@@ -528,7 +680,7 @@ where
         event: ext_image_copy_capture_frame_v1::Event,
         data: &CaptureFrameData,
         _conn: &Connection,
-        _qh: &QueueHandle<D>,
+        qh: &QueueHandle<D>,
     ) {
         let tid = data.toplevel_id;
         match event {
@@ -536,6 +688,23 @@ where
                 log::debug!("Screencopy frame ready toplevel={}", tid);
                 read_frame_pixels(state, tid);
                 proxy.destroy();
+                // Auto-recapture with throttling (~30fps per toplevel).
+                // Without throttling, continuous capture at max speed floods
+                // the event loop and blocks keyboard/render processing.
+                if state.screencopy_state().continuous {
+                    let now = Instant::now();
+                    let should_capture = state
+                        .screencopy_state()
+                        .last_capture
+                        .get(&tid)
+                        .map_or(true, |last| {
+                            now.duration_since(*last) >= MIN_CAPTURE_INTERVAL
+                        });
+                    if should_capture {
+                        state.screencopy_state_mut().last_capture.insert(tid, now);
+                        capture_frame(state, tid, qh);
+                    }
+                }
             }
             ext_image_copy_capture_frame_v1::Event::Failed { reason } => {
                 let reason_str = match reason {

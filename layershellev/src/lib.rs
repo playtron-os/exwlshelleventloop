@@ -1321,6 +1321,28 @@ impl<T> WindowState<T> {
             screencopy::ScreencopyAction::Capture(toplevel_id) => {
                 screencopy::start_capture(self, toplevel_id, qh);
             }
+            screencopy::ScreencopyAction::StartContinuous {
+                target_width,
+                target_height,
+            } => {
+                log::debug!(
+                    "Starting continuous screencopy capture (target {}x{})",
+                    target_width,
+                    target_height
+                );
+                self.screencopy.continuous = true;
+                self.screencopy.target_size = Some((target_width, target_height));
+                let ids: Vec<u32> = self.screencopy.sessions.keys().copied().collect();
+                for tid in ids {
+                    screencopy::start_capture(self, tid, qh);
+                }
+            }
+            screencopy::ScreencopyAction::StopContinuous => {
+                log::debug!("Stopping continuous screencopy capture");
+                self.screencopy.continuous = false;
+                self.screencopy.target_size = None;
+                self.screencopy.last_capture.clear();
+            }
         }
     }
 
@@ -1340,6 +1362,29 @@ impl<T> WindowState<T> {
         match action {
             screencopy::ScreencopyAction::Capture(toplevel_id) => {
                 screencopy::start_capture(self, toplevel_id, &qh);
+            }
+            screencopy::ScreencopyAction::StartContinuous {
+                target_width,
+                target_height,
+            } => {
+                log::debug!(
+                    "Starting continuous screencopy capture (target {}x{})",
+                    target_width,
+                    target_height
+                );
+                self.screencopy.continuous = true;
+                self.screencopy.target_size = Some((target_width, target_height));
+                // Kick off a capture for every active session
+                let ids: Vec<u32> = self.screencopy.sessions.keys().copied().collect();
+                for tid in ids {
+                    screencopy::start_capture(self, tid, &qh);
+                }
+            }
+            screencopy::ScreencopyAction::StopContinuous => {
+                log::debug!("Stopping continuous screencopy capture");
+                self.screencopy.continuous = false;
+                self.screencopy.target_size = None;
+                self.screencopy.last_capture.clear();
             }
         }
     }

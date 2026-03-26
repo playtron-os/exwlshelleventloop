@@ -134,24 +134,38 @@ pub fn screencopy_subscription() -> iced_futures::Subscription<ScreencopyEvent> 
             100,
             |mut output: iced_futures::futures::channel::mpsc::Sender<ScreencopyEvent>| async move {
                 use iced_futures::futures::SinkExt;
-                let (_, rx) = get_screencopy_channel();
 
-                loop {
-                    let events: Vec<ScreencopyEvent> = {
-                        if let Ok(rx) = rx.lock() {
-                            std::iter::from_fn(|| rx.try_recv().ok()).collect()
-                        } else {
-                            Vec::new()
+                // Bridge std::sync::mpsc → async channel via a dedicated thread.
+                // This replaces the old 16ms polling loop with blocking recv(),
+                // giving zero-latency delivery of screencopy frames.
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<ScreencopyEvent>(100);
+
+                std::thread::Builder::new()
+                    .name("screencopy-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_screencopy_channel();
+                        let rx = rx.lock().expect("screencopy rx lock");
+                        loop {
+                            match rx.recv() {
+                                Ok(event) => {
+                                    // Use try_send to avoid blocking the bridge thread.
+                                    // If channel is full, drop the frame (better than stalling).
+                                    if async_tx.clone().try_send(event).is_err() {
+                                        log::warn!(
+                                            "Screencopy bridge: async channel full, dropping frame"
+                                        );
+                                    }
+                                }
+                                Err(_) => break, // Sender disconnected
+                            }
                         }
-                    };
+                    })
+                    .expect("spawn screencopy bridge thread");
 
-                    if !events.is_empty() {
-                        for event in events {
-                            let _ = output.send(event).await;
-                        }
-                    }
-
-                    futures_timer::Delay::new(std::time::Duration::from_millis(16)).await;
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
                 }
             },
         )
