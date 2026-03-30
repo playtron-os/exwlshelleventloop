@@ -1079,6 +1079,10 @@ pub struct WindowState<T> {
 
     ime_purpose: ImePurpose,
     ime_allowed: bool,
+
+    /// Ping sender for waking the event loop immediately after a channel
+    /// message is processed.  Populated once in `running_with_proxy_option`.
+    ping_sender: Option<calloop::ping::Ping>,
 }
 
 impl<T> WindowState<T> {
@@ -2494,6 +2498,8 @@ impl<T> Default for WindowState<T> {
             ime_allowed: false,
 
             xdg_decoration_manager: None,
+
+            ping_sender: None,
         }
     }
 }
@@ -3574,6 +3580,14 @@ impl<T> Dispatch<WlCallback, (id::Id, PresentAvailableState)> for WindowState<T>
             && let Some(unit) = state.get_mut_unit_with_id(data.0)
         {
             unit.present_available_state = data.1;
+            // Wake the event loop immediately so the timer callback
+            // picks up the newly-available present slot without waiting
+            // for the next timer tick.  This is critical for smooth
+            // animations: the compositor just told us the previous
+            // frame landed, so we should render the next one ASAP.
+            if let Some(sender) = &state.ping_sender {
+                sender.ping();
+            }
         }
     }
 }
@@ -5245,6 +5259,88 @@ impl<T: 'static> WindowState<T> {
 
         let signal = event_loop.get_signal();
 
+        // Create a ping source for immediate wake-up after channel messages.
+        // When a message arrives via the channel, the channel callback pings
+        // so the event loop re-dispatches immediately and the ping callback
+        // runs NormalDispatch + refresh — giving zero-latency response for
+        // animations while letting the idle timer stay at 50ms for battery.
+        let (ping_sender, ping_source) =
+            calloop::ping::make_ping().expect("Failed to create ping source");
+        state.raw.ping_sender = Some(ping_sender);
+
+        // Clone resources needed by the ping callback for the SHM buffer path.
+        // For GPU-rendering apps (use_display_handle=true) these are unused.
+        let shm_for_ping = shm.clone();
+        let qh_for_ping = qh.clone();
+
+        event_loop
+            .handle()
+            .insert_source(ping_source, move |(), _, r_window_state| {
+                let window_state = &mut r_window_state.raw;
+                let event_handler = &mut r_window_state.fun;
+
+                // Process pending iced actions (subscriptions, command output).
+                window_state.handle_event(
+                    &mut *event_handler,
+                    LayerShellEvent::NormalDispatch,
+                    None,
+                );
+
+                // Refresh/present cycle — renders frames immediately.
+                let all_hidden = window_state.all_surfaces_hidden();
+                for idx in 0..window_state.units.len() {
+                    let unit = &mut window_state.units[idx];
+                    let (width, height) = unit.size;
+                    if width == 0 || height == 0 {
+                        continue;
+                    }
+                    if all_hidden && unit.initial_refresh_sent {
+                        continue;
+                    }
+                    if unit.take_present_slot() {
+                        let unit_id = unit.id;
+                        let is_created = unit.becreated;
+                        let scale_float = unit.scale_float();
+                        let wl_surface = unit.wl_surface.clone();
+                        if unit.buffer.is_none() && !window_state.use_display_handle {
+                            let Ok(mut file) = tempfile::tempfile() else {
+                                log::error!("Cannot create new file from tempfile");
+                                return;
+                            };
+                            let ReturnData::WlBuffer(buffer) = (event_handler)(
+                                LayerShellEvent::RequestBuffer(
+                                    &mut file,
+                                    &shm_for_ping,
+                                    &qh_for_ping,
+                                    width,
+                                    height,
+                                ),
+                                window_state,
+                                Some(unit_id),
+                            ) else {
+                                panic!("You cannot return this one");
+                            };
+                            wl_surface.attach(Some(&buffer), 0, 0);
+                            wl_surface.commit();
+                            window_state.units[idx].buffer = Some(buffer);
+                        }
+                        window_state.handle_event(
+                            &mut *event_handler,
+                            LayerShellEvent::RequestMessages(&DispatchMessage::RequestRefresh {
+                                width,
+                                height,
+                                is_created,
+                                scale_float,
+                            }),
+                            Some(unit_id),
+                        );
+                        window_state.units[idx].initial_refresh_sent = true;
+                        window_state.units[idx].reset_present_slot();
+                    }
+                }
+            })
+            .expect("Failed to insert ping source");
+
         // Insert message channel as event source (calloop-style)
         if let Some(channel) = message_receiver {
             event_loop
@@ -5260,6 +5356,12 @@ impl<T: 'static> WindowState<T> {
                         LayerShellEvent::UserEvent(event),
                         None,
                     );
+                    // Ping the event loop so NormalDispatch + refresh runs
+                    // immediately in this iteration, instead of waiting for
+                    // the next timer tick.
+                    if let Some(sender) = &window_state.ping_sender {
+                        sender.ping();
+                    }
                 })
                 .expect("Failed to insert message channel source");
         }
@@ -5271,6 +5373,11 @@ impl<T: 'static> WindowState<T> {
                 move |_, _, r_window_state| {
                     let window_state = &mut r_window_state.raw;
                     let event_handler = &mut r_window_state.fun;
+
+                    let has_pending = window_state.units.iter().any(|u| u.should_refresh());
+                    if has_pending {
+                        log::debug!("[evloop] timer callback (pending_refresh=true)");
+                    }
                     let mut messages = Vec::new();
                     std::mem::swap(&mut messages, &mut window_state.message);
                     for msg in messages.iter() {
@@ -6058,6 +6165,7 @@ impl<T: 'static> WindowState<T> {
                             continue;
                         }
                         if unit.take_present_slot() {
+                            log::debug!("[evloop] timer: presenting unit {:?}", unit.id);
                             let unit_id = unit.id;
                             let is_created = unit.becreated;
                             let scale_float = unit.scale_float();
@@ -6093,28 +6201,18 @@ impl<T: 'static> WindowState<T> {
                         }
                     }
 
-                    // Choose timer interval:
-                    //  - All surfaces hidden: idle at 16ms (one frame) so that
-                    //    a show request is serviced within ~1 frame instead of
-                    //    waiting up to 250ms for the next tick.
-                    //  - Visible with pending refresh (animation): tight 1ms for smooth frames
-                    //  - Visible idle: 50ms
-                    if all_hidden {
-                        TimeoutAction::ToDuration(std::time::Duration::from_millis(16))
-                    } else {
-                        let has_pending_refresh = window_state.units.iter().any(|u| u.should_refresh());
-                        if has_pending_refresh {
-                            TimeoutAction::ToDuration(std::time::Duration::from_millis(1))
-                        } else {
-                            TimeoutAction::ToDuration(std::time::Duration::from_millis(50))
-                        }
-                    }
+                    // Timer interval is kept at a battery-friendly 50ms.
+                    // Immediate wake-ups are handled by the Ping source:
+                    //  - Channel messages (iced subscriptions) → ping
+                    //  - Compositor frame callbacks (wl_callback::done) → ping
+                    // The timer is only a safety net for edge cases.
+                    TimeoutAction::ToDuration(std::time::Duration::from_millis(50))
                 },
             )
             .expect("Cannot insert_source");
         event_loop
             .run(
-                std::time::Duration::from_millis(4),
+                std::time::Duration::from_millis(20),
                 &mut state,
                 move |r_window_state| {
                     let window_state = &mut r_window_state.raw;
