@@ -272,37 +272,49 @@ where
         }
         loop {
             let mut need_continue = false;
-            context_state = match std::mem::replace(&mut context_state, ContextState::None) {
-                ContextState::None => unreachable!("context state is taken but not returned"),
-                ContextState::Future(mut future) => {
-                    tracing::debug!("poll context future");
-                    match future.as_mut().poll(&mut task_context) {
-                        Poll::Ready(context) => {
-                            tracing::debug!("context future is ready");
-                            // context is ready, continue to run.
-                            need_continue = true;
-                            ContextState::Context(context)
+
+            // Handle the Future case first - this requires moving the state
+            if matches!(context_state, ContextState::Future(_)) {
+                context_state = match std::mem::replace(&mut context_state, ContextState::None) {
+                    ContextState::Future(mut future) => {
+                        tracing::debug!("poll context future");
+                        match future.as_mut().poll(&mut task_context) {
+                            Poll::Ready(context) => {
+                                tracing::debug!("context future is ready");
+                                need_continue = true;
+                                ContextState::Context(context)
+                            }
+                            Poll::Pending => ContextState::Future(future),
                         }
-                        Poll::Pending => ContextState::Future(future),
+                    }
+                    other => other,
+                };
+            }
+
+            // Handle the Context case in-place (no move!) to keep widget references valid
+            if let ContextState::Context(ref mut context) = context_state {
+                if let Some((layer_shell_id, layer_shell_event)) =
+                    waiting_layer_shell_events.pop_front()
+                {
+                    need_continue = true;
+                    let (needs_compositor, waiting_layer_shell_event) =
+                        context.handle_event(ev, layer_shell_id, layer_shell_event);
+                    if let Some(waiting_layer_shell_event) = waiting_layer_shell_event {
+                        waiting_layer_shell_events
+                            .push_front((layer_shell_id, waiting_layer_shell_event));
+                    }
+                    if let Some(window_wrapper) = needs_compositor {
+                        // Compositor creation is the ONLY case that needs to move Context
+                        context_state =
+                            match std::mem::replace(&mut context_state, ContextState::None) {
+                                ContextState::Context(context) => ContextState::Future(
+                                    context.create_compositor(window_wrapper).boxed_local(),
+                                ),
+                                other => other,
+                            };
                     }
                 }
-                ContextState::Context(context) => {
-                    if let Some((layer_shell_id, layer_shell_event)) =
-                        waiting_layer_shell_events.pop_front()
-                    {
-                        need_continue = true;
-                        let (context_state, waiting_layer_shell_event) =
-                            context.handle_event(ev, layer_shell_id, layer_shell_event);
-                        if let Some(waiting_layer_shell_event) = waiting_layer_shell_event {
-                            waiting_layer_shell_events
-                                .push_front((layer_shell_id, waiting_layer_shell_event));
-                        }
-                        context_state
-                    } else {
-                        ContextState::Context(context)
-                    }
-                }
-            };
+            }
             if !need_continue {
                 break;
             }
@@ -432,12 +444,18 @@ where
         self.clipboard = LayerShellClipboard::unconnected();
     }
 
+    /// Handle a layer shell event. Returns:
+    /// - `Option<Arc<WindowWrapper>>`: Some if compositor creation is needed (caller must invoke create_compositor)
+    /// - `Option<IcedLayerShellEvent>`: event to re-queue if it needs to be retried
     fn handle_event(
-        mut self,
+        &mut self,
         ev: &mut WindowState<IcedId>,
         layer_shell_id: Option<LayerShellId>,
         layer_shell_event: IcedLayerShellEvent<P::Message>,
-    ) -> (ContextState<Self>, Option<IcedLayerShellEvent<P::Message>>) {
+    ) -> (
+        Option<Arc<WindowWrapper>>,
+        Option<IcedLayerShellEvent<P::Message>>,
+    ) {
         tracing::trace!(
             "Handle layer shell event, layer_shell_id: {:?},  waiting actions: {}, messages: {}",
             layer_shell_id,
@@ -450,14 +468,14 @@ where
             let Some(layer_shell_window) = layer_shell_id.and_then(|lid| ev.get_unit_with_id(lid))
             else {
                 tracing::error!("layer shell window not found: {:?}", layer_shell_id);
-                return (ContextState::Context(self), None);
+                return (None, None);
             };
             tracing::debug!("creating compositor");
-            let context_state = ContextState::Future(
-                self.create_compositor(Arc::new(layer_shell_window.gen_wrapper()))
-                    .boxed_local(),
+            // Signal to caller that compositor creation is needed
+            return (
+                Some(Arc::new(layer_shell_window.gen_wrapper())),
+                Some(layer_shell_event),
             );
-            return (context_state, Some(layer_shell_event));
         }
 
         match layer_shell_event {
@@ -506,7 +524,7 @@ where
             self.handle_layer_shell_action(ev, iced_id, action);
         }
 
-        (ContextState::Context(self), None)
+        (None, None)
     }
 
     fn handle_refresh_event(
@@ -1763,10 +1781,10 @@ where
                 } else {
                     match redraw_request {
                         RedrawRequest::NextFrame => {
-                            ev.request_refresh(window.id, RefreshRequest::NextFrame)
+                            ev.request_refresh(window.id, RefreshRequest::NextFrame);
                         }
                         RedrawRequest::At(instant) => {
-                            ev.request_refresh(window.id, RefreshRequest::At(instant))
+                            ev.request_refresh(window.id, RefreshRequest::At(instant));
                         }
                         RedrawRequest::Wait => {}
                     }
