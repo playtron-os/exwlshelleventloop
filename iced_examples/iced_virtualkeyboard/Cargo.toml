@@ -16,3 +16,6 @@ iced_runtime.workspace = true
 iced_layershell.workspace = true
 xkbcommon = "0.9.0"
 tempfile.workspace = true
+
+[lints]
+workspace = true

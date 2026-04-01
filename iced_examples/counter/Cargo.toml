@@ -16,3 +16,6 @@ publish = false
 iced = { workspace = true, features = ["thread-pool"] }
 iced_runtime.workspace = true
 iced_layershell = { workspace = true, features = ["debug"] }
+
+[lints]
+workspace = true

@@ -16,3 +16,6 @@ publish = false
 iced.workspace = true
 iced_runtime.workspace = true
 iced_layershell.workspace = true
+
+[lints]
+workspace = true

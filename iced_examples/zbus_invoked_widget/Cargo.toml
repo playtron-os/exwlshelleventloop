@@ -17,3 +17,6 @@ iced_layershell.workspace = true
 
 zbus = "5.13.2"
 futures = "0.3.31"
+
+[lints]
+workspace = true

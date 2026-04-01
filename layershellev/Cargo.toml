@@ -46,3 +46,6 @@ log.workspace = true
 waycrate_xkbkeycode.workspace = true
 
 cosmic-protocols = { workspace = true, optional = true }
+
+[lints]
+workspace = true
