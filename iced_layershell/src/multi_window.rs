@@ -355,8 +355,8 @@ where
     auto_size_last_content: HashMap<IcedId, (u32, u32)>,
     /// Maximum size for auto_size windows (from original LayerShellSettings.size)
     auto_size_max: HashMap<IcedId, (u32, u32)>,
-    /// Deferred shadow/corner_radius for auto_size windows (applied after resize completes)
-    auto_size_deferred_effects: HashMap<IcedId, (bool, Option<[u32; 4]>)>,
+    /// Deferred shadow/blur/corner_radius for auto_size windows (applied after resize completes)
+    auto_size_deferred_effects: HashMap<IcedId, (bool, bool, Option<[u32; 4]>)>,
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
@@ -830,13 +830,17 @@ where
                     target_h
                 );
                 self.auto_size_hidden.remove(&iced_id);
-                // Re-apply deferred shadow/corner_radius now that surface has its final size
-                if let Some((shadow, corner_radius)) =
+                // Re-apply deferred shadow/blur/corner_radius now that surface has its final size
+                if let Some((shadow, blur, corner_radius)) =
                     self.auto_size_deferred_effects.remove(&iced_id)
                 {
                     if shadow {
                         self.waiting_layer_shell_actions
                             .push((Some(iced_id), LayershellCustomAction::ShadowChange(true)));
+                    }
+                    if blur {
+                        self.waiting_layer_shell_actions
+                            .push((Some(iced_id), LayershellCustomAction::BlurChange(true)));
                     }
                     if corner_radius.is_some() {
                         self.waiting_layer_shell_actions.push((
@@ -866,13 +870,17 @@ where
                         target_h
                     );
                     self.auto_size_hidden.remove(&iced_id);
-                    // Re-apply deferred shadow/corner_radius even on timeout
-                    if let Some((shadow, corner_radius)) =
+                    // Re-apply deferred shadow/blur/corner_radius even on timeout
+                    if let Some((shadow, blur, corner_radius)) =
                         self.auto_size_deferred_effects.remove(&iced_id)
                     {
                         if shadow {
                             self.waiting_layer_shell_actions
                                 .push((Some(iced_id), LayershellCustomAction::ShadowChange(true)));
+                        }
+                        if blur {
+                            self.waiting_layer_shell_actions
+                                .push((Some(iced_id), LayershellCustomAction::BlurChange(true)));
                         }
                         if corner_radius.is_some() {
                             self.waiting_layer_shell_actions.push((
@@ -978,6 +986,9 @@ where
         window.draw_preedit();
 
         // When waiting for auto-size resize, present a transparent buffer
+        // so the Wayland protocol flow continues (compositor needs a commit
+        // to process the resize request). Shadow, blur, and corner_radius are
+        // deferred so the 1x1 transparent surface is truly invisible.
         let background_color = if skip_present {
             iced_core::Color::TRANSPARENT
         } else {
@@ -1398,12 +1409,16 @@ where
                     // The surface will be resized to content size on first render
                     settings.size = Some((1, 1));
                     let deferred_shadow = settings.shadow;
+                    let deferred_blur = settings.blur;
                     let deferred_corner_radius = settings.corner_radius;
                     settings.shadow = false;
+                    settings.blur = false;
                     settings.corner_radius = None;
-                    if deferred_shadow || deferred_corner_radius.is_some() {
-                        self.auto_size_deferred_effects
-                            .insert(iced_id, (deferred_shadow, deferred_corner_radius));
+                    if deferred_shadow || deferred_blur || deferred_corner_radius.is_some() {
+                        self.auto_size_deferred_effects.insert(
+                            iced_id,
+                            (deferred_shadow, deferred_blur, deferred_corner_radius),
+                        );
                     }
                 }
                 let layer_shell_id = layershellev::id::Id::unique();

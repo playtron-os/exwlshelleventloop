@@ -4576,24 +4576,13 @@ impl<T: 'static> WindowState<T> {
 
         self.text_input_manager = text_input_manager;
 
-        // Bind blur manager if blur is enabled
-        if self.blur {
-            self.blur_manager = globals
-                .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
-                    &qh,
-                    1..=1,
-                    (),
-                )
-                .ok();
-            if self.blur_manager.is_none() {
-                log::warn!(
-                    "Blur requested but compositor does not support org_kde_kwin_blur_manager protocol"
-                );
-            } else {
-                log::info!(
-                    "Successfully bound org_kde_kwin_blur_manager protocol for blur support"
-                );
-            }
+        // Always try to bind blur manager for dynamic blur support
+        // (allows requesting blur on any surface, like popups, even if main window doesn't have blur)
+        self.blur_manager = globals
+            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=1, ())
+            .ok();
+        if self.blur_manager.is_some() {
+            log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
         }
 
         // Always try to bind corner radius manager for dynamic corner radius support
