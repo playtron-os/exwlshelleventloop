@@ -2767,20 +2767,25 @@ impl<T> Dispatch<wl_keyboard::WlKeyboard, ()> for WindowState<T> {
                     state.to_remove_tokens.push(token);
                 }
             }
-            wl_keyboard::Event::Leave { .. } => {
+            wl_keyboard::Event::Leave { surface, .. } => {
+                // Use the actual surface from the Leave event, not current_surface_id().
+                // During popup switching, current_surface may already point to a newly
+                // created surface, causing the Unfocus to be misattributed.
+                let leave_id = state.get_id_from_surface(&surface);
                 log::info!(
-                    "wl_keyboard::Leave event - emitting Unfocus for surface {:?}",
+                    "wl_keyboard::Leave event - emitting Unfocus for surface {:?} (current_surface={:?})",
+                    leave_id,
                     surface_id
                 );
                 let keyboard_state = state.keyboard_state.as_mut().unwrap();
                 keyboard_state.current_repeat = None;
                 state.message.push((
-                    surface_id,
+                    leave_id,
                     DispatchMessageInner::ModifiersChanged(ModifiersState::empty()),
                 ));
                 state
                     .message
-                    .push((surface_id, DispatchMessageInner::Unfocus));
+                    .push((leave_id, DispatchMessageInner::Unfocus));
 
                 if let Some(token) = keyboard_state.repeat_token.take() {
                     state.to_remove_tokens.push(token);
