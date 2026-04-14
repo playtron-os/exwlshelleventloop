@@ -176,6 +176,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 HideWindow,
                 /// Show the window if it was previously hidden
                 ShowWindow,
+                /// Forget which output the surface was last on so it follows the cursor
+                ForgetLastOutput,
                 VisibilityModeChange(iced_layershell::actions::VisibilityMode),
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
@@ -210,6 +212,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             })),
                             Self::HideWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::HideWindow)),
                             Self::ShowWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ShowWindow)),
+                            Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
