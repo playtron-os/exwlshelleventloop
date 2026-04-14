@@ -554,6 +554,7 @@ where
         match ui_state {
             user_interface::State::Outdated {
                 clipboard: clipboard_requests,
+                ..
             } => {
                 // Process clipboard requests even when rebuilding
                 run_clipboard(clipboard, clipboard_requests, iced_id, iced_events);
