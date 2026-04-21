@@ -67,9 +67,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 VisibilityModeChange { id: iced::window::Id, mode: iced_layershell::actions::VisibilityMode },
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
-                #[cfg(feature = "foreign-toplevel")]
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
-                #[cfg(feature = "screencopy")]
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
 
@@ -142,9 +140,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VisibilityModeChange { id, mode } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
-                            #[cfg(feature = "foreign-toplevel")]
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
-                            #[cfg(feature = "screencopy")]
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)
                         }
@@ -181,9 +177,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 VisibilityModeChange(iced_layershell::actions::VisibilityMode),
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
-                #[cfg(feature = "foreign-toplevel")]
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
-                #[cfg(feature = "screencopy")]
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
             let impl_quote = quote! {
@@ -216,9 +210,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
-                            #[cfg(feature = "foreign-toplevel")]
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
-                            #[cfg(feature = "screencopy")]
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)
                         }

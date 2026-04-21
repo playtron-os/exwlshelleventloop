@@ -9,9 +9,19 @@ pub use layershellev::home_visibility::VisibilityMode;
 #[cfg(feature = "foreign-toplevel")]
 pub use layershellev::foreign_toplevel::ToplevelAction;
 
+// Stub type when feature is disabled (uninhabited — cannot be constructed)
+#[cfg(not(feature = "foreign-toplevel"))]
+#[derive(Debug, Clone)]
+pub enum ToplevelAction {}
+
 // Re-export ScreencopyAction for consumers
 #[cfg(feature = "screencopy")]
 pub use layershellev::screencopy::ScreencopyAction;
+
+// Stub type when feature is disabled (uninhabited — cannot be constructed)
+#[cfg(not(feature = "screencopy"))]
+#[derive(Debug, Clone)]
+pub enum ScreencopyAction {}
 
 use std::sync::Arc;
 
@@ -155,10 +165,8 @@ pub enum LayershellCustomAction {
     /// without spawning a new window (e.g., empty result or error).
     VoiceDismiss,
     /// Execute a toplevel action (activate, close, minimize, etc.)
-    #[cfg(feature = "foreign-toplevel")]
     ToplevelAction(ToplevelAction),
     /// Execute a screencopy action (capture a toplevel window screenshot)
-    #[cfg(feature = "screencopy")]
     ScreencopyAction(ScreencopyAction),
     /// Arm dismiss notifications for this window.
     /// Once armed, a DismissRequested event will be sent when the user

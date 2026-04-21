@@ -1591,11 +1591,15 @@ where
                 let result = ev.execute_toplevel_action(action);
                 log::info!("ToplevelAction result: {}", result);
             }
+            #[cfg(not(feature = "foreign-toplevel"))]
+            LayershellCustomAction::ToplevelAction(action) => match action {},
             #[cfg(feature = "screencopy")]
             LayershellCustomAction::ScreencopyAction(action) => {
                 log::debug!("Processing ScreencopyAction: {:?}", action);
                 ev.execute_screencopy_action_internal(action);
             }
+            #[cfg(not(feature = "screencopy"))]
+            LayershellCustomAction::ScreencopyAction(action) => match action {},
             LayershellCustomAction::VoiceAckStop(serial, freeze) => {
                 ev.voice_ack_stop(serial, freeze);
             }
