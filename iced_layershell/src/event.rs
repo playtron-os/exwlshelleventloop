@@ -304,6 +304,7 @@ pub enum WindowEvent {
 #[derive(Debug)]
 pub enum IcedLayerShellEvent<Message> {
     UpdateInputRegion(WlRegion),
+    UpdateBlurRegion(WlRegion),
     Window(WindowEvent),
     UserAction(Action<Message>),
     NormalDispatch,

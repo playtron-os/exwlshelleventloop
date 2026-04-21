@@ -1601,6 +1601,10 @@ impl<T: 'static> WindowState<T> {
 
         // Release old blur object if any
         if let Some(old_blur) = self.blur_surfaces.remove(&surface_id) {
+            log::info!(
+                "set_blur_region_for_surface: releasing old blur object for surface {}",
+                surface_id
+            );
             old_blur.release();
         }
 
@@ -1614,12 +1618,23 @@ impl<T: 'static> WindowState<T> {
         let blur_obj = manager.create(surface, &unit.qh, blur_data);
 
         // Let the caller define the blur region via the WlRegion
+        log::info!(
+            "set_blur_region_for_surface: surface={}, calling set_region callback",
+            surface_id
+        );
         set_region(region);
+        log::info!(
+            "set_blur_region_for_surface: surface={}, calling blur_obj.set_region + commit",
+            surface_id
+        );
         blur_obj.set_region(Some(region));
         blur_obj.commit();
         self.blur_surfaces.insert(surface_id, blur_obj);
         surface.commit();
-        log::info!("Set blur region for surface");
+        log::info!(
+            "set_blur_region_for_surface: surface={}, done (surface committed)",
+            surface_id
+        );
     }
 
     /// Enable or disable shadow effect for a specific surface.

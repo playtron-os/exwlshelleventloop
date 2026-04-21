@@ -233,6 +233,10 @@ where
                     None,
                     IcedLayerShellEvent::UpdateInputRegion(wl_compositor.create_region(qh, ())),
                 ));
+                waiting_layer_shell_events.push_back((
+                    None,
+                    IcedLayerShellEvent::UpdateBlurRegion(wl_compositor.create_region(qh, ())),
+                ));
 
                 if let Some(virtual_keyboard_setting) = settings.virtual_keyboard_support.as_ref() {
                     let virtual_keyboard_manager = globals
@@ -359,6 +363,7 @@ where
     auto_size_deferred_effects: HashMap<IcedId, (bool, bool, Option<[u32; 4]>)>,
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
+    wl_blur_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
     waiting_layer_shell_actions: Vec<(Option<IcedId>, LayershellCustomAction)>,
     iced_events: Vec<(IcedId, IcedEvent)>,
@@ -410,6 +415,7 @@ where
             auto_size_deferred_effects: HashMap::new(),
             clipboard: LayerShellClipboard::unconnected(),
             wl_input_region: Default::default(),
+            wl_blur_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
             waiting_layer_shell_actions: Default::default(),
             iced_events: Default::default(),
@@ -480,6 +486,7 @@ where
 
         match layer_shell_event {
             IcedLayerShellEvent::UpdateInputRegion(region) => self.wl_input_region = Some(region),
+            IcedLayerShellEvent::UpdateBlurRegion(region) => self.wl_blur_region = Some(region),
             IcedLayerShellEvent::Window(LayerShellWindowEvent::Refresh) => {
                 self.handle_refresh_event(ev, layer_shell_id)
             }
@@ -1302,9 +1309,9 @@ where
             LayershellCustomAction::SetBlurRegion(set_region) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let set_region = set_region.0;
-                let Some(region) = &self.wl_input_region else {
+                let Some(region) = &self.wl_blur_region else {
                     tracing::warn!(
-                        "wl_input_region is not set, ignore SetBlurRegion, window_id: {:?}",
+                        "wl_blur_region is not set, ignore SetBlurRegion, window_id: {:?}",
                         iced_id
                     );
                     return;
@@ -1314,11 +1321,22 @@ where
                 let width: i32 = window_size.0.try_into().unwrap_or_default();
                 let height: i32 = window_size.1.try_into().unwrap_or_default();
 
+                tracing::info!(
+                    "SetBlurRegion: window_size=({}, {}), subtracting old then applying new regions",
+                    width,
+                    height
+                );
+
                 // Clear region first, then let callback add blur rectangles
                 region.subtract(0, 0, width, height);
 
                 let surface = layer_shell_window.get_wlsurface().clone();
+                tracing::info!(
+                    ?iced_id,
+                    "SetBlurRegion: calling set_blur_region_for_surface (creates new blur obj, calls set_region + commit)"
+                );
                 ev.set_blur_region_for_surface(&surface, region, |r| set_region(r));
+                tracing::info!(?iced_id, "SetBlurRegion: done");
             }
             LayershellCustomAction::ShadowChange(enabled) => {
                 let surface = {
@@ -1547,11 +1565,19 @@ where
             LayershellCustomAction::HideWindow => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let surface = layer_shell_window.get_wlsurface().clone();
+                tracing::info!(
+                    ?iced_id,
+                    "HideWindow: calling hide_surface (visibility protocol)"
+                );
                 ev.hide_surface(&surface);
             }
             LayershellCustomAction::ShowWindow => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let surface = layer_shell_window.get_wlsurface().clone();
+                tracing::info!(
+                    ?iced_id,
+                    "ShowWindow: calling show_surface (visibility protocol)"
+                );
                 ev.show_surface(&surface);
             }
             LayershellCustomAction::VisibilityModeChange(mode) => {
