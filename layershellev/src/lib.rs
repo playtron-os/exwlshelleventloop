@@ -2090,12 +2090,18 @@ fn apply_blur_to_surface<T: 'static>(
                 let radius_fixed = (radius * 256.0) as i32;
                 blur_obj.set_radius(radius_fixed);
             } else {
-                log::warn!("Blur radius requested but compositor only supports blur protocol v{}, ignoring", blur_obj.version());
+                log::warn!(
+                    "Blur radius requested but compositor only supports blur protocol v{}, ignoring",
+                    blur_obj.version()
+                );
             }
         }
         // Commit the blur effect
         blur_obj.commit();
-        log::info!("Applied blur effect to layer shell surface (radius={:?})", blur_radius);
+        log::info!(
+            "Applied blur effect to layer shell surface (radius={:?})",
+            blur_radius
+        );
     }
 }
 
