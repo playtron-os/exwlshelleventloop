@@ -1524,7 +1524,7 @@ impl<T: 'static> WindowState<T> {
                         self.blur_manager = globals
                             .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                                 &unit.qh,
-                                1..=1,
+                                1..=2,
                                 (),
                             )
                             .ok();
@@ -1583,7 +1583,7 @@ impl<T: 'static> WindowState<T> {
                     self.blur_manager = globals
                         .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                             &unit.qh,
-                            1..=1,
+                            1..=2,
                             (),
                         )
                         .ok();
@@ -2075,6 +2075,7 @@ fn apply_blur_to_surface<T: 'static>(
     blur_manager: &Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
     surface: &WlSurface,
     qh: &QueueHandle<WindowState<T>>,
+    blur_radius: Option<f32>,
 ) {
     if let Some(manager) = blur_manager {
         let blur_data = blur::BlurData {
@@ -2083,9 +2084,18 @@ fn apply_blur_to_surface<T: 'static>(
         let blur_obj = manager.create(surface, qh, blur_data);
         // Set region to null (entire surface)
         blur_obj.set_region(None);
+        // Set custom blur radius if specified (version 2+ extension)
+        if let Some(radius) = blur_radius {
+            if blur_obj.version() >= 2 {
+                let radius_fixed = (radius * 256.0) as i32;
+                blur_obj.set_radius(radius_fixed);
+            } else {
+                log::warn!("Blur radius requested but compositor only supports blur protocol v{}, ignoring", blur_obj.version());
+            }
+        }
         // Commit the blur effect
         blur_obj.commit();
-        log::info!("Applied blur effect to layer shell surface");
+        log::info!("Applied blur effect to layer shell surface (radius={:?})", blur_radius);
     }
 }
 
@@ -4594,7 +4604,7 @@ impl<T: 'static> WindowState<T> {
         // Always try to bind blur manager for dynamic blur support
         // (allows requesting blur on any surface, like popups, even if main window doesn't have blur)
         self.blur_manager = globals
-            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=1, ())
+            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=2, ())
             .ok();
         if self.blur_manager.is_some() {
             log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
@@ -4927,7 +4937,7 @@ impl<T: 'static> WindowState<T> {
 
             // Apply blur effect if enabled
             if self.blur {
-                apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh);
+                apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh, None);
             }
 
             // Apply corner radius if set
@@ -5050,7 +5060,7 @@ impl<T: 'static> WindowState<T> {
 
                 // Apply blur effect if enabled
                 if self.blur {
-                    apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh);
+                    apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh, None);
                 }
 
                 // Apply corner radius if set
@@ -5524,6 +5534,7 @@ impl<T: 'static> WindowState<T> {
                                         events_transparent,
                                         namespace,
                                         blur,
+                                        blur_radius,
                                         shadow,
                                         corner_radius,
                                         auto_size: _, // Auto-size is handled at the iced level
@@ -5598,7 +5609,7 @@ impl<T: 'static> WindowState<T> {
                                             window_state.blur_manager = globals
                                                 .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                                                     &qh,
-                                                    1..=1,
+                                                    1..=2,
                                                     (),
                                                 )
                                                 .ok();
@@ -5608,7 +5619,7 @@ impl<T: 'static> WindowState<T> {
                                                 log::warn!("Blur requested but compositor does not support org_kde_kwin_blur_manager protocol");
                                             }
                                         }
-                                        apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh);
+                                        apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh, blur_radius);
                                     }
 
                                     // Apply corner radius if set (per-surface setting takes precedence, then fallback to window_state)

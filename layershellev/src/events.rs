@@ -89,7 +89,7 @@ pub enum OutputOption {
 }
 
 /// layershell settings to create a new layershell surface
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewLayerShellSettings {
     /// the size of the layershell, optional.
     pub size: Option<(u32, u32)>,
@@ -106,6 +106,10 @@ pub struct NewLayerShellSettings {
     pub namespace: Option<String>,
     /// Request blur effect for this surface (requires compositor support)
     pub blur: bool,
+    /// Custom blur radius in pixels. When `blur` is true and this is `Some(r)`,
+    /// the compositor applies a blur with radius `r` instead of the default.
+    /// Requires compositor support for org_kde_kwin_blur version 2.
+    pub blur_radius: Option<f32>,
     /// Request shadow effect for this surface (requires compositor support for layer_shadow_manager_v1)
     pub shadow: bool,
     /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
@@ -230,6 +234,7 @@ impl Default for NewLayerShellSettings {
             events_transparent: false,
             namespace: None,
             blur: false,
+            blur_radius: None,
             shadow: false,
             corner_radius: None,
             auto_size: false,
@@ -237,6 +242,10 @@ impl Default for NewLayerShellSettings {
         }
     }
 }
+
+// Manual Eq impl: f32 doesn't derive Eq, but blur_radius is a hint value
+// and doesn't affect identity semantics.
+impl Eq for NewLayerShellSettings {}
 
 /// the return data
 /// Note: when event is RequestBuffer, you must return WlBuffer

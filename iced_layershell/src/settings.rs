@@ -84,6 +84,10 @@ pub struct LayerShellSettings {
     pub events_transparent: bool,
     /// Request blur effect for this surface (requires compositor support for org_kde_kwin_blur)
     pub blur: bool,
+    /// Custom blur radius in pixels. When `blur` is true and this is `Some(r)`,
+    /// the compositor uses radius `r` instead of its default.
+    /// Requires compositor support for org_kde_kwin_blur version 2.
+    pub blur_radius: Option<f32>,
     /// Request shadow effect for this surface (requires compositor support for layer_shadow_manager_v1)
     pub shadow: bool,
     /// Corner radius for this surface [top_left, top_right, bottom_right, bottom_left]
@@ -121,6 +125,7 @@ impl Default for LayerShellSettings {
             events_transparent: false,
             start_mode: StartMode::default(),
             blur: false,
+            blur_radius: None,
             shadow: false,
             corner_radius: None,
             home_only: false,
@@ -215,6 +220,7 @@ mod tests {
             start_mode: StartMode::TargetScreen("HDMI-1".to_string()),
             events_transparent: false,
             blur: false,
+            blur_radius: None,
             shadow: false,
             corner_radius: None,
             home_only: false,
