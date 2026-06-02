@@ -1463,6 +1463,76 @@ impl<T> WindowState<T> {
 }
 
 impl<T: 'static> WindowState<T> {
+    /// Apply the configured surface effects (blur, corner radius, shadow, home
+    /// visibility, voice mode) to a freshly created layer-shell surface.
+    ///
+    /// Shared by the initial `AllScreens` surface creation and the runtime
+    /// `NewDisplay` path, so a monitor that is enabled after startup gets the
+    /// exact same effects as the monitors that were present at boot. Keeping a
+    /// single implementation avoids the two paths drifting apart (which
+    /// previously left runtime-added monitors with no blur/shadow).
+    fn apply_surface_effects(&mut self, wl_surface: &WlSurface, qh: &QueueHandle<Self>) {
+        let surface_id = wl_surface.id().protocol_id();
+
+        // Apply blur effect if enabled
+        if self.blur {
+            apply_blur_to_surface(&self.blur_manager, wl_surface, qh, None);
+        }
+
+        // Apply corner radius if set
+        if self.corner_radius.is_some() {
+            if let Some(corner_obj) = apply_corner_radius_to_surface(
+                &self.corner_radius_manager,
+                self.corner_radius,
+                wl_surface,
+                qh,
+            ) {
+                self.corner_radius_surfaces.insert(surface_id, corner_obj);
+            }
+        }
+
+        // Apply shadow if enabled
+        if self.shadow {
+            apply_shadow_to_surface(&self.shadow_manager, wl_surface, qh);
+        }
+
+        // Apply home visibility mode if enabled
+        if self.home_only {
+            if let Some(controller) = apply_home_visibility_to_surface(
+                &self.home_visibility_manager,
+                wl_surface,
+                qh,
+                home_visibility::VisibilityMode::HomeOnly,
+            ) {
+                self.home_visibility_controllers
+                    .insert(surface_id, controller);
+            }
+        } else if self.hide_on_home {
+            if let Some(controller) = apply_home_visibility_to_surface(
+                &self.home_visibility_manager,
+                wl_surface,
+                qh,
+                home_visibility::VisibilityMode::HideOnHome,
+            ) {
+                self.home_visibility_controllers
+                    .insert(surface_id, controller);
+            }
+        }
+
+        // Register surface for voice mode events if enabled
+        if self.voice_mode_enabled {
+            let is_default = self.voice_mode_receivers.is_empty();
+            if let Some(receiver) = register_voice_mode_for_surface(
+                &self.voice_mode_manager,
+                wl_surface,
+                qh,
+                is_default,
+            ) {
+                self.voice_mode_receivers.insert(surface_id, receiver);
+            }
+        }
+    }
+
     /// Set corner radius for a specific surface
     /// radii: [top_left, top_right, bottom_right, bottom_left] or None to unset
     pub fn set_corner_radius_for_surface(&mut self, surface: &WlSurface, radii: Option<[u32; 4]>) {
@@ -5064,64 +5134,9 @@ impl<T: 'static> WindowState<T> {
                     region.destroy();
                 }
 
-                // Apply blur effect if enabled
-                if self.blur {
-                    apply_blur_to_surface(&self.blur_manager, &wl_surface, &qh, None);
-                }
-
-                // Apply corner radius if set
-                let surface_id = wl_surface.id().protocol_id();
-                if self.corner_radius.is_some() {
-                    if let Some(corner_obj) = apply_corner_radius_to_surface(
-                        &self.corner_radius_manager,
-                        self.corner_radius,
-                        &wl_surface,
-                        &qh,
-                    ) {
-                        self.corner_radius_surfaces.insert(surface_id, corner_obj);
-                    }
-                }
-
-                // Apply shadow if enabled
-                if self.shadow {
-                    apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
-                }
-
-                // Apply home visibility mode if enabled
-                if self.home_only {
-                    if let Some(controller) = apply_home_visibility_to_surface(
-                        &self.home_visibility_manager,
-                        &wl_surface,
-                        &qh,
-                        home_visibility::VisibilityMode::HomeOnly,
-                    ) {
-                        self.home_visibility_controllers
-                            .insert(surface_id, controller);
-                    }
-                } else if self.hide_on_home {
-                    if let Some(controller) = apply_home_visibility_to_surface(
-                        &self.home_visibility_manager,
-                        &wl_surface,
-                        &qh,
-                        home_visibility::VisibilityMode::HideOnHome,
-                    ) {
-                        self.home_visibility_controllers
-                            .insert(surface_id, controller);
-                    }
-                }
-
-                // Register surface for voice mode events if enabled
-                if self.voice_mode_enabled {
-                    let is_default = self.voice_mode_receivers.is_empty();
-                    if let Some(receiver) = register_voice_mode_for_surface(
-                        &self.voice_mode_manager,
-                        &wl_surface,
-                        &qh,
-                        is_default,
-                    ) {
-                        self.voice_mode_receivers.insert(surface_id, receiver);
-                    }
-                }
+                // Apply blur / corner radius / shadow / home visibility / voice
+                // mode (shared with the runtime NewDisplay path).
+                self.apply_surface_effects(&wl_surface, &qh);
 
                 wl_surface.commit();
 
@@ -5151,6 +5166,9 @@ impl<T: 'static> WindowState<T> {
                     .zxdgoutput(Some(ZxdgOutputInfo::new(zxdgoutput)))
                     .fractional_scale(fractional_scale)
                     .wl_output(Some(output_display.clone()))
+                    // Mark as created so remove_shell() tears the panel down when
+                    // the compositor sends `Closed` (monitor disabled).
+                    .becreated(true)
                     .build(),
                 );
             }
@@ -5450,6 +5468,13 @@ impl<T: 'static> WindowState<T> {
                                     wl_surface.set_input_region(Some(&region));
                                     region.destroy();
                                 }
+
+                                // Apply blur / corner radius / shadow / home
+                                // visibility / voice mode. Without this a monitor
+                                // enabled after startup gets a panel with none of
+                                // these effects (e.g. no blur).
+                                window_state.apply_surface_effects(&wl_surface, &qh);
+
                                 wl_surface.commit();
 
                                 let zxdgoutput =
@@ -5484,6 +5509,12 @@ impl<T: 'static> WindowState<T> {
                                     .zxdgoutput(Some(ZxdgOutputInfo::new(zxdgoutput)))
                                     .fractional_scale(fractional_scale)
                                     .wl_output(Some(output_display.clone()))
+                                    // Mark as created so remove_shell() tears the
+                                    // panel down when the compositor sends `Closed`
+                                    // (monitor disabled); otherwise re-enabling the
+                                    // monitor leaves the old surface alive and the
+                                    // panel ends up duplicated.
+                                    .becreated(true)
                                     .build(),
                                 );
                             }

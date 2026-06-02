@@ -1037,9 +1037,18 @@ where
         ev: &mut WindowState<IcedId>,
         layer_shell_id: Option<LayerShellId>,
     ) {
+        // Resolve the iced id from the layershell id. Prefer the window_manager
+        // alias (registered for every window on its first refresh) so this also
+        // works for auto-created `AllScreens` panels, which carry no unit
+        // binding; fall back to the unit binding for windows that were closed
+        // before their first refresh.
         let Some(iced_id) = layer_shell_id
-            .and_then(|lid| ev.get_unit_with_id(lid))
-            .and_then(|layer_shell_window| layer_shell_window.get_binding().copied())
+            .and_then(|lid| self.window_manager.get_alias(lid).map(|(id, _)| id))
+            .or_else(|| {
+                layer_shell_id
+                    .and_then(|lid| ev.get_unit_with_id(lid))
+                    .and_then(|layer_shell_window| layer_shell_window.get_binding().copied())
+            })
         else {
             return;
         };
