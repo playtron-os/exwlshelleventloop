@@ -3828,7 +3828,7 @@ impl<T: 'static>
         state: &mut Self,
         _proxy: &layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1,
         event: <layer_auto_hide::layer_auto_hide_v1::LayerAutoHideV1 as Proxy>::Event,
-        _data: &layer_auto_hide::LayerAutoHideData,
+        data: &layer_auto_hide::LayerAutoHideData,
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
@@ -3837,9 +3837,15 @@ impl<T: 'static>
             Event::VisibilityChanged { visible } => {
                 let is_visible = visible != 0;
                 log::debug!("Auto-hide visibility changed: visible={}", is_visible);
+                // Resolve the originating surface to its window id so that each
+                // surface in multi-surface (`AllScreens`) mode receives its own
+                // visibility event. Without this the message carries `None` and
+                // the consumer misattributes it to the first window, so only one
+                // monitor's panel ever toggles its input region.
+                let window_id = state.get_id_from_surface(&data.surface);
                 state.auto_hide_visible = is_visible;
                 state.message.push((
-                    None,
+                    window_id,
                     DispatchMessageInner::AutoHideVisibilityChanged(is_visible),
                 ));
             }

@@ -1134,15 +1134,26 @@ where
         // Handle auto-hide visibility events - convert to iced event for immediate delivery
         if let LayerShellWindowEvent::AutoHideVisibilityChanged { visible } = event {
             tracing::debug!(
-                "handle_window_event: received AutoHideVisibilityChanged: visible={}",
-                visible
+                "handle_window_event: received AutoHideVisibilityChanged: visible={}, layer_shell_id={:?}",
+                visible,
+                layer_shell_id
             );
             let iced_event = IcedEvent::AutoHide(if visible {
                 iced_auto_hide::Event::Shown
             } else {
                 iced_auto_hide::Event::Hidden
             });
-            if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+            // Route the event to the surface that actually toggled, resolved from
+            // its layershell id. In `AllScreens` mode each monitor has its own
+            // panel surface; without this every surface received the first
+            // window's id and only one panel would react. Fall back to the first
+            // window when the id is missing (older single-surface path).
+            let mut target =
+                layer_shell_id.and_then(|lid| self.window_manager.get_alias(lid).map(|(id, _)| id));
+            if target.is_none() {
+                target = self.window_manager.iter_mut().next().map(|(id, _)| id);
+            }
+            if let Some(iced_id) = target {
                 self.iced_events.push((iced_id, iced_event));
             }
             return true;
