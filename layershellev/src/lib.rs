@@ -1480,15 +1480,15 @@ impl<T: 'static> WindowState<T> {
         }
 
         // Apply corner radius if set
-        if self.corner_radius.is_some() {
-            if let Some(corner_obj) = apply_corner_radius_to_surface(
+        if self.corner_radius.is_some()
+            && let Some(corner_obj) = apply_corner_radius_to_surface(
                 &self.corner_radius_manager,
                 self.corner_radius,
                 wl_surface,
                 qh,
-            ) {
-                self.corner_radius_surfaces.insert(surface_id, corner_obj);
-            }
+            )
+        {
+            self.corner_radius_surfaces.insert(surface_id, corner_obj);
         }
 
         // Apply shadow if enabled
@@ -1507,16 +1507,16 @@ impl<T: 'static> WindowState<T> {
                 self.home_visibility_controllers
                     .insert(surface_id, controller);
             }
-        } else if self.hide_on_home {
-            if let Some(controller) = apply_home_visibility_to_surface(
+        } else if self.hide_on_home
+            && let Some(controller) = apply_home_visibility_to_surface(
                 &self.home_visibility_manager,
                 wl_surface,
                 qh,
                 home_visibility::VisibilityMode::HideOnHome,
-            ) {
-                self.home_visibility_controllers
-                    .insert(surface_id, controller);
-            }
+            )
+        {
+            self.home_visibility_controllers
+                .insert(surface_id, controller);
         }
 
         // Register surface for voice mode events if enabled
@@ -1588,20 +1588,19 @@ impl<T: 'static> WindowState<T> {
             }
 
             // Need to bind the blur manager if not already bound
-            if self.blur_manager.is_none() {
-                if let Some(globals) = &self.globals {
-                    if let Some(unit) = self.units.first() {
-                        self.blur_manager = globals
-                            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
-                                &unit.qh,
-                                1..=2,
-                                (),
-                            )
-                            .ok();
-                        if self.blur_manager.is_some() {
-                            log::info!("Bound blur manager");
-                        }
-                    }
+            if self.blur_manager.is_none()
+                && let Some(globals) = &self.globals
+                && let Some(unit) = self.units.first()
+            {
+                self.blur_manager = globals
+                    .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
+                        &unit.qh,
+                        1..=2,
+                        (),
+                    )
+                    .ok();
+                if self.blur_manager.is_some() {
+                    log::info!("Bound blur manager");
                 }
             }
 
@@ -1647,20 +1646,19 @@ impl<T: 'static> WindowState<T> {
         let surface_id = surface.id().protocol_id();
 
         // Ensure blur manager is bound
-        if self.blur_manager.is_none() {
-            if let Some(globals) = &self.globals {
-                if let Some(unit) = self.units.first() {
-                    self.blur_manager = globals
-                        .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
-                            &unit.qh,
-                            1..=2,
-                            (),
-                        )
-                        .ok();
-                    if self.blur_manager.is_some() {
-                        log::info!("Bound blur manager");
-                    }
-                }
+        if self.blur_manager.is_none()
+            && let Some(globals) = &self.globals
+            && let Some(unit) = self.units.first()
+        {
+            self.blur_manager = globals
+                .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
+                    &unit.qh,
+                    1..=2,
+                    (),
+                )
+                .ok();
+            if self.blur_manager.is_some() {
+                log::info!("Bound blur manager");
             }
         }
 
@@ -1719,20 +1717,19 @@ impl<T: 'static> WindowState<T> {
             }
 
             // Need to bind the shadow manager if not already bound
-            if self.shadow_manager.is_none() {
-                if let Some(globals) = &self.globals {
-                    if let Some(unit) = self.units.first() {
-                        self.shadow_manager = globals
-                            .bind::<shadow::layer_shadow_manager_v1::LayerShadowManagerV1, _, _>(
-                                &unit.qh,
-                                1..=1,
-                                (),
-                            )
-                            .ok();
-                        if self.shadow_manager.is_some() {
-                            log::info!("Bound shadow manager");
-                        }
-                    }
+            if self.shadow_manager.is_none()
+                && let Some(globals) = &self.globals
+                && let Some(unit) = self.units.first()
+            {
+                self.shadow_manager = globals
+                    .bind::<shadow::layer_shadow_manager_v1::LayerShadowManagerV1, _, _>(
+                        &unit.qh,
+                        1..=1,
+                        (),
+                    )
+                    .ok();
+                if self.shadow_manager.is_some() {
+                    log::info!("Bound shadow manager");
                 }
             }
 
@@ -2738,14 +2735,12 @@ impl<T: 'static> Dispatch<wl_registry::WlRegistry, ()> for WindowState<T> {
                 name,
                 interface,
                 version,
-            } => {
-                if interface == wl_output::WlOutput::interface().name {
-                    let output = proxy.bind::<wl_output::WlOutput, _, _>(name, version, qh, ());
-                    state.outputs.push((name, output.clone()));
-                    state
-                        .message
-                        .push((None, DispatchMessageInner::NewDisplay(output)));
-                }
+            } if interface == wl_output::WlOutput::interface().name => {
+                let output = proxy.bind::<wl_output::WlOutput, _, _>(name, version, qh, ());
+                state.outputs.push((name, output.clone()));
+                state
+                    .message
+                    .push((None, DispatchMessageInner::NewDisplay(output)));
             }
             wl_registry::Event::GlobalRemove { name } => {
                 if state
@@ -4736,7 +4731,7 @@ impl<T: 'static> WindowState<T> {
             .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
                 &qh,
                 1..=1,
-                layer_surface_visibility::LayerSurfaceVisibilityManagerData::default(),
+                layer_surface_visibility::LayerSurfaceVisibilityManagerData,
             )
             .ok();
         if self.layer_surface_visibility_manager.is_some() {
@@ -4750,7 +4745,7 @@ impl<T: 'static> WindowState<T> {
             .bind::<layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1, _, _>(
                 &qh,
                 1..=1,
-                layer_surface_dismiss::LayerSurfaceDismissManagerData::default(),
+                layer_surface_dismiss::LayerSurfaceDismissManagerData,
             )
             .ok();
         if self.layer_surface_dismiss_manager.is_some() {
@@ -4785,7 +4780,7 @@ impl<T: 'static> WindowState<T> {
                 .bind::<voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1, _, _>(
                     &qh,
                     1..=1,
-                    voice_mode::VoiceModeManagerData::default(),
+                    voice_mode::VoiceModeManagerData,
                 )
                 .ok();
             if self.voice_mode_manager.is_none() {
@@ -5024,15 +5019,15 @@ impl<T: 'static> WindowState<T> {
 
             // Apply corner radius if set
             let surface_id = wl_surface.id().protocol_id();
-            if self.corner_radius.is_some() {
-                if let Some(corner_obj) = apply_corner_radius_to_surface(
+            if self.corner_radius.is_some()
+                && let Some(corner_obj) = apply_corner_radius_to_surface(
                     &self.corner_radius_manager,
                     self.corner_radius,
                     &wl_surface,
                     &qh,
-                ) {
-                    self.corner_radius_surfaces.insert(surface_id, corner_obj);
-                }
+                )
+            {
+                self.corner_radius_surfaces.insert(surface_id, corner_obj);
             }
 
             // Apply shadow if enabled
@@ -5051,16 +5046,16 @@ impl<T: 'static> WindowState<T> {
                     self.home_visibility_controllers
                         .insert(surface_id, controller);
                 }
-            } else if self.hide_on_home {
-                if let Some(controller) = apply_home_visibility_to_surface(
+            } else if self.hide_on_home
+                && let Some(controller) = apply_home_visibility_to_surface(
                     &self.home_visibility_manager,
                     &wl_surface,
                     &qh,
                     home_visibility::VisibilityMode::HideOnHome,
-                ) {
-                    self.home_visibility_controllers
-                        .insert(surface_id, controller);
-                }
+                )
+            {
+                self.home_visibility_controllers
+                    .insert(surface_id, controller);
             }
 
             // Register surface for voice mode events if enabled
@@ -5669,11 +5664,10 @@ impl<T: 'static> WindowState<T> {
                                     let surface_id = wl_surface.id().protocol_id();
                                     let effective_corner_radius = corner_radius.or(window_state.corner_radius);
                                     log::debug!("NewLayerShell: corner_radius={:?}, effective={:?}", corner_radius, effective_corner_radius);
-                                    if effective_corner_radius.is_some() {
-                                        if let Some(corner_obj) = apply_corner_radius_to_surface(&window_state.corner_radius_manager, effective_corner_radius, &wl_surface, &qh) {
+                                    if effective_corner_radius.is_some()
+                                        && let Some(corner_obj) = apply_corner_radius_to_surface(&window_state.corner_radius_manager, effective_corner_radius, &wl_surface, &qh) {
                                             window_state.corner_radius_surfaces.insert(surface_id, corner_obj);
                                         }
-                                    }
 
                                     // Apply shadow if enabled (per-surface setting takes precedence, then fallback to window_state)
                                     log::debug!("NewLayerShell: shadow={}, window_state.shadow={}, shadow_manager present={}", 
@@ -5694,8 +5688,8 @@ impl<T: 'static> WindowState<T> {
                                         ) {
                                             window_state.home_visibility_controllers.insert(surface_id, controller);
                                         }
-                                    } else if window_state.hide_on_home {
-                                        if let Some(controller) = apply_home_visibility_to_surface(
+                                    } else if window_state.hide_on_home
+                                        && let Some(controller) = apply_home_visibility_to_surface(
                                             &window_state.home_visibility_manager,
                                             &wl_surface,
                                             &qh,
@@ -5703,7 +5697,6 @@ impl<T: 'static> WindowState<T> {
                                         ) {
                                             window_state.home_visibility_controllers.insert(surface_id, controller);
                                         }
-                                    }
 
                                     // Register surface for voice mode events if enabled
                                     if window_state.voice_mode_enabled {
@@ -5844,16 +5837,15 @@ impl<T: 'static> WindowState<T> {
                                     };
                                     shell.get_popup(&popup);
 
-                                    if grab {
-                                        if let Some(seat) = window_state.seat.as_ref() {
+                                    if grab
+                                        && let Some(seat) = window_state.seat.as_ref() {
                                             popup.grab(seat, window_state.enter_serial.unwrap_or(0));
                                         }
-                                    }
 
                                     // Apply corner radius to popup surface if set
                                     let surface_id = wl_surface.id().protocol_id();
-                                    if corner_radius.is_some() {
-                                        if let Some(corner_obj) = apply_corner_radius_to_surface(
+                                    if corner_radius.is_some()
+                                        && let Some(corner_obj) = apply_corner_radius_to_surface(
                                             &window_state.corner_radius_manager,
                                             corner_radius,
                                             &wl_surface,
@@ -5861,7 +5853,6 @@ impl<T: 'static> WindowState<T> {
                                         ) {
                                             window_state.corner_radius_surfaces.insert(surface_id, corner_obj);
                                         }
-                                    }
 
                                     // Shadow for popups is deferred until the first
                                     // content frame to avoid a visible flash of
@@ -5875,8 +5866,8 @@ impl<T: 'static> WindowState<T> {
                                         || tooltip_delay_ms.is_some();
                                     if has_tooltip {
                                         // Bind the tooltip manager lazily
-                                        if window_state.tooltip_manager.is_none() {
-                                            if let Some(globals) = &window_state.globals {
+                                        if window_state.tooltip_manager.is_none()
+                                            && let Some(globals) = &window_state.globals {
                                                 window_state.tooltip_manager = globals
                                                     .bind::<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, _, _>(
                                                         &qh,
@@ -5888,7 +5879,6 @@ impl<T: 'static> WindowState<T> {
                                                     log::info!("Bound tooltip manager");
                                                 }
                                             }
-                                        }
 
                                         if let Some(manager) = &window_state.tooltip_manager {
                                             let parent_surface = &window_state.units[index].wl_surface;
@@ -5905,11 +5895,10 @@ impl<T: 'static> WindowState<T> {
                                             if let Some((ox, oy)) = tooltip_offset {
                                                 tooltip_obj.set_offset(ox, oy);
                                             }
-                                            if let Some(a) = tooltip_anchor {
-                                                if let Ok(anchor_val) = tooltip::zcosmic_tooltip_v1::Anchor::try_from(a) {
+                                            if let Some(a) = tooltip_anchor
+                                                && let Ok(anchor_val) = tooltip::zcosmic_tooltip_v1::Anchor::try_from(a) {
                                                     tooltip_obj.set_anchor(anchor_val);
                                                 }
-                                            }
                                             if let Some(delay) = tooltip_delay_ms {
                                                 tooltip_obj.set_show_delay(delay);
                                             }

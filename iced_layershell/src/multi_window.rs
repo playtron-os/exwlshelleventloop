@@ -296,27 +296,26 @@ where
             }
 
             // Handle the Context case in-place (no move!) to keep widget references valid
-            if let ContextState::Context(ref mut context) = context_state {
-                if let Some((layer_shell_id, layer_shell_event)) =
+            if let ContextState::Context(ref mut context) = context_state
+                && let Some((layer_shell_id, layer_shell_event)) =
                     waiting_layer_shell_events.pop_front()
-                {
-                    need_continue = true;
-                    let (needs_compositor, waiting_layer_shell_event) =
-                        context.handle_event(ev, layer_shell_id, layer_shell_event);
-                    if let Some(waiting_layer_shell_event) = waiting_layer_shell_event {
-                        waiting_layer_shell_events
-                            .push_front((layer_shell_id, waiting_layer_shell_event));
-                    }
-                    if let Some(window_wrapper) = needs_compositor {
-                        // Compositor creation is the ONLY case that needs to move Context
-                        context_state =
-                            match std::mem::replace(&mut context_state, ContextState::None) {
-                                ContextState::Context(context) => ContextState::Future(
-                                    context.create_compositor(window_wrapper).boxed_local(),
-                                ),
-                                other => other,
-                            };
-                    }
+            {
+                need_continue = true;
+                let (needs_compositor, waiting_layer_shell_event) =
+                    context.handle_event(ev, layer_shell_id, layer_shell_event);
+                if let Some(waiting_layer_shell_event) = waiting_layer_shell_event {
+                    waiting_layer_shell_events
+                        .push_front((layer_shell_id, waiting_layer_shell_event));
+                }
+                if let Some(window_wrapper) = needs_compositor {
+                    // Compositor creation is the ONLY case that needs to move Context
+                    context_state = match std::mem::replace(&mut context_state, ContextState::None)
+                    {
+                        ContextState::Context(context) => ContextState::Future(
+                            context.create_compositor(window_wrapper).boxed_local(),
+                        ),
+                        other => other,
+                    };
                 }
             }
             if !need_continue {
@@ -1747,7 +1746,7 @@ where
                 rebuilds.push((iced_id, window));
             }
 
-            for (event, status) in window_events.drain(..).zip(statuses.into_iter()) {
+            for (event, status) in window_events.drain(..).zip(statuses) {
                 self.runtime
                     .broadcast(iced_futures::subscription::Event::Interaction {
                         window: iced_id,
@@ -1929,7 +1928,7 @@ pub(crate) fn update<P: IcedProgram, E: Executor>(
     let waker = futures::task::noop_waker();
     let mut cx = std::task::Context::from_waker(&waker);
 
-    let pending: Vec<_> = messages.drain(..).collect();
+    let pending: Vec<_> = std::mem::take(messages);
     for message in pending {
         let task = runtime.enter(|| application.update(message));
 

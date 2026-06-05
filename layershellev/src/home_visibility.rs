@@ -34,16 +34,10 @@ mod generated {
 }
 
 /// User data for the manager - stores a callback for home state changes
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HomeVisibilityManagerData {
     /// Current home state (true = at home, false = windows visible)
     pub is_home: bool,
-}
-
-impl Default for HomeVisibilityManagerData {
-    fn default() -> Self {
-        Self { is_home: false }
-    }
 }
 
 /// User data for visibility controller - stores the surface reference
