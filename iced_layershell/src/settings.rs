@@ -88,6 +88,20 @@ pub struct LayerShellSettings {
     /// the compositor uses radius `r` instead of its default.
     /// Requires compositor support for org_kde_kwin_blur version 2.
     pub blur_radius: Option<f32>,
+    /// Backdrop saturation multiplier for the blur, matching CSS
+    /// `backdrop-filter: saturate(x)`. When `blur` is true and this is `Some(s)`,
+    /// the compositor saturates the blurred backdrop by `s` (1.0 = unchanged).
+    /// Requires compositor support for org_kde_kwin_blur version 3.
+    pub blur_saturation: Option<f32>,
+    /// Frosted-glass white-tint strength for the blur. `Some(0.0)` disables the
+    /// compositor's white overlay so the blur is a faithful `backdrop-filter`
+    /// and this surface's own background provides the glass colour; `None` keeps
+    /// the compositor default tint. Requires org_kde_kwin_blur version 3.
+    pub blur_tint: Option<f32>,
+    /// Frosted-glass border strength (alpha) for the blur. `Some(0.0)` disables
+    /// the compositor's 1px white border (e.g. when the surface draws its own);
+    /// `None` keeps the compositor default. Requires org_kde_kwin_blur version 3.
+    pub blur_border: Option<f32>,
     /// Request shadow effect for this surface (requires compositor support for layer_shadow_manager_v1)
     pub shadow: bool,
     /// Corner radius for this surface [top_left, top_right, bottom_right, bottom_left]
@@ -126,6 +140,9 @@ impl Default for LayerShellSettings {
             start_mode: StartMode::default(),
             blur: false,
             blur_radius: None,
+            blur_saturation: None,
+            blur_tint: None,
+            blur_border: None,
             shadow: false,
             corner_radius: None,
             home_only: false,
@@ -221,6 +238,9 @@ mod tests {
             events_transparent: false,
             blur: false,
             blur_radius: None,
+            blur_saturation: None,
+            blur_tint: None,
+            blur_border: None,
             shadow: false,
             corner_radius: None,
             home_only: false,

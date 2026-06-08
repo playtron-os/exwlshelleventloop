@@ -110,6 +110,19 @@ pub struct NewLayerShellSettings {
     /// the compositor applies a blur with radius `r` instead of the default.
     /// Requires compositor support for org_kde_kwin_blur version 2.
     pub blur_radius: Option<f32>,
+    /// Backdrop saturation multiplier for the blur (CSS `saturate(x)` semantics).
+    /// When `blur` is true and this is `Some(s)`, the compositor saturates the
+    /// blurred backdrop by `s` (1.0 = unchanged).
+    /// Requires compositor support for org_kde_kwin_blur version 3.
+    pub blur_saturation: Option<f32>,
+    /// Frosted-glass white-tint strength for the blur. `Some(0.0)` disables the
+    /// compositor's white overlay (faithful `backdrop-filter`); `None` keeps the
+    /// compositor default. Requires org_kde_kwin_blur version 3.
+    pub blur_tint: Option<f32>,
+    /// Frosted-glass border strength (alpha) for the blur. `Some(0.0)` disables
+    /// the compositor's 1px white border; `None` keeps the compositor default.
+    /// Requires org_kde_kwin_blur version 3.
+    pub blur_border: Option<f32>,
     /// Request shadow effect for this surface (requires compositor support for layer_shadow_manager_v1)
     pub shadow: bool,
     /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
@@ -235,6 +248,9 @@ impl Default for NewLayerShellSettings {
             namespace: None,
             blur: false,
             blur_radius: None,
+            blur_saturation: None,
+            blur_tint: None,
+            blur_border: None,
             shadow: false,
             corner_radius: None,
             auto_size: false,
