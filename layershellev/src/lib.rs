@@ -108,6 +108,7 @@
 //! ```
 //!
 use calloop::channel::Channel;
+pub use events::LayerTransition;
 pub use events::NewInputPanelSettings;
 pub use events::NewLayerShellSettings;
 pub use events::NewPopUpSettings;
@@ -954,6 +955,15 @@ pub struct WindowState<T> {
     shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
     /// Shadow objects per surface (keyed by surface protocol ID)
     shadow_surfaces: HashMap<u32, shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1>,
+    /// Global show/hide transition animation requested for surfaces (via the
+    /// `layer_surface_visibility` protocol).  `None` lets the compositor decide
+    /// based on the surface anchor.  Applied when a visibility controller is
+    /// created (requires compositor support for the protocol version 2).
+    transition: Option<LayerTransition>,
+    /// Per-surface transition overrides (keyed by surface protocol ID), set from
+    /// [`NewLayerShellSettings::transition`].  Takes precedence over `transition`
+    /// for that surface.  See [`WindowState::surface_transition`].
+    transitions: HashMap<u32, LayerTransition>,
 
     /// Auto-hide manager (bound lazily when needed)
     auto_hide_manager:
@@ -1135,6 +1145,7 @@ impl<T> WindowState<T> {
             visibility_obj.destroy();
         }
         self.hidden_surfaces.remove(&surface_id);
+        self.transitions.remove(&surface_id);
         if let Some(dismiss_obj) = self.layer_surface_dismiss_controllers.remove(&surface_id) {
             dismiss_obj.destroy();
         }
@@ -1908,6 +1919,7 @@ impl<T: 'static> WindowState<T> {
         }
 
         // Need to create a new controller
+        let transition = self.surface_transition(surface_id);
         if let Some(manager) = &self.layer_surface_visibility_manager {
             if let Some(unit) = self.units.first() {
                 let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
@@ -1916,6 +1928,7 @@ impl<T: 'static> WindowState<T> {
                 };
                 let controller =
                     manager.get_visibility_controller(surface, &unit.qh, visibility_data);
+                apply_transition_to_controller(&controller, transition);
                 controller.set_hidden();
                 self.layer_surface_visibility_controllers
                     .insert(surface_id, controller);
@@ -1962,6 +1975,7 @@ impl<T: 'static> WindowState<T> {
         }
 
         // Need to create a new controller (surface was never hidden, but make it explicit)
+        let transition = self.surface_transition(surface_id);
         if let Some(manager) = &self.layer_surface_visibility_manager {
             if let Some(unit) = self.units.first() {
                 let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
@@ -1970,6 +1984,7 @@ impl<T: 'static> WindowState<T> {
                 };
                 let controller =
                     manager.get_visibility_controller(surface, &unit.qh, visibility_data);
+                apply_transition_to_controller(&controller, transition);
                 controller.set_visible();
                 self.layer_surface_visibility_controllers
                     .insert(surface_id, controller);
@@ -2282,6 +2297,35 @@ fn apply_shadow_to_surface<T: 'static>(
     }
 }
 
+/// Apply a show/hide transition preference to a freshly-created visibility
+/// controller.  `set_transition` was added in version 2 of the protocol, so
+/// this is a no-op (logged) when the compositor only supports version 1.
+fn apply_transition_to_controller(
+    controller: &layer_surface_visibility::zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1,
+    transition: Option<LayerTransition>,
+) {
+    use layer_surface_visibility::zcosmic_layer_surface_visibility_v1::Transition as ProtoTransition;
+    let Some(transition) = transition else {
+        return;
+    };
+    if controller.version() < 2 {
+        log::debug!(
+            "Compositor layer_surface_visibility < v2; ignoring transition request {:?}",
+            transition
+        );
+        return;
+    }
+    let proto = match transition {
+        LayerTransition::Slide => ProtoTransition::Slide,
+        LayerTransition::Fade => ProtoTransition::Fade,
+    };
+    controller.set_transition(proto);
+    log::debug!(
+        "Applied transition {:?} to visibility controller",
+        transition
+    );
+}
+
 /// Apply home visibility mode to a surface using the home visibility protocol
 /// Returns the visibility controller so it can be stored for later mode changes
 fn apply_home_visibility_to_surface<T: 'static>(
@@ -2416,6 +2460,24 @@ impl<T> WindowState<T> {
     /// Returns whether shadow is enabled for this window state.
     pub fn has_shadow(&self) -> bool {
         self.shadow
+    }
+
+    /// Set the global show/hide transition animation for surfaces (requires
+    /// compositor support for `zcosmic_layer_surface_visibility` version 2).
+    /// `None` lets the compositor decide based on the surface anchor.  A
+    /// per-surface [`NewLayerShellSettings::transition`] overrides this.
+    pub fn with_transition(mut self, transition: Option<LayerTransition>) -> Self {
+        self.transition = transition;
+        self
+    }
+
+    /// Effective transition for a surface: its per-surface override if set,
+    /// otherwise the global transition.
+    fn surface_transition(&self, surface_id: u32) -> Option<LayerTransition> {
+        self.transitions
+            .get(&surface_id)
+            .copied()
+            .or(self.transition)
     }
 
     /// Set home-only visibility mode for surfaces (requires compositor support for zcosmic_home_visibility_v1)
@@ -2635,6 +2697,8 @@ impl<T> Default for WindowState<T> {
             shadow: false,
             shadow_manager: None,
             shadow_surfaces: HashMap::new(),
+            transition: None,
+            transitions: HashMap::new(),
             auto_hide_manager: None,
             auto_hide_surfaces: HashMap::new(),
             auto_hide_visible: true,
@@ -4827,7 +4891,7 @@ impl<T: 'static> WindowState<T> {
         self.layer_surface_visibility_manager = globals
             .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
                 &qh,
-                1..=1,
+                1..=2,
                 layer_surface_visibility::LayerSurfaceVisibilityManagerData,
             )
             .ok();
@@ -5683,6 +5747,7 @@ impl<T: 'static> WindowState<T> {
                                         blur_border,
                                         shadow,
                                         corner_radius,
+                                        transition,
                                         auto_size: _, // Auto-size is handled at the iced level
                                         start_hidden,
                                     },
@@ -5819,6 +5884,14 @@ impl<T: 'static> WindowState<T> {
                                         }
                                     }
 
+                                    // Record any per-surface transition override so subsequent
+                                    // hide/show (which only know the surface id) can honor it.
+                                    if let Some(t) = transition {
+                                        window_state
+                                            .transitions
+                                            .insert(wl_surface.id().protocol_id(), t);
+                                    }
+
                                     // If start_hidden is requested, create a visibility
                                     // controller and set hidden BEFORE the first commit so
                                     // the compositor already knows the surface is hidden
@@ -5830,12 +5903,14 @@ impl<T: 'static> WindowState<T> {
                                     if start_hidden {
                                         let surface_id = wl_surface.id().protocol_id();
                                         window_state.hidden_surfaces.insert(surface_id);
+                                        let transition = window_state.surface_transition(surface_id);
                                         if let Some(manager) = &window_state.layer_surface_visibility_manager {
                                             let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
                                                 surface: wl_surface.clone(),
                                                 hidden: true,
                                             };
                                             let controller = manager.get_visibility_controller(&wl_surface, &qh, visibility_data);
+                                            apply_transition_to_controller(&controller, transition);
                                             controller.set_hidden();
                                             window_state.layer_surface_visibility_controllers.insert(surface_id, controller);
                                             if let Some(ref conn) = window_state.connection {

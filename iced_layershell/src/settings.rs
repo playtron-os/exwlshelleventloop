@@ -4,6 +4,7 @@ use iced_core::{Font, Pixels};
 
 use crate::reexport::{Anchor, KeyboardInteractivity, Layer};
 
+pub use layershellev::LayerTransition;
 pub use layershellev::StartMode;
 
 use layershellev::reexport::wayland_client::{Connection, wl_keyboard::KeymapFormat};
@@ -107,6 +108,12 @@ pub struct LayerShellSettings {
     /// Corner radius for this surface [top_left, top_right, bottom_right, bottom_left]
     /// (requires compositor support for layer_corner_radius_manager_v1)
     pub corner_radius: Option<[u32; 4]>,
+    /// Show/hide transition animation requested when this surface is toggled via
+    /// the `layer_surface_visibility` protocol. `None` lets the compositor decide
+    /// based on the anchor (edge-anchored panels slide); `Some(Fade)` opts a
+    /// corner-anchored surface out of the slide. Requires
+    /// `zcosmic_layer_surface_visibility` version 2.
+    pub transition: Option<LayerTransition>,
     /// Home-only visibility mode - surface only visible when compositor is in "home" mode
     /// (requires compositor support for zcosmic_home_visibility_v1)
     pub home_only: bool,
@@ -145,6 +152,7 @@ impl Default for LayerShellSettings {
             blur_border: None,
             shadow: false,
             corner_radius: None,
+            transition: None,
             home_only: false,
             hide_on_home: false,
             voice_mode: false,
@@ -243,6 +251,7 @@ mod tests {
             blur_border: None,
             shadow: false,
             corner_radius: None,
+            transition: None,
             home_only: false,
             hide_on_home: false,
             auto_size: false,

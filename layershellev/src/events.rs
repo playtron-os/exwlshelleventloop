@@ -88,6 +88,25 @@ pub enum OutputOption {
     None,
 }
 
+/// Show/hide transition animation a layer surface requests from the compositor
+/// via the `zcosmic_layer_surface_visibility` protocol (`set_transition`).
+///
+/// When left unset, the compositor decides based on the surface's anchor: a
+/// surface anchored to a single lateral edge (left or right) slides in/out from
+/// that edge, while everything else cross-fades.  Setting this overrides that
+/// heuristic — e.g. a corner-anchored notification toast can request
+/// [`LayerTransition::Fade`] so it does not slide horizontally.
+///
+/// Requires compositor support for `zcosmic_layer_surface_visibility` version 2;
+/// on older compositors the request is silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerTransition {
+    /// Slide in/out from the anchored screen edge.
+    Slide,
+    /// Cross-fade the surface opacity.
+    Fade,
+}
+
 /// layershell settings to create a new layershell surface
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewLayerShellSettings {
@@ -128,6 +147,12 @@ pub struct NewLayerShellSettings {
     /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
     /// (requires compositor support for layer_corner_radius_manager_v1)
     pub corner_radius: Option<[u32; 4]>,
+    /// Show/hide transition animation for this surface (via the
+    /// `layer_surface_visibility` protocol).  Takes precedence over the global
+    /// transition set on the [`WindowState`]; `None` falls back to that global
+    /// (and ultimately to the compositor's anchor-based heuristic).  Requires
+    /// `zcosmic_layer_surface_visibility` version 2.
+    pub transition: Option<LayerTransition>,
     /// Auto-size the surface to fit content after first layout.
     /// When true, the initial size is used as a maximum, and the surface will be resized
     /// to match the actual content size after the first render.
@@ -253,6 +278,7 @@ impl Default for NewLayerShellSettings {
             blur_border: None,
             shadow: false,
             corner_radius: None,
+            transition: None,
             auto_size: false,
             start_hidden: false,
         }

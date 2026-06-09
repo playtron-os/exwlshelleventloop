@@ -148,6 +148,7 @@ where
         .with_blur_tint(settings.layer_settings.blur_tint)
         .with_blur_border(settings.layer_settings.blur_border)
         .with_shadow(settings.layer_settings.shadow)
+        .with_transition(settings.layer_settings.transition)
         .with_home_only(settings.layer_settings.home_only)
         .with_hide_on_home(settings.layer_settings.hide_on_home)
         .with_voice_mode(settings.layer_settings.voice_mode);
