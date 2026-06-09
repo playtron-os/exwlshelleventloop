@@ -941,6 +941,10 @@ pub struct WindowState<T> {
     blur_manager: Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
     /// Blur objects per surface (keyed by surface protocol ID)
     blur_surfaces: HashMap<u32, blur::org_kde_kwin_blur::OrgKdeKwinBlur>,
+    /// Per-surface frosted-glass params `(radius, saturation, tint, border)`,
+    /// captured at surface creation so a later blur re-enable (the auto-size
+    /// deferred-effects path) re-applies them instead of compositor defaults.
+    blur_params: HashMap<u32, (Option<f32>, Option<f32>, Option<f32>, Option<f32>)>,
     /// Corner radius for surfaces (all four corners)
     corner_radius: Option<[u32; 4]>,
     /// Corner radius manager (bound lazily when corner_radius is set)
@@ -1653,10 +1657,22 @@ impl<T: 'static> WindowState<T> {
                     let blur_obj = manager.create(surface, &unit.qh, blur_data);
                     // Set region to null (entire surface)
                     blur_obj.set_region(None);
+                    // Re-apply the per-surface frosted-glass params captured at
+                    // creation, so a deferred (auto-size) re-enable keeps the
+                    // requested radius/saturation/tint/border instead of the
+                    // compositor default (which would wash the blur white).
+                    let (radius, saturation, tint, border) = self
+                        .blur_params
+                        .get(&surface_id)
+                        .copied()
+                        .unwrap_or((None, None, None, None));
+                    apply_blur_params(&blur_obj, radius, saturation, tint, border);
                     blur_obj.commit();
                     self.blur_surfaces.insert(surface_id, blur_obj);
                     surface.commit();
-                    log::info!("Enabled blur for surface");
+                    log::info!(
+                        "Enabled blur for surface (radius={radius:?}, saturation={saturation:?}, tint={tint:?}, border={border:?})"
+                    );
                 }
             } else {
                 log::warn!("Blur manager not available - compositor may not support blur");
@@ -2199,54 +2215,13 @@ fn apply_blur_to_surface<T: 'static>(
         let blur_obj = manager.create(surface, qh, blur_data);
         // Set region to null (entire surface)
         blur_obj.set_region(None);
-        // Set custom blur radius if specified (version 2+ extension)
-        if let Some(radius) = blur_radius {
-            if blur_obj.version() >= 2 {
-                let radius_fixed = (radius * 256.0) as i32;
-                blur_obj.set_radius(radius_fixed);
-            } else {
-                log::warn!(
-                    "Blur radius requested but compositor only supports blur protocol v{}, ignoring",
-                    blur_obj.version()
-                );
-            }
-        }
-        // Set backdrop saturation if specified (version 3+ extension)
-        if let Some(saturation) = blur_saturation {
-            if blur_obj.version() >= 3 {
-                let saturation_fixed = (saturation * 256.0) as i32;
-                blur_obj.set_saturation(saturation_fixed);
-            } else {
-                log::warn!(
-                    "Blur saturation requested but compositor only supports blur protocol v{}, ignoring",
-                    blur_obj.version()
-                );
-            }
-        }
-        // Set frosted-glass tint strength if specified (version 3+ extension)
-        if let Some(tint) = blur_tint {
-            if blur_obj.version() >= 3 {
-                let tint_fixed = (tint * 256.0) as i32;
-                blur_obj.set_tint(tint_fixed);
-            } else {
-                log::warn!(
-                    "Blur tint requested but compositor only supports blur protocol v{}, ignoring",
-                    blur_obj.version()
-                );
-            }
-        }
-        // Set frosted-glass border strength if specified (version 3+ extension)
-        if let Some(border) = blur_border {
-            if blur_obj.version() >= 3 {
-                let border_fixed = (border * 256.0) as i32;
-                blur_obj.set_border(border_fixed);
-            } else {
-                log::warn!(
-                    "Blur border requested but compositor only supports blur protocol v{}, ignoring",
-                    blur_obj.version()
-                );
-            }
-        }
+        apply_blur_params(
+            &blur_obj,
+            blur_radius,
+            blur_saturation,
+            blur_tint,
+            blur_border,
+        );
         // Commit the blur effect
         blur_obj.commit();
         log::info!(
@@ -2256,6 +2231,63 @@ fn apply_blur_to_surface<T: 'static>(
             blur_tint,
             blur_border
         );
+    }
+}
+
+/// Send the version-gated frosted-glass parameters (radius is v2+, saturation /
+/// tint / border are v3+) on an already-created, not-yet-committed blur object.
+///
+/// Shared by initial creation ([`apply_blur_to_surface`]) and the blur
+/// re-enable path ([`WindowState::set_blur_for_surface`]) so BOTH keep the
+/// requested values. Without this on the re-enable path, an auto-sized surface
+/// whose effects were deferred (the panel popovers) would come back with the
+/// compositor's default tint — a white wash over the blur.
+fn apply_blur_params(
+    blur_obj: &blur::org_kde_kwin_blur::OrgKdeKwinBlur,
+    blur_radius: Option<f32>,
+    blur_saturation: Option<f32>,
+    blur_tint: Option<f32>,
+    blur_border: Option<f32>,
+) {
+    if let Some(radius) = blur_radius {
+        if blur_obj.version() >= 2 {
+            blur_obj.set_radius((radius * 256.0) as i32);
+        } else {
+            log::warn!(
+                "Blur radius requested but compositor only supports blur protocol v{}, ignoring",
+                blur_obj.version()
+            );
+        }
+    }
+    if let Some(saturation) = blur_saturation {
+        if blur_obj.version() >= 3 {
+            blur_obj.set_saturation((saturation * 256.0) as i32);
+        } else {
+            log::warn!(
+                "Blur saturation requested but compositor only supports blur protocol v{}, ignoring",
+                blur_obj.version()
+            );
+        }
+    }
+    if let Some(tint) = blur_tint {
+        if blur_obj.version() >= 3 {
+            blur_obj.set_tint((tint * 256.0) as i32);
+        } else {
+            log::warn!(
+                "Blur tint requested but compositor only supports blur protocol v{}, ignoring",
+                blur_obj.version()
+            );
+        }
+    }
+    if let Some(border) = blur_border {
+        if blur_obj.version() >= 3 {
+            blur_obj.set_border((border * 256.0) as i32);
+        } else {
+            log::warn!(
+                "Blur border requested but compositor only supports blur protocol v{}, ignoring",
+                blur_obj.version()
+            );
+        }
     }
 }
 
@@ -2701,6 +2733,7 @@ impl<T> Default for WindowState<T> {
             blur_border: None,
             blur_manager: None,
             blur_surfaces: HashMap::new(),
+            blur_params: HashMap::new(),
             corner_radius: None,
             corner_radius_manager: None,
             corner_radius_surfaces: HashMap::new(),
@@ -5866,8 +5899,17 @@ impl<T: 'static> WindowState<T> {
                                         apply_blur_to_surface(&window_state.blur_manager, &wl_surface, &qh, blur_radius, blur_saturation, blur_tint, blur_border);
                                     }
 
-                                    // Apply corner radius if set (per-surface setting takes precedence, then fallback to window_state)
                                     let surface_id = wl_surface.id().protocol_id();
+                                    // Remember this surface's frosted-glass params even when blur
+                                    // is deferred (auto-size sets `blur = false` at creation): the
+                                    // later BlurChange(true) re-enable reads them back so the tint
+                                    // isn't lost to the compositor default.
+                                    window_state.blur_params.insert(
+                                        surface_id,
+                                        (blur_radius, blur_saturation, blur_tint, blur_border),
+                                    );
+
+                                    // Apply corner radius if set (per-surface setting takes precedence, then fallback to window_state)
                                     let effective_corner_radius = corner_radius.or(window_state.corner_radius);
                                     log::debug!("NewLayerShell: corner_radius={:?}, effective={:?}", corner_radius, effective_corner_radius);
                                     if effective_corner_radius.is_some()
