@@ -1321,6 +1321,16 @@ impl<T> WindowState<T> {
         self.start_mode.is_with_target()
     }
 
+    /// True when at least one surface unit still has a live `wl_surface`.
+    ///
+    /// Goes false when the only surface was destroyed because its output was
+    /// disabled (the dead unit is dropped by the `GlobalRemove`/`Closed`
+    /// paths).  Used to decide whether a single-surface `Active` app needs its
+    /// surface re-created when a display is re-enabled.
+    fn has_live_surface(&self) -> bool {
+        self.units.iter().any(|unit| unit.wl_surface.is_alive())
+    }
+
     /// Execute a toplevel action (activate, close, minimize, etc.)
     ///
     /// Returns true if the action was executed, false if the handle was not found.
@@ -5267,6 +5277,15 @@ impl<T: 'static> WindowState<T> {
                 .zxdgoutput(binded_xdginfo)
                 .fractional_scale(fractional_scale)
                 .wl_output(binded_output.clone())
+                // Mark as created so remove_shell() tears this surface down when
+                // the compositor sends `Closed` (e.g. its output was disabled).
+                // Without this the single-window `Active` surface lingers as a
+                // zombie (wl_surface stays alive), so `has_live_surface()` never
+                // goes false and the surface can be neither cleaned up nor moved
+                // to a surviving output. `becreated` is only read by remove_shell;
+                // its other use (`is_created` in refresh events) is discarded by
+                // iced_layershell, so this has no other behavioral effect.
+                .becreated(true)
                 .build(),
             );
         } else {
@@ -5603,7 +5622,21 @@ impl<T: 'static> WindowState<T> {
                                 );
                             }
                             (_, DispatchMessageInner::NewDisplay(output_display)) => {
-                                if !window_state.is_allscreens() {
+                                // AllScreens always gets one surface per output.
+                                //
+                                // Single-surface `Active` apps (e.g. the
+                                // notifications daemon) normally ignore NewDisplay
+                                // — but if their only surface was destroyed because
+                                // its output was disabled, nothing would ever
+                                // re-create it and ShowWindow becomes a silent no-op
+                                // (window_manager is empty). So when an Active app
+                                // has NO live surface left, treat this newly-appeared
+                                // output as the place to re-create it. The live-unit
+                                // guard makes this a no-op at boot and whenever the
+                                // surface still exists, so no duplicates are created.
+                                let recreate_lost_active =
+                                    window_state.is_active() && !window_state.has_live_surface();
+                                if !window_state.is_allscreens() && !recreate_lost_active {
                                     continue;
                                 }
                                 let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
@@ -6346,6 +6379,9 @@ impl<T: 'static> WindowState<T> {
                         .filter(|unit| unit.request_flag.close)
                         .map(WindowStateUnit::id)
                         .collect();
+                    if !to_be_closed_ids.is_empty() {
+                        log::info!(target: "move_debug", "processing {} to_be_closed unit(s) (request_flag.close)", to_be_closed_ids.len());
+                    }
                     for id in to_be_closed_ids {
                         window_state.handle_event(
                             &mut *event_handler,
@@ -6367,6 +6403,38 @@ impl<T: 'static> WindowState<T> {
                     }
                     window_state.closed_ids.clear();
 
+                    // A single-surface `Active` app (e.g. the notifications
+                    // daemon) keeps exactly one layer surface, normally on the
+                    // active output. If that output was just disabled, the
+                    // surface is destroyed — but unlike plugging in a brand-new
+                    // display, no `NewDisplay` fires for the monitors that were
+                    // already connected. So nothing would move the surface to a
+                    // still-active monitor, and the app goes silently blind until
+                    // a display is (re-)enabled.
+                    //
+                    // Detect that here and synthesize a `NewDisplay` for a
+                    // surviving output; the recreate path above turns it into a
+                    // fresh surface on the next tick. This runs every 50 ms, so
+                    // it self-heals regardless of teardown ordering. Guards:
+                    //   - `has_live_surface()` is true for merely *hidden*
+                    //     surfaces, so the idle-hidden state never triggers it,
+                    //     and it stops the moment the surface is back;
+                    //   - the already-queued check prevents piling up duplicates.
+                    if window_state.is_active() && !window_state.has_live_surface() {
+                        let already_queued = window_state
+                            .message
+                            .iter()
+                            .any(|(_, m)| matches!(m, DispatchMessageInner::NewDisplay(_)));
+                        let next_output =
+                            window_state.outputs.first().map(|(_, o)| o.clone());
+                        if !already_queued
+                            && let Some(output) = next_output
+                        {
+                            window_state
+                                .message
+                                .push((None, DispatchMessageInner::NewDisplay(output)));
+                        }
+                    }
 
                     // Re-check hidden state AFTER NormalDispatch + action
                     // processing.  show_surface() may have been called (e.g.
