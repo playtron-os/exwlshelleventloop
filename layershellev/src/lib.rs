@@ -1687,6 +1687,33 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
+    /// Enable blur on a surface with explicit frosted-glass params, storing them
+    /// in `blur_params` so a later (auto-size) deferred re-enable keeps them.
+    ///
+    /// [`set_blur_for_surface`] reuses params captured when the surface was
+    /// created; a popup created via `popup::show` captures none, so without this
+    /// it would blur with the compositor default (washing the blur white). This
+    /// lets the client set the params explicitly for any surface — layer or
+    /// popup — by id.
+    pub fn set_blur_for_surface_with_params(
+        &mut self,
+        surface: &WlSurface,
+        radius: Option<f32>,
+        saturation: Option<f32>,
+        tint: Option<f32>,
+        border: Option<f32>,
+    ) {
+        let surface_id = surface.id().protocol_id();
+        self.blur_params
+            .insert(surface_id, (radius, saturation, tint, border));
+        // Replace any existing blur object so the new params take effect (the
+        // `enabled` path below skips surfaces that already have one).
+        if let Some(old) = self.blur_surfaces.remove(&surface_id) {
+            old.release();
+        }
+        self.set_blur_for_surface(surface, true);
+    }
+
     /// Set a specific blur region for a surface. The callback receives a WlRegion
     /// to which the caller adds rectangles. If no rectangles are added, blur is
     /// disabled for the surface.

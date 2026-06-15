@@ -1330,6 +1330,18 @@ where
                 };
                 ev.set_blur_for_surface(&surface, enabled);
             }
+            LayershellCustomAction::SetSurfaceBlur {
+                radius,
+                saturation,
+                tint,
+                border,
+            } => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_blur_for_surface_with_params(&surface, radius, saturation, tint, border);
+            }
             LayershellCustomAction::SetBlurRegion(set_region) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let set_region = set_region.0;

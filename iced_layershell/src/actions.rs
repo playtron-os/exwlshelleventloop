@@ -103,6 +103,17 @@ pub enum LayershellCustomAction {
     CornerRadiusChange(Option<[u32; 4]>),
     /// Enable or disable blur effect for the surface (requires compositor support).
     BlurChange(bool),
+    /// Enable blur on the surface with explicit frosted-glass params, storing
+    /// them so an auto-size deferred re-enable keeps them. Unlike
+    /// `BlurChange(true)` — which reuses the params captured when the surface was
+    /// created — this lets a popup made via `popup::show` (which captures no blur
+    /// params) get blur with the requested radius/saturation/tint/border.
+    SetSurfaceBlur {
+        radius: Option<f32>,
+        saturation: Option<f32>,
+        tint: Option<f32>,
+        border: Option<f32>,
+    },
     /// Enable or disable shadow effect for the surface (requires compositor support).
     ShadowChange(bool),
     /// Enable compositor-driven auto-hide for the surface. The compositor will
