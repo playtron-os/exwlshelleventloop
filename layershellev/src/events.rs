@@ -245,6 +245,9 @@ pub struct NewXdgWindowSettings {
     /// the size of the popup
     pub title: Option<String>,
     pub size: Option<(u32, u32)>,
+    /// xdg-shell app_id — used by compositors for the SSD titlebar icon, taskbar
+    /// grouping, and `.desktop` matching. `None` leaves it unset.
+    pub app_id: Option<String>,
 }
 
 /// input panel settings to create a new input panel surface

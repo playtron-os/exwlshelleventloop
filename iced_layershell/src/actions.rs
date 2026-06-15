@@ -25,10 +25,13 @@ pub enum ScreencopyAction {}
 
 use std::sync::Arc;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct IcedXdgWindowSettings {
     pub maximized: bool,
     pub size: Option<(u32, u32)>,
+    /// xdg-shell app_id — used by compositors for the SSD titlebar icon, taskbar
+    /// grouping, and `.desktop` matching. `None` leaves it unset.
+    pub app_id: Option<String>,
 }
 
 impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
@@ -37,6 +40,7 @@ impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
             maximized: val.maximized,
             title: None,
             size: val.size,
+            app_id: val.app_id,
         }
     }
 }

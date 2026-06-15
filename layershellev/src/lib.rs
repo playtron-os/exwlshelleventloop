@@ -6269,7 +6269,7 @@ impl<T: 'static> WindowState<T> {
                                     log::debug!("RepositionPopUp: repositioned popup {:?} with token {}", popup_id, token);
                                 },
                                 ReturnData::NewXdgBase((
-                                NewXdgWindowSettings { maximized, title, size },
+                                NewXdgWindowSettings { maximized, title, size, app_id },
                                     id,
                                     info,
                                 )) => {
@@ -6280,6 +6280,9 @@ impl<T: 'static> WindowState<T> {
                                         wl_xdg_surface.get_toplevel(&qh, ());
 
                                     toplevel.set_title(title.unwrap_or("".to_owned()));
+                                    if let Some(app_id) = app_id {
+                                        toplevel.set_app_id(app_id);
+                                    }
 
                                     if maximized { toplevel.set_maximized(); }
                                     let decoration = if let Some(decoration_manager) = &zxdg_decoration_manager {
