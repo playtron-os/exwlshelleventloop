@@ -67,6 +67,7 @@ impl App {
                         bottom_right: 0.0,
                         bottom_left: 0.0,
                     },
+                    ..Default::default()
                 },
                 shadow: Shadow {
                     color: iced::Color::TRANSPARENT,
