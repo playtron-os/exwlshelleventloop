@@ -1631,24 +1631,18 @@ where
                 ev.voice_dismiss();
             }
             LayershellCustomAction::ArmDismiss => {
-                // Get the surface to arm dismiss for
-                let surface = layer_shell_id.and_then(|id| {
-                    ev.get_unit_with_id(id)
-                        .map(|unit| unit.get_wlsurface().clone())
-                });
-                if let Some(surface) = surface {
-                    ev.arm_dismiss(&surface);
-                }
+                // Resolve the surface with the single-window fallback (id == None →
+                // the first/only window), like every other action does. Without this
+                // a single-window `application` (which sends id == None) could never
+                // arm dismiss.
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.arm_dismiss(&surface);
             }
             LayershellCustomAction::DisarmDismiss => {
-                // Get the surface to disarm dismiss for
-                let surface = layer_shell_id.and_then(|id| {
-                    ev.get_unit_with_id(id)
-                        .map(|unit| unit.get_wlsurface().clone())
-                });
-                if let Some(surface) = surface {
-                    ev.disarm_dismiss(&surface);
-                }
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.disarm_dismiss(&surface);
             }
             LayershellCustomAction::AddMainSurfaceToDismissGroup => {
                 // Get the popup surface

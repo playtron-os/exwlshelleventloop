@@ -177,6 +177,12 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 VisibilityModeChange(iced_layershell::actions::VisibilityMode),
                 VoiceAckStop { serial: u32, freeze: bool },
                 VoiceDismiss,
+                /// Arm click-outside dismiss: once armed, the compositor delivers an
+                /// `iced::Event::Dismiss` when the user clicks/taps outside this
+                /// surface's dismiss group.
+                ArmDismiss,
+                /// Disarm click-outside dismiss.
+                DisarmDismiss,
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
@@ -210,6 +216,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::VoiceAckStop { serial, freeze } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceAckStop(serial, freeze))),
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
+                            Self::ArmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ArmDismiss)),
+                            Self::DisarmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DisarmDismiss)),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)
