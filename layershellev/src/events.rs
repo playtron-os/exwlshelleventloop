@@ -456,7 +456,13 @@ pub(crate) enum DispatchMessageInner {
         scale_u32: u32,
         scale_float: f64,
     },
-    XdgInfoChanged(XdgInfoChangedType),
+    XdgInfoChanged {
+        change_type: XdgInfoChangedType,
+        /// The output's current logical size (logical px), carried so consumers
+        /// can position per-output surfaces without re-querying the unit.
+        logical_width: i32,
+        logical_height: i32,
+    },
     Ime(Ime),
     /// Home state changed from compositor (true = at home, false = windows visible)
     HomeStateChanged(bool),
@@ -597,6 +603,15 @@ pub enum DispatchMessage {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
+    /// The xdg_output info of the output the surface is shown on changed.
+    /// Carries that output's current logical size (logical px) — used to
+    /// position centered/anchored layer surfaces correctly per-display,
+    /// especially for `StartMode::Active` surfaces created with no output
+    /// binding (whose output is only known once the compositor maps them).
+    XdgInfoChanged {
+        width: i32,
+        height: i32,
+    },
 }
 
 impl From<DispatchMessageInner> for DispatchMessage {
@@ -700,7 +715,14 @@ impl From<DispatchMessageInner> for DispatchMessage {
                 scale_float,
             },
             DispatchMessageInner::Ime(ime) => DispatchMessage::Ime(ime),
-            DispatchMessageInner::XdgInfoChanged(_) => unimplemented!(),
+            DispatchMessageInner::XdgInfoChanged {
+                logical_width,
+                logical_height,
+                ..
+            } => DispatchMessage::XdgInfoChanged {
+                width: logical_width,
+                height: logical_height,
+            },
             DispatchMessageInner::HomeStateChanged(is_home) => {
                 DispatchMessage::HomeStateChanged { is_home }
             }

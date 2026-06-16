@@ -182,6 +182,90 @@ pub fn screencopy_subscription() -> iced_futures::Subscription<ScreencopyEvent> 
     })
 }
 
+// Global channel for output-info events (the logical size of the output a layer
+// surface is shown on). Mirrors the foreign-toplevel / screencopy channels, but
+// is always available (not feature-gated).
+static OUTPUT_INFO_CHANNEL: std::sync::OnceLock<(
+    std::sync::Mutex<std::sync::mpsc::Sender<OutputInfoEvent>>,
+    std::sync::Mutex<std::sync::mpsc::Receiver<OutputInfoEvent>>,
+)> = std::sync::OnceLock::new();
+
+fn get_output_info_channel() -> &'static (
+    std::sync::Mutex<std::sync::mpsc::Sender<OutputInfoEvent>>,
+    std::sync::Mutex<std::sync::mpsc::Receiver<OutputInfoEvent>>,
+) {
+    OUTPUT_INFO_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send an output-info event (called by the event loop).
+pub(crate) fn send_output_info_event(event: OutputInfoEvent) {
+    let (tx, _) = get_output_info_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for output-info events.
+///
+/// Yields the logical size (logical px) of the output the layer surface is
+/// currently shown on, whenever the compositor reports it (at map time, and
+/// again if the surface moves to another output or the output is reconfigured).
+/// Use it to position/size centered or anchored surfaces relative to the actual
+/// display they appear on.
+///
+/// # Example
+/// ```ignore
+/// fn subscription(&self) -> Subscription<Message> {
+///     iced_layershell::event::output_info_subscription().map(Message::OutputInfo)
+/// }
+/// ```
+pub fn output_info_subscription() -> iced_futures::Subscription<OutputInfoEvent> {
+    #[derive(Hash)]
+    struct OutputInfoSubscription;
+
+    iced_futures::Subscription::run_with(OutputInfoSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<OutputInfoEvent>| async move {
+                use iced_futures::futures::SinkExt;
+
+                // Bridge std::sync::mpsc → async channel via a dedicated thread,
+                // so idle costs nothing and events deliver instantly.
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<OutputInfoEvent>(100);
+
+                std::thread::Builder::new()
+                    .name("output-info-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_output_info_channel();
+                        let rx = rx.lock().expect("output info rx lock");
+                        loop {
+                            match rx.recv() {
+                                Ok(event) => {
+                                    if async_tx.clone().try_send(event).is_err() {
+                                        log::warn!(
+                                            "Output info bridge: async channel full, dropping event"
+                                        );
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                    .expect("spawn output info bridge thread");
+
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
+                }
+            },
+        )
+    })
+}
+
 fn from_u32_to_icedmouse(code: u32) -> mouse::Button {
     match code {
         273 => mouse::Button::Right,
@@ -299,6 +383,24 @@ pub enum WindowEvent {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
+    /// The output the surface is shown on reported its logical size (logical px).
+    /// Delivered to the app through [`output_info_subscription`] so it can position
+    /// per-display layer surfaces correctly.
+    OutputLogicalSize {
+        width: i32,
+        height: i32,
+    },
+}
+
+/// The logical size (logical px) of the output a layer surface is shown on.
+///
+/// Delivered via [`output_info_subscription`]. Use it to position/size centered
+/// or anchored surfaces relative to the actual display they appear on, rather
+/// than a cached or primary-monitor size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputInfoEvent {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug)]
@@ -414,6 +516,10 @@ impl From<&DispatchMessage> for WindowEvent {
             #[cfg(feature = "screencopy")]
             DispatchMessage::Screencopy(event) => WindowEvent::Screencopy(event.clone()),
             DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
+            DispatchMessage::XdgInfoChanged { width, height } => WindowEvent::OutputLogicalSize {
+                width: *width,
+                height: *height,
+            },
         }
     }
 }

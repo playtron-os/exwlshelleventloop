@@ -165,7 +165,7 @@ use wayland_client::{
         wl_seat::{self, WlSeat},
         wl_shm::WlShm,
         wl_shm_pool::WlShmPool,
-        wl_surface::WlSurface,
+        wl_surface::{self, WlSurface},
         wl_touch::{self, WlTouch},
     },
 };
@@ -3716,9 +3716,14 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
                 return;
             }
         };
+        let (logical_width, logical_height) = xdg_info.logical_size;
         state.message.push((
             Some(state.units[index].id),
-            DispatchMessageInner::XdgInfoChanged(change_type),
+            DispatchMessageInner::XdgInfoChanged {
+                change_type,
+                logical_width,
+                logical_height,
+            },
         ));
     }
 }
@@ -3925,7 +3930,48 @@ impl<T> Dispatch<WlCallback, (id::Id, PresentAvailableState)> for WindowState<T>
 }
 
 delegate_noop!(@<T> WindowState<T>: ignore WlCompositor); // WlCompositor is need to create a surface
-delegate_noop!(@<T> WindowState<T>: ignore WlSurface); // surface is the base needed to show buffer
+
+// `wl_surface.enter` tells us which output a surface is shown on. For surfaces
+// created with no explicit output binding (`StartMode::Active`), this is the only
+// signal that reveals the compositor's placement — so we bind that output's
+// xdg_output to the unit here, which makes the existing xdg_output dispatch report
+// the output's logical size (used to position centered layer surfaces per-display).
+// All other wl_surface events are ignored (equivalent to the previous no-op).
+impl<T: 'static> Dispatch<WlSurface, ()> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        proxy: &WlSurface,
+        event: <WlSurface as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        qhandle: &QueueHandle<Self>,
+    ) {
+        let wl_surface::Event::Enter { output } = event else {
+            return;
+        };
+        let Some(xdg_output_manager) = state.xdg_output_manager.clone() else {
+            return;
+        };
+        let Some(index) = state
+            .units
+            .iter()
+            .position(|unit| unit.wl_surface == *proxy)
+        else {
+            return;
+        };
+        // Already tracking this output for this surface — nothing to do.
+        if state.units[index].wl_output.as_ref() == Some(&output) {
+            return;
+        }
+        // (Re)bind the entered output's xdg_output: the compositor will replay its
+        // LogicalSize/Position/Name events for the new object, which the
+        // zxdg_output_v1 dispatch folds into the unit + emits as XdgInfoChanged.
+        let zxdgoutput = xdg_output_manager.get_xdg_output(&output, qhandle, ());
+        state.units[index].zxdgoutput = Some(ZxdgOutputInfo::new(zxdgoutput));
+        state.units[index].wl_output = Some(output);
+    }
+}
+
 delegate_noop!(@<T> WindowState<T>: ignore WlOutput); // output is need to place layer_shell, although here
 // it is not used
 delegate_noop!(@<T> WindowState<T>: ignore WlShm); // shm is used to create buffer pool
@@ -5674,7 +5720,10 @@ impl<T: 'static> WindowState<T> {
                     std::mem::swap(&mut messages, &mut window_state.message);
                     for msg in messages.iter() {
                         match msg {
-                            (index_info, DispatchMessageInner::XdgInfoChanged(change_type)) => {
+                            (
+                                index_info,
+                                DispatchMessageInner::XdgInfoChanged { change_type, .. },
+                            ) => {
                                 window_state.handle_event(
                                      &mut *event_handler,
                                     LayerShellEvent::XdgInfoChanged(*change_type),

@@ -1098,6 +1098,16 @@ where
             return true;
         }
 
+        // Handle output-info events (the logical size of the output the surface is
+        // shown on) - they go through a subscription channel.
+        if let LayerShellWindowEvent::OutputLogicalSize { width, height } = event {
+            crate::event::send_output_info_event(crate::event::OutputInfoEvent {
+                width: width.max(0) as u32,
+                height: height.max(0) as u32,
+            });
+            return true;
+        }
+
         // Handle voice mode events - convert to iced event and push to iced_events for immediate processing
         if let LayerShellWindowEvent::VoiceMode(ref voice_event) = event {
             tracing::debug!(
