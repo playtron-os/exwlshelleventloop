@@ -5538,7 +5538,12 @@ impl<T: 'static> WindowState<T> {
         }
         let fractional_scale_manager = self.fractional_scale_manager.take();
         let cursor_manager: Option<WpCursorShapeManagerV1> = self.cursor_manager.take();
-        let xdg_output_manager = self.xdg_output_manager.take().unwrap();
+        // Clone (don't take): the event-loop closures below use this local to bind
+        // xdg_outputs for new surfaces, but the `Dispatch<WlSurface>` enter handler
+        // also needs it on `self` to bind the entered output's xdg_output (which is
+        // what reports the output's logical size). Taking it here would leave
+        // `self.xdg_output_manager` None and silently disable that path.
+        let xdg_output_manager = self.xdg_output_manager.clone().unwrap();
         let connection = self.connection.take().unwrap();
         let mut init_event = None;
         let wmbase = self.wmbase.take().unwrap();
@@ -5722,11 +5727,25 @@ impl<T: 'static> WindowState<T> {
                         match msg {
                             (
                                 index_info,
-                                DispatchMessageInner::XdgInfoChanged { change_type, .. },
+                                msg_inner @ DispatchMessageInner::XdgInfoChanged { change_type, .. },
                             ) => {
+                                // Raw layershellev consumers get the typed callback
+                                // (it only carries the change kind, no dimensions)...
                                 window_state.handle_event(
-                                     &mut *event_handler,
+                                    &mut *event_handler,
                                     LayerShellEvent::XdgInfoChanged(*change_type),
+                                    *index_info,
+                                );
+                                // ...but iced_layershell only handles the general
+                                // `RequestMessages(DispatchMessage)` path, so the full
+                                // message (carrying the output's logical size) must be
+                                // forwarded there too — otherwise this arm swallows the
+                                // event and the size never reaches the iced app as
+                                // `WindowEvent::OutputLogicalSize`.
+                                let msg: DispatchMessage = msg_inner.clone().into();
+                                window_state.handle_event(
+                                    &mut *event_handler,
+                                    LayerShellEvent::RequestMessages(&msg),
                                     *index_info,
                                 );
                             }
