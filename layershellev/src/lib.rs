@@ -3224,6 +3224,19 @@ impl<T> Dispatch<wl_keyboard::WlKeyboard, ()> for WindowState<T> {
                     leave_id,
                     surface_id
                 );
+                // Clear keyboard focus tracking when the surface losing focus is
+                // still the current one. Without this, `current_surface` keeps
+                // pointing at the surface after it loses keyboard focus, so a
+                // later `Enter` on the *same* surface (e.g. a layer surface that
+                // is hidden then re-shown without being destroyed) is deduped by
+                // `update_current_surface` and never re-emits `Focused` — leaving
+                // the client stuck "unfocused" (e.g. a text input whose caret
+                // never reappears). Only clear when it matches the leaving
+                // surface: during popup switching `current_surface` may already
+                // have advanced to a newly created surface, which must be kept.
+                if state.current_surface.as_ref() == Some(&surface) {
+                    state.current_surface = None;
+                }
                 let keyboard_state = state.keyboard_state.as_mut().unwrap();
                 keyboard_state.current_repeat = None;
                 state.message.push((
