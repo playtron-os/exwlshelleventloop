@@ -182,18 +182,21 @@ pub fn screencopy_subscription() -> iced_futures::Subscription<ScreencopyEvent> 
     })
 }
 
+// A std::sync::mpsc channel with both ends wrapped in mutexes, stored in a
+// global OnceLock so the event loop (sender) and a subscription (receiver) can
+// reach it. Used by the output-info and usable-area channels below.
+type SharedChannel<T> = (
+    std::sync::Mutex<std::sync::mpsc::Sender<T>>,
+    std::sync::Mutex<std::sync::mpsc::Receiver<T>>,
+);
+
 // Global channel for output-info events (the logical size of the output a layer
 // surface is shown on). Mirrors the foreign-toplevel / screencopy channels, but
 // is always available (not feature-gated).
-static OUTPUT_INFO_CHANNEL: std::sync::OnceLock<(
-    std::sync::Mutex<std::sync::mpsc::Sender<OutputInfoEvent>>,
-    std::sync::Mutex<std::sync::mpsc::Receiver<OutputInfoEvent>>,
-)> = std::sync::OnceLock::new();
+static OUTPUT_INFO_CHANNEL: std::sync::OnceLock<SharedChannel<OutputInfoEvent>> =
+    std::sync::OnceLock::new();
 
-fn get_output_info_channel() -> &'static (
-    std::sync::Mutex<std::sync::mpsc::Sender<OutputInfoEvent>>,
-    std::sync::Mutex<std::sync::mpsc::Receiver<OutputInfoEvent>>,
-) {
+fn get_output_info_channel() -> &'static SharedChannel<OutputInfoEvent> {
     OUTPUT_INFO_CHANNEL.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel();
         (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
@@ -242,20 +245,92 @@ pub fn output_info_subscription() -> iced_futures::Subscription<OutputInfoEvent>
                     .spawn(move || {
                         let (_, rx) = get_output_info_channel();
                         let rx = rx.lock().expect("output info rx lock");
-                        loop {
-                            match rx.recv() {
-                                Ok(event) => {
-                                    if async_tx.clone().try_send(event).is_err() {
-                                        log::warn!(
-                                            "Output info bridge: async channel full, dropping event"
-                                        );
-                                    }
-                                }
-                                Err(_) => break,
+                        while let Ok(event) = rx.recv() {
+                            if async_tx.clone().try_send(event).is_err() {
+                                log::warn!(
+                                    "Output info bridge: async channel full, dropping event"
+                                );
                             }
                         }
                     })
                     .expect("spawn output info bridge thread");
+
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
+                }
+            },
+        )
+    })
+}
+
+// Global channel for usable-area events (the non-exclusive area of the output a
+// layer surface is shown on — output size minus panels/docks). Mirrors the
+// output-info channel; always available (not feature-gated).
+static USABLE_AREA_CHANNEL: std::sync::OnceLock<SharedChannel<UsableAreaEvent>> =
+    std::sync::OnceLock::new();
+
+fn get_usable_area_channel() -> &'static SharedChannel<UsableAreaEvent> {
+    USABLE_AREA_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send a usable-area event (called by the event loop).
+pub(crate) fn send_usable_area_event(event: UsableAreaEvent) {
+    let (tx, _) = get_usable_area_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for usable-area events.
+///
+/// Yields the usable (non-exclusive) area of the output the layer surface is
+/// shown on — the output's logical geometry minus every exclusive zone reserved
+/// by panels/docks — whenever the compositor reports it (at map time, and again
+/// when a panel appears/disappears/resizes/toggles auto-hide, or the surface
+/// moves outputs). Use it to center content in the space free of panels rather
+/// than the full output. Requires compositor support for the
+/// `layer_usable_area_v1` protocol; on other compositors it never fires and
+/// consumers should fall back to the full output size.
+///
+/// # Example
+/// ```ignore
+/// fn subscription(&self) -> Subscription<Message> {
+///     iced_layershell::event::usable_area_subscription().map(Message::UsableArea)
+/// }
+/// ```
+pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent> {
+    #[derive(Hash)]
+    struct UsableAreaSubscription;
+
+    iced_futures::Subscription::run_with(UsableAreaSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<UsableAreaEvent>| async move {
+                use iced_futures::futures::SinkExt;
+
+                // Bridge std::sync::mpsc → async channel via a dedicated thread,
+                // so idle costs nothing and events deliver instantly.
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<UsableAreaEvent>(100);
+
+                std::thread::Builder::new()
+                    .name("usable-area-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_usable_area_channel();
+                        let rx = rx.lock().expect("usable area rx lock");
+                        while let Ok(event) = rx.recv() {
+                            if async_tx.clone().try_send(event).is_err() {
+                                log::warn!(
+                                    "Usable area bridge: async channel full, dropping event"
+                                );
+                            }
+                        }
+                    })
+                    .expect("spawn usable area bridge thread");
 
                 use iced_futures::futures::StreamExt;
                 while let Some(event) = async_rx.next().await {
@@ -390,6 +465,15 @@ pub enum WindowEvent {
         width: i32,
         height: i32,
     },
+    /// The usable (non-exclusive) area of the output the surface is shown on
+    /// changed (output logical geometry minus panels/docks). Delivered to the
+    /// app through [`usable_area_subscription`].
+    OutputUsableArea {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
 }
 
 /// The logical size (logical px) of the output a layer surface is shown on.
@@ -401,6 +485,21 @@ pub enum WindowEvent {
 pub struct OutputInfoEvent {
     pub width: u32,
     pub height: u32,
+}
+
+/// The usable (non-exclusive) area of the output a layer surface is shown on,
+/// in that output's logical coordinates (origin at the output's top-left). This
+/// is the output's logical geometry minus every exclusive zone reserved by
+/// panels/docks.
+///
+/// Delivered via [`usable_area_subscription`]. Center content within this
+/// rectangle to sit clear of panels rather than over the full output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsableAreaEvent {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 #[derive(Debug)]
@@ -517,6 +616,17 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::Screencopy(event) => WindowEvent::Screencopy(event.clone()),
             DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
             DispatchMessage::XdgInfoChanged { width, height } => WindowEvent::OutputLogicalSize {
+                width: *width,
+                height: *height,
+            },
+            DispatchMessage::UsableAreaChanged {
+                x,
+                y,
+                width,
+                height,
+            } => WindowEvent::OutputUsableArea {
+                x: *x,
+                y: *y,
                 width: *width,
                 height: *height,
             },

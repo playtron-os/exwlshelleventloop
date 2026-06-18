@@ -128,6 +128,7 @@ pub mod home_visibility;
 pub mod layer_auto_hide;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
+pub mod layer_usable_area;
 #[cfg(feature = "screencopy")]
 pub mod screencopy;
 pub mod shadow;
@@ -198,6 +199,11 @@ use wayland_protocols::{
 use wayland_protocols::wp::input_method::zv1::client::{
     zwp_input_panel_surface_v1::{Position as ZwpInputPanelPosition, ZwpInputPanelSurfaceV1},
     zwp_input_panel_v1::ZwpInputPanelV1,
+};
+
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
+    zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
 };
 
 use wayland_protocols::wp::viewporter::client::{
@@ -862,6 +868,11 @@ pub struct VirtualKeyRelease {
     pub key: u32,
 }
 
+/// Per-surface frosted-glass blur params `(radius, saturation, tint, border)`,
+/// each optional (None = compositor default). Captured at surface creation so a
+/// later blur re-enable can re-apply them instead of the compositor defaults.
+type BlurParams = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
+
 /// main state, store the main information
 #[derive(Debug)]
 pub struct WindowState<T> {
@@ -944,7 +955,7 @@ pub struct WindowState<T> {
     /// Per-surface frosted-glass params `(radius, saturation, tint, border)`,
     /// captured at surface creation so a later blur re-enable (the auto-size
     /// deferred-effects path) re-applies them instead of compositor defaults.
-    blur_params: HashMap<u32, (Option<f32>, Option<f32>, Option<f32>, Option<f32>)>,
+    blur_params: HashMap<u32, BlurParams>,
     /// Corner radius for surfaces (all four corners)
     corner_radius: Option<[u32; 4]>,
     /// Corner radius manager (bound lazily when corner_radius is set)
@@ -959,6 +970,14 @@ pub struct WindowState<T> {
     shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
     /// Shadow objects per surface (keyed by surface protocol ID)
     shadow_surfaces: HashMap<u32, shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1>,
+    /// Keyboard-shortcuts-inhibit manager (bound lazily when first requested)
+    keyboard_shortcuts_inhibit_manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    /// Active shortcut inhibitors per surface (keyed by surface protocol ID).
+    /// While an inhibitor is active, the compositor forwards ALL keys — including
+    /// its own global shortcuts (e.g. Alt+Tab) — to that surface instead of
+    /// handling them, so an overlay (e.g. the Alt-Tab switcher) can receive Tab
+    /// presses + key-repeat directly.
+    keyboard_shortcuts_inhibitors: HashMap<u32, ZwpKeyboardShortcutsInhibitorV1>,
     /// Global show/hide transition animation requested for surfaces (via the
     /// `layer_surface_visibility` protocol).  `None` lets the compositor decide
     /// based on the surface anchor.  Applied when a visibility controller is
@@ -980,6 +999,16 @@ pub struct WindowState<T> {
     /// Defaults to `true` (visible) until auto-hide is configured and the
     /// compositor tells us otherwise.
     auto_hide_visible: bool,
+
+    /// Usable-area manager (bound at startup when the compositor supports it).
+    /// Reports each surface's output usable (non-exclusive) area so consumers
+    /// can center within the space free of panels/docks rather than the full
+    /// output. Delivered to the app via `output_info::usable_area_subscription`.
+    usable_area_manager:
+        Option<layer_usable_area::layer_usable_area_manager_v1::LayerUsableAreaManagerV1>,
+    /// Usable-area objects per surface (keyed by surface protocol ID).
+    usable_area_surfaces:
+        HashMap<u32, layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1>,
 
     /// Tooltip manager (bound lazily when a popup with tooltip settings is created)
     tooltip_manager:
@@ -1136,8 +1165,14 @@ impl<T> WindowState<T> {
         if let Some(shadow_obj) = self.shadow_surfaces.remove(&surface_id) {
             shadow_obj.destroy();
         }
+        if let Some(inhibitor) = self.keyboard_shortcuts_inhibitors.remove(&surface_id) {
+            inhibitor.destroy();
+        }
         if let Some(auto_hide_obj) = self.auto_hide_surfaces.remove(&surface_id) {
             auto_hide_obj.destroy();
+        }
+        if let Some(usable_area_obj) = self.usable_area_surfaces.remove(&surface_id) {
+            usable_area_obj.destroy();
         }
         if let Some(tooltip_obj) = self.tooltip_surfaces.remove(&surface_id) {
             tooltip_obj.destroy();
@@ -1576,6 +1611,13 @@ impl<T: 'static> WindowState<T> {
                 self.voice_mode_receivers.insert(surface_id, receiver);
             }
         }
+
+        // Register surface for compositor usable-area reporting.
+        if let Some(obj) =
+            register_usable_area_for_surface(&self.usable_area_manager, wl_surface, qh)
+        {
+            self.usable_area_surfaces.insert(surface_id, obj);
+        }
     }
 
     /// Set corner radius for a specific surface
@@ -1838,6 +1880,63 @@ impl<T: 'static> WindowState<T> {
                 surface.commit();
                 log::info!("Disabled shadow for surface");
             }
+        }
+    }
+
+    /// Enable or disable a keyboard-shortcuts inhibitor for a specific surface.
+    ///
+    /// While enabled, the compositor forwards every key (including its own global
+    /// shortcuts, e.g. Alt+Tab) to this surface instead of acting on them — needed
+    /// so an overlay such as the Alt-Tab switcher receives `Tab` presses and their
+    /// key-repeat directly rather than the compositor consuming them. Requires
+    /// compositor support for `zwp_keyboard_shortcuts_inhibit_manager_v1` and a
+    /// bound seat. The inhibitor is per-surface and idempotent.
+    pub fn set_keyboard_shortcuts_inhibit_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        enabled: bool,
+    ) {
+        let surface_id = surface.id().protocol_id();
+
+        if enabled {
+            // Already inhibited for this surface.
+            if self.keyboard_shortcuts_inhibitors.contains_key(&surface_id) {
+                return;
+            }
+
+            // Bind the manager lazily on first use (mirrors blur/shadow).
+            if self.keyboard_shortcuts_inhibit_manager.is_none()
+                && let Some(globals) = &self.globals
+                && let Some(unit) = self.units.first()
+            {
+                self.keyboard_shortcuts_inhibit_manager = globals
+                    .bind::<ZwpKeyboardShortcutsInhibitManagerV1, _, _>(&unit.qh, 1..=1, ())
+                    .ok();
+                if self.keyboard_shortcuts_inhibit_manager.is_some() {
+                    log::info!("Bound keyboard-shortcuts-inhibit manager");
+                }
+            }
+
+            let Some(seat) = self.seat.clone() else {
+                log::warn!("No seat available - cannot inhibit keyboard shortcuts");
+                return;
+            };
+
+            if let Some(manager) = &self.keyboard_shortcuts_inhibit_manager {
+                if let Some(unit) = self.units.first() {
+                    let inhibitor = manager.inhibit_shortcuts(surface, &seat, &unit.qh, ());
+                    self.keyboard_shortcuts_inhibitors
+                        .insert(surface_id, inhibitor);
+                    log::info!("Enabled keyboard-shortcuts inhibitor for surface");
+                }
+            } else {
+                log::warn!(
+                    "Keyboard-shortcuts-inhibit manager not available - compositor may not support it"
+                );
+            }
+        } else if let Some(inhibitor) = self.keyboard_shortcuts_inhibitors.remove(&surface_id) {
+            inhibitor.destroy();
+            log::info!("Disabled keyboard-shortcuts inhibitor for surface");
         }
     }
 
@@ -2366,6 +2465,23 @@ fn apply_shadow_to_surface<T: 'static>(
     }
 }
 
+/// Register a surface for compositor usable-area reporting. Returns the object
+/// so it can be stored (and destroyed on surface teardown). No-op when the
+/// compositor lacks the protocol.
+fn register_usable_area_for_surface<T: 'static>(
+    usable_area_manager: &Option<
+        layer_usable_area::layer_usable_area_manager_v1::LayerUsableAreaManagerV1,
+    >,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+) -> Option<layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1> {
+    let manager = usable_area_manager.as_ref()?;
+    let data = layer_usable_area::LayerUsableAreaData {
+        surface: surface.clone(),
+    };
+    Some(manager.get_usable_area(surface, qh, data))
+}
+
 /// Apply a show/hide transition preference to a freshly-created visibility
 /// controller.  `set_transition` was added in version 2 of the protocol, so
 /// this is a no-op (logged) when the compositor only supports version 1.
@@ -2767,11 +2883,15 @@ impl<T> Default for WindowState<T> {
             shadow: false,
             shadow_manager: None,
             shadow_surfaces: HashMap::new(),
+            keyboard_shortcuts_inhibit_manager: None,
+            keyboard_shortcuts_inhibitors: HashMap::new(),
             transition: None,
             transitions: HashMap::new(),
             auto_hide_manager: None,
             auto_hide_surfaces: HashMap::new(),
             auto_hide_visible: true,
+            usable_area_manager: None,
+            usable_area_surfaces: HashMap::new(),
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
             home_only: false,
@@ -4043,6 +4163,12 @@ impl<T: 'static>
     }
 }
 
+// Keyboard-shortcuts-inhibit protocol delegates. The manager has no events; the
+// inhibitor emits active/inactive, which are informational here (cosmic-comp
+// activates an inhibitor on creation), so both are ignored.
+delegate_noop!(@<T> WindowState<T>: ignore ZwpKeyboardShortcutsInhibitManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore ZwpKeyboardShortcutsInhibitorV1);
+
 // Shadow protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore shadow::layer_shadow_manager_v1::LayerShadowManagerV1);
 
@@ -4064,6 +4190,7 @@ impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
 
 // Auto-hide protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore layer_usable_area::layer_usable_area_manager_v1::LayerUsableAreaManagerV1);
 
 // Tooltip protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
@@ -4119,6 +4246,48 @@ impl<T: 'static>
                 state.message.push((
                     window_id,
                     DispatchMessageInner::AutoHideVisibilityChanged(is_visible),
+                ));
+            }
+        }
+    }
+}
+
+// Manual Dispatch impl for the usable-area surface object to handle usable_area
+// events (the non-exclusive area of the surface's output).
+impl<T: 'static>
+    Dispatch<
+        layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1,
+        layer_usable_area::LayerUsableAreaData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1,
+        event: <layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1 as Proxy>::Event,
+        data: &layer_usable_area::LayerUsableAreaData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use layer_usable_area::layer_usable_area_v1::Event;
+        match event {
+            Event::UsableArea {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                // Attribute to the originating surface's window id so multi-
+                // surface (`AllScreens`) consumers receive the right output's
+                // usable area.
+                let window_id = state.get_id_from_surface(&data.surface);
+                state.message.push((
+                    window_id,
+                    DispatchMessageInner::UsableAreaChanged {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
                 ));
             }
         }
@@ -5002,6 +5171,21 @@ impl<T: 'static> WindowState<T> {
             );
         }
 
+        // Always try to bind the usable-area manager so surfaces learn their
+        // output's non-exclusive area (output size minus panels/docks).
+        self.usable_area_manager = globals
+            .bind::<layer_usable_area::layer_usable_area_manager_v1::LayerUsableAreaManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.usable_area_manager.is_some() {
+            log::info!(
+                "Successfully bound layer_usable_area_manager_v1 protocol for usable-area reporting"
+            );
+        }
+
         // Always try to bind layer surface visibility manager for hide/show support
         // (allows hiding/showing surfaces without destroying them)
         self.layer_surface_visibility_manager = globals
@@ -5355,6 +5539,13 @@ impl<T: 'static> WindowState<T> {
                 ) {
                     self.voice_mode_receivers.insert(surface_id, receiver);
                 }
+            }
+
+            // Register surface for compositor usable-area reporting.
+            if let Some(obj) =
+                register_usable_area_for_surface(&self.usable_area_manager, &wl_surface, &qh)
+            {
+                self.usable_area_surfaces.insert(surface_id, obj);
             }
 
             wl_surface.commit();
@@ -6052,6 +6243,17 @@ impl<T: 'static> WindowState<T> {
                                         ) {
                                             window_state.voice_mode_receivers.insert(surface_id, receiver);
                                         }
+                                    }
+
+                                    // Register surface for compositor usable-area reporting.
+                                    if let Some(obj) = register_usable_area_for_surface(
+                                        &window_state.usable_area_manager,
+                                        &wl_surface,
+                                        &qh,
+                                    ) {
+                                        window_state
+                                            .usable_area_surfaces
+                                            .insert(surface_id, obj);
                                     }
 
                                     // Record any per-surface transition override so subsequent

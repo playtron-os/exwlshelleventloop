@@ -116,6 +116,13 @@ pub enum LayershellCustomAction {
     },
     /// Enable or disable shadow effect for the surface (requires compositor support).
     ShadowChange(bool),
+    /// Enable or disable a keyboard-shortcuts inhibitor for the surface. While
+    /// enabled, the compositor forwards all keys — including its own global
+    /// shortcuts (e.g. Alt+Tab) — to this surface instead of acting on them, so an
+    /// overlay like the Alt-Tab switcher receives `Tab` presses + key-repeat
+    /// directly. Requires compositor support for
+    /// `zwp_keyboard_shortcuts_inhibit_manager_v1`.
+    KeyboardShortcutsInhibitChange(bool),
     /// Enable compositor-driven auto-hide for the surface. The compositor will
     /// animate hide/show transitions based on the specified mode.
     /// `edge`: which edge to slide off (0 = bottom)

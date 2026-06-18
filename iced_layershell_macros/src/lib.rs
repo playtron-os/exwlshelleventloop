@@ -58,6 +58,9 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 NewPopUp { settings: iced_layershell::actions::IcedNewPopupSettings, id: iced_layershell::reexport::IcedId },
                 NewMenu { settings: iced_layershell::actions::IcedNewMenuSettings, id: iced_layershell::reexport::IcedId },
                 NewInputPanel { settings: iced_layershell::reexport::NewInputPanelSettings, id: iced_layershell::reexport::IcedId },
+                /// Enable/disable a keyboard-shortcuts inhibitor for the surface so it
+                /// receives all keys (incl. compositor shortcuts like Alt+Tab) directly.
+                KeyboardShortcutsInhibitChange{id: iced_layershell::reexport::IcedId, enabled: bool},
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
                 /// Hide the window without destroying it (uses layer_surface_visibility protocol)
@@ -133,6 +136,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::NewPopUp { settings, id } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::NewPopUp { settings, id })),
                             Self::NewMenu { settings, id } =>  Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::NewMenu {settings, id })),
                             Self::NewInputPanel {settings, id } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::NewInputPanel { settings, id })),
+                            Self::KeyboardShortcutsInhibitChange { id, enabled } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::KeyboardShortcutsInhibitChange(enabled))),
                             Self::RemoveWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::HideWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::HideWindow)),
@@ -183,6 +187,9 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 ArmDismiss,
                 /// Disarm click-outside dismiss.
                 DisarmDismiss,
+                /// Enable/disable a keyboard-shortcuts inhibitor for the surface so it
+                /// receives all keys (incl. compositor shortcuts like Alt+Tab) directly.
+                KeyboardShortcutsInhibitChange(bool),
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
@@ -218,6 +225,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
                             Self::ArmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ArmDismiss)),
                             Self::DisarmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DisarmDismiss)),
+                            Self::KeyboardShortcutsInhibitChange(enabled) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardShortcutsInhibitChange(enabled))),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)

@@ -463,6 +463,15 @@ pub(crate) enum DispatchMessageInner {
         logical_width: i32,
         logical_height: i32,
     },
+    /// The usable (non-exclusive) area of the surface's output changed, reported
+    /// by the compositor via the `layer_usable_area_v1` protocol (output logical
+    /// geometry minus panels/docks), in output-logical coordinates.
+    UsableAreaChanged {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
     Ime(Ime),
     /// Home state changed from compositor (true = at home, false = windows visible)
     HomeStateChanged(bool),
@@ -612,6 +621,16 @@ pub enum DispatchMessage {
         width: i32,
         height: i32,
     },
+    /// The usable (non-exclusive) area of the surface's output changed: the
+    /// output logical geometry minus every exclusive zone (panels/docks), in
+    /// output-logical coordinates. Reported by the `layer_usable_area_v1`
+    /// protocol; used to center overlays in the space free of panels.
+    UsableAreaChanged {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
 }
 
 impl From<DispatchMessageInner> for DispatchMessage {
@@ -722,6 +741,17 @@ impl From<DispatchMessageInner> for DispatchMessage {
             } => DispatchMessage::XdgInfoChanged {
                 width: logical_width,
                 height: logical_height,
+            },
+            DispatchMessageInner::UsableAreaChanged {
+                x,
+                y,
+                width,
+                height,
+            } => DispatchMessage::UsableAreaChanged {
+                x,
+                y,
+                width,
+                height,
             },
             DispatchMessageInner::HomeStateChanged(is_home) => {
                 DispatchMessage::HomeStateChanged { is_home }

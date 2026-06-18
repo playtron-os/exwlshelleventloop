@@ -1108,6 +1108,24 @@ where
             return true;
         }
 
+        // Handle usable-area events (the non-exclusive area of the surface's
+        // output) - they go through a separate subscription channel.
+        if let LayerShellWindowEvent::OutputUsableArea {
+            x,
+            y,
+            width,
+            height,
+        } = event
+        {
+            crate::event::send_usable_area_event(crate::event::UsableAreaEvent {
+                x,
+                y,
+                width,
+                height,
+            });
+            return true;
+        }
+
         // Handle voice mode events - convert to iced event and push to iced_events for immediate processing
         if let LayerShellWindowEvent::VoiceMode(ref voice_event) = event {
             tracing::debug!(
@@ -1390,6 +1408,13 @@ where
                     layer_shell_window.get_wlsurface().clone()
                 };
                 ev.set_shadow_for_surface(&surface, enabled);
+            }
+            LayershellCustomAction::KeyboardShortcutsInhibitChange(enabled) => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_keyboard_shortcuts_inhibit_for_surface(&surface, enabled);
             }
             LayershellCustomAction::AutoHideChange {
                 edge,
