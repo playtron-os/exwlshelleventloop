@@ -101,6 +101,32 @@ pub enum LayershellCustomAction {
     MarginChange((i32, i32, i32, i32)),
     SizeChange((u32, u32)),
     CornerRadiusChange(Option<[u32; 4]>),
+    /// Ask the compositor to position the surface vertically within its output's
+    /// usable (non-exclusive) area — top edge at
+    /// `usable_top + round(fraction * usable_height) + offset`, clamped to at
+    /// least `min_margin` below the usable top — and keep it there across
+    /// relayouts (requires compositor support for
+    /// `layer_surface_placement_manager_v1`). Lets a centered/anchored overlay
+    /// avoid the position jump that comes from learning the usable area only
+    /// after the surface is mapped.
+    SetVerticalPlacement {
+        fraction: f64,
+        offset: i32,
+        min_margin: i32,
+    },
+    /// Clear any compositor-side vertical placement, reverting to standard
+    /// layer-shell positioning.
+    UnsetVerticalPlacement,
+    /// Ask the compositor to cap the surface height to
+    /// `max(round(fraction * usable_height), min_height)` logical px — lets the
+    /// client commit its full content height and have the compositor clamp it to
+    /// a fraction of the usable area across relayouts (requires compositor support).
+    SetMaxHeight {
+        fraction: f64,
+        min_height: i32,
+    },
+    /// Clear any compositor-side height cap.
+    UnsetMaxHeight,
     /// Enable or disable blur effect for the surface (requires compositor support).
     BlurChange(bool),
     /// Enable blur on the surface with explicit frosted-glass params, storing

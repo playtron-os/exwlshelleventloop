@@ -1351,6 +1351,41 @@ where
                 };
                 ev.set_corner_radius_for_surface(&surface, radii);
             }
+            LayershellCustomAction::SetVerticalPlacement {
+                fraction,
+                offset,
+                min_margin,
+            } => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_vertical_placement_for_surface(&surface, fraction, offset, min_margin);
+            }
+            LayershellCustomAction::UnsetVerticalPlacement => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.unset_vertical_placement_for_surface(&surface);
+            }
+            LayershellCustomAction::SetMaxHeight {
+                fraction,
+                min_height,
+            } => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_max_height_for_surface(&surface, fraction, min_height);
+            }
+            LayershellCustomAction::UnsetMaxHeight => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.unset_max_height_for_surface(&surface);
+            }
             LayershellCustomAction::BlurChange(enabled) => {
                 let surface = {
                     ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);

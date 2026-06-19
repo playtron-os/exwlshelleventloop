@@ -127,6 +127,7 @@ pub mod foreign_toplevel;
 pub mod home_visibility;
 pub mod layer_auto_hide;
 pub mod layer_surface_dismiss;
+pub mod layer_surface_placement;
 pub mod layer_surface_visibility;
 pub mod layer_usable_area;
 #[cfg(feature = "screencopy")]
@@ -964,6 +965,15 @@ pub struct WindowState<T> {
     /// Corner radius surfaces per surface (keyed by surface protocol ID)
     corner_radius_surfaces:
         HashMap<u32, corner_radius::layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1>,
+    /// Compositor-side placement manager (bound lazily when a placement is set)
+    layer_surface_placement_manager: Option<
+        layer_surface_placement::layer_surface_placement_manager_v1::LayerSurfacePlacementManagerV1,
+    >,
+    /// Placement objects per surface (keyed by surface protocol ID)
+    layer_surface_placement_surfaces: HashMap<
+        u32,
+        layer_surface_placement::layer_surface_placement_v1::LayerSurfacePlacementV1,
+    >,
     /// Whether to request shadow effect for surfaces
     shadow: bool,
     /// Shadow manager (bound lazily when shadow is enabled)
@@ -1158,6 +1168,9 @@ impl<T> WindowState<T> {
         let surface_id = self.units[index].wl_surface.id().protocol_id();
         if let Some(corner_obj) = self.corner_radius_surfaces.remove(&surface_id) {
             corner_obj.destroy();
+        }
+        if let Some(placement_obj) = self.layer_surface_placement_surfaces.remove(&surface_id) {
+            placement_obj.destroy();
         }
         if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
             blur_obj.release();
@@ -1660,6 +1673,97 @@ impl<T: 'static> WindowState<T> {
             log::warn!(
                 "Corner radius manager not available - ensure corner_radius was set in settings"
             );
+        }
+    }
+
+    /// Get (or lazily create) the compositor-side placement object for a surface.
+    /// Returns a clone of the object handle, or `None` if the compositor lacks
+    /// `layer_surface_placement_manager_v1` (or there is no queue yet).
+    fn placement_object_for(
+        &mut self,
+        surface: &WlSurface,
+    ) -> Option<layer_surface_placement::layer_surface_placement_v1::LayerSurfacePlacementV1> {
+        let surface_id = surface.id().protocol_id();
+        if !self
+            .layer_surface_placement_surfaces
+            .contains_key(&surface_id)
+        {
+            // `manager` and `units` are disjoint fields from the map we insert
+            // into, so these borrows don't conflict with the insert.
+            let manager = self.layer_surface_placement_manager.as_ref()?;
+            let unit = self.units.first()?;
+            let data = layer_surface_placement::LayerSurfacePlacementData {
+                surface: surface.clone(),
+            };
+            let obj = manager.get_layer_surface_placement(surface, &unit.qh, data);
+            self.layer_surface_placement_surfaces
+                .insert(surface_id, obj);
+        }
+        self.layer_surface_placement_surfaces
+            .get(&surface_id)
+            .cloned()
+    }
+
+    /// Ask the compositor to position `surface` vertically within its output's
+    /// usable (non-exclusive) area: top edge at
+    /// `usable_top + round(fraction * usable_height) + offset`, clamped to at
+    /// least `min_margin` below the usable top. The compositor maintains the
+    /// placement across relayouts, so the surface never jumps from a stale
+    /// position when it first appears on an output. Requires compositor support
+    /// for `layer_surface_placement_manager_v1`; a no-op otherwise.
+    pub fn set_vertical_placement_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        fraction: f64,
+        offset: i32,
+        min_margin: i32,
+    ) {
+        if let Some(obj) = self.placement_object_for(surface) {
+            obj.set_vertical_placement(fraction, offset, min_margin);
+            surface.commit();
+        } else {
+            log::warn!(
+                "Layer surface placement manager not available - compositor lacks layer_surface_placement_manager_v1"
+            );
+        }
+    }
+
+    /// Clear any compositor-side vertical placement for `surface`, reverting it
+    /// to standard layer-shell positioning. A no-op if no placement was set.
+    pub fn unset_vertical_placement_for_surface(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+        if let Some(obj) = self.layer_surface_placement_surfaces.get(&surface_id) {
+            obj.unset_vertical_placement();
+            surface.commit();
+        }
+    }
+
+    /// Ask the compositor to cap `surface`'s height to
+    /// `max(round(fraction * usable_height), min_height)` logical px. Lets the
+    /// client commit its full content height and have the compositor clamp it to
+    /// a fraction of the usable area, across relayouts, with no stale-cap recompute.
+    pub fn set_max_height_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        fraction: f64,
+        min_height: i32,
+    ) {
+        if let Some(obj) = self.placement_object_for(surface) {
+            obj.set_max_height(fraction, min_height);
+            surface.commit();
+        } else {
+            log::warn!(
+                "Layer surface placement manager not available - compositor lacks layer_surface_placement_manager_v1"
+            );
+        }
+    }
+
+    /// Clear any compositor-side height cap for `surface`. A no-op if none was set.
+    pub fn unset_max_height_for_surface(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+        if let Some(obj) = self.layer_surface_placement_surfaces.get(&surface_id) {
+            obj.unset_max_height();
+            surface.commit();
         }
     }
 
@@ -2880,6 +2984,8 @@ impl<T> Default for WindowState<T> {
             corner_radius: None,
             corner_radius_manager: None,
             corner_radius_surfaces: HashMap::new(),
+            layer_surface_placement_manager: None,
+            layer_surface_placement_surfaces: HashMap::new(),
             shadow: false,
             shadow_manager: None,
             shadow_surfaces: HashMap::new(),
@@ -4176,6 +4282,28 @@ impl<T: 'static>
     }
 }
 
+// Layer surface placement protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore layer_surface_placement::layer_surface_placement_manager_v1::LayerSurfacePlacementManagerV1);
+
+// Manual Dispatch impl for the placement object since it has custom user data
+impl<T: 'static>
+    Dispatch<
+        layer_surface_placement::layer_surface_placement_v1::LayerSurfacePlacementV1,
+        layer_surface_placement::LayerSurfacePlacementData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &layer_surface_placement::layer_surface_placement_v1::LayerSurfacePlacementV1,
+        _event: <layer_surface_placement::layer_surface_placement_v1::LayerSurfacePlacementV1 as Proxy>::Event,
+        _data: &layer_surface_placement::LayerSurfacePlacementData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for placement objects
+    }
+}
+
 // Keyboard-shortcuts-inhibit protocol delegates. The manager has no events; the
 // inhibitor emits active/inactive, which are informational here (cosmic-comp
 // activates an inhibitor on creation), so both are ignored.
@@ -5158,6 +5286,21 @@ impl<T: 'static> WindowState<T> {
         if self.corner_radius_manager.is_some() {
             log::info!(
                 "Successfully bound layer_corner_radius_manager_v1 protocol for corner radius support"
+            );
+        }
+
+        // Always try to bind the compositor-side placement manager so a surface
+        // can ask to be positioned within the usable area at any time.
+        self.layer_surface_placement_manager = globals
+            .bind::<layer_surface_placement::layer_surface_placement_manager_v1::LayerSurfacePlacementManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.layer_surface_placement_manager.is_some() {
+            log::info!(
+                "Successfully bound layer_surface_placement_manager_v1 protocol for compositor-side placement"
             );
         }
 

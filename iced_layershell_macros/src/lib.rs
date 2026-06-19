@@ -47,6 +47,17 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SizeChange{id: iced_layershell::reexport::IcedId, size: (u32, u32)},
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange{id: iced_layershell::reexport::IcedId, radii: Option<[u32; 4]>},
+                /// Position the surface vertically within its output's usable area:
+                /// top edge at `usable_top + round(fraction * usable_height) + offset`,
+                /// clamped to at least `min_margin` below the usable top. Maintained
+                /// across relayouts by the compositor.
+                SetVerticalPlacement{id: iced_layershell::reexport::IcedId, fraction: f64, offset: i32, min_margin: i32},
+                /// Clear compositor-side vertical placement, reverting to standard positioning.
+                UnsetVerticalPlacement{id: iced_layershell::reexport::IcedId},
+                /// Cap the surface height to `max(round(fraction * usable_height), min_height)` px.
+                SetMaxHeight{id: iced_layershell::reexport::IcedId, fraction: f64, min_height: i32},
+                /// Clear the compositor-side height cap.
+                UnsetMaxHeight{id: iced_layershell::reexport::IcedId},
                 ExclusiveZoneChange{id: iced_layershell::reexport::IcedId, zone_size: i32},
                 KeyboardInteractivityChange{id: iced_layershell::reexport::IcedId, interactivity: iced_layershell::reexport::KeyboardInteractivity},
                 VirtualKeyboardPressed {
@@ -125,6 +136,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::MarginChange { id, margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange { id, size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange { id, radii } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::CornerRadiusChange(radii))),
+                            Self::SetVerticalPlacement { id, fraction, offset, min_margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetVerticalPlacement { fraction, offset, min_margin })),
+                            Self::UnsetVerticalPlacement { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetVerticalPlacement)),
+                            Self::SetMaxHeight { id, fraction, min_height } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetMaxHeight { fraction, min_height })),
+                            Self::UnsetMaxHeight { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetMaxHeight)),
                             Self::ExclusiveZoneChange { id, zone_size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ExclusiveZoneChange(zone_size))),
                             Self::KeyboardInteractivityChange { id, interactivity } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(
@@ -166,6 +181,17 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SizeChange((u32, u32)),
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange(Option<[u32; 4]>),
+                /// Position the surface vertically within its output's usable area:
+                /// top edge at `usable_top + round(fraction * usable_height) + offset`,
+                /// clamped to at least `min_margin` below the usable top. Maintained
+                /// across relayouts by the compositor.
+                SetVerticalPlacement{ fraction: f64, offset: i32, min_margin: i32 },
+                /// Clear compositor-side vertical placement, reverting to standard positioning.
+                UnsetVerticalPlacement,
+                /// Cap the surface height to `max(round(fraction * usable_height), min_height)` px.
+                SetMaxHeight{ fraction: f64, min_height: i32 },
+                /// Clear the compositor-side height cap.
+                UnsetMaxHeight,
                 ExclusiveZoneChange(i32),
                 KeyboardInteractivityChange(iced_layershell::reexport::KeyboardInteractivity),
                 VirtualKeyboardPressed {
@@ -211,6 +237,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::MarginChange(margin) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange(size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange(radii) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::CornerRadiusChange(radii))),
+                            Self::SetVerticalPlacement { fraction, offset, min_margin } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetVerticalPlacement { fraction, offset, min_margin })),
+                            Self::UnsetVerticalPlacement => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetVerticalPlacement)),
+                            Self::SetMaxHeight { fraction, min_height } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetMaxHeight { fraction, min_height })),
+                            Self::UnsetMaxHeight => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetMaxHeight)),
                             Self::ExclusiveZoneChange(zone_size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ExclusiveZoneChange(zone_size))),
                             Self::KeyboardInteractivityChange(interactivity) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VirtualKeyboardPressed {
