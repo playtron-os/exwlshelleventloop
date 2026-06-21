@@ -935,6 +935,9 @@ pub struct WindowState<T> {
     /// Logical layout of every output (global coords), gathered once at startup.
     /// Exposed via [`WindowState::output_layout`] for cross-monitor positioning.
     output_layout: Vec<OutputLayoutItem>,
+    /// Maps each output's xdg name → its `WlOutput`, so a runtime `NewLayerShell`
+    /// with `OutputOption::OutputName` can be bound to that monitor.
+    output_handles: Vec<(String, wl_output::WlOutput)>,
 
     start_mode: StartMode,
     init_finished: bool,
@@ -2974,6 +2977,7 @@ impl<T> Default for WindowState<T> {
             // is not binded
             xdg_info_cache: Vec::new(),
             output_layout: Vec::new(),
+            output_handles: Vec::new(),
 
             start_mode: StartMode::Active,
             init_finished: false,
@@ -5594,6 +5598,13 @@ impl<T: 'static> WindowState<T> {
                     height: info.logical_size.1,
                 })
                 .collect();
+            // Keep a name → WlOutput map so a later `NewLayerShell` can target a
+            // monitor by name. (`WlOutput`s live in `self.outputs`.)
+            self.output_handles = self
+                .xdg_info_cache
+                .iter()
+                .map(|(output, info)| (info.name.clone(), output.clone()))
+                .collect();
             self.xdg_info_cache.clear();
             self.message.push((
                 None,
@@ -6312,6 +6323,13 @@ impl<T: 'static> WindowState<T> {
                                 )) => {
                                     let output = match output_type {
                                         OutputOption::Output(output) => Some(output),
+                                        // Bind to a monitor by xdg name (used for
+                                        // moving a surface across outputs).
+                                        OutputOption::OutputName(ref name) => window_state
+                                            .output_handles
+                                            .iter()
+                                            .find(|(n, _)| n == name)
+                                            .map(|(_, o)| o.clone()),
                                         _ => {
                                             let pos = window_state.surface_pos();
 
