@@ -142,7 +142,8 @@ use events::DispatchMessageInner;
 pub mod id;
 
 pub use events::{
-    AxisScroll, DispatchMessage, Ime, LayerShellEvent, ReturnData, XdgInfoChangedType,
+    AxisScroll, DispatchMessage, Ime, LayerShellEvent, OutputLayoutItem, ReturnData,
+    XdgInfoChangedType,
 };
 
 use strtoshape::str_to_shape;
@@ -931,6 +932,9 @@ pub struct WindowState<T> {
     enter_serial: Option<u32>,
 
     xdg_info_cache: Vec<(wl_output::WlOutput, ZxdgOutputInfo)>,
+    /// Logical layout of every output (global coords), gathered once at startup.
+    /// Exposed via [`WindowState::output_layout`] for cross-monitor positioning.
+    output_layout: Vec<OutputLayoutItem>,
 
     start_mode: StartMode,
     init_finished: bool,
@@ -2969,6 +2973,7 @@ impl<T> Default for WindowState<T> {
             // NOTE: if is some, means it is to be binded, but not now it
             // is not binded
             xdg_info_cache: Vec::new(),
+            output_layout: Vec::new(),
 
             start_mode: StartMode::Active,
             init_finished: false,
@@ -3900,14 +3905,17 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        if state.is_with_target() && !state.init_finished {
-            let Some((_, xdg_info)) = state
-                .xdg_info_cache
-                .iter_mut()
-                .find(|(_, info)| info.zxdgoutput == *proxy)
-            else {
-                return;
-            };
+        // Update a cached output entry if this proxy belongs to one. Both the
+        // one-shot layout gather and `StartMode::TargetScreen` populate
+        // `xdg_info_cache`; do this regardless of start mode / init state so the
+        // gather's dispatch actually records each output's size/position/name.
+        // (Post-gather the cache is cleared, so this falls through to the unit
+        // path below for the live per-surface output.)
+        if let Some((_, xdg_info)) = state
+            .xdg_info_cache
+            .iter_mut()
+            .find(|(_, info)| info.zxdgoutput == *proxy)
+        {
             match event {
                 zxdg_output_v1::Event::LogicalSize { width, height } => {
                     xdg_info.logical_size = (width, height);
@@ -3956,12 +3964,17 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
             }
         };
         let (logical_width, logical_height) = xdg_info.logical_size;
+        let output_name = xdg_info.name.clone();
+        let (output_x, output_y) = xdg_info.position;
         state.message.push((
             Some(state.units[index].id),
             DispatchMessageInner::XdgInfoChanged {
                 change_type,
                 logical_width,
                 logical_height,
+                output_name,
+                output_x,
+                output_y,
             },
         ));
     }
@@ -5217,6 +5230,12 @@ impl<T: 'static> Dispatch<wayland_client::protocol::wl_shm_pool::WlShmPool, scre
 }
 
 impl<T: 'static> WindowState<T> {
+    /// The logical layout of every output (global coords), gathered at startup.
+    /// Used to position/move a layer surface across monitors.
+    pub fn output_layout(&self) -> &[OutputLayoutItem] {
+        &self.output_layout
+    }
+
     /// build a new WindowState
     pub fn build(mut self) -> Result<Self, LayerEventError> {
         let connection = if let Some(connection) = self.connection.take() {
@@ -5552,6 +5571,35 @@ impl<T: 'static> WindowState<T> {
         }
 
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
+
+        // Gather the logical layout of every output once (name + global logical
+        // position + size), so consumers can place a surface across monitors. The
+        // proxies are dropped afterwards (snapshot); `xdg_info_cache` is otherwise
+        // only used transiently by `StartMode::TargetScreen`.
+        for (_, output_display) in &self.outputs {
+            let zxdgoutput = xdg_output_manager.get_xdg_output(output_display, &qh, ());
+            self.xdg_info_cache
+                .push((output_display.clone(), ZxdgOutputInfo::new(zxdgoutput)));
+        }
+        if !self.xdg_info_cache.is_empty() {
+            event_queue.roundtrip(&mut self)?;
+            self.output_layout = self
+                .xdg_info_cache
+                .iter()
+                .map(|(_, info)| OutputLayoutItem {
+                    name: info.name.clone(),
+                    x: info.position.0,
+                    y: info.position.1,
+                    width: info.logical_size.0,
+                    height: info.logical_size.1,
+                })
+                .collect();
+            self.xdg_info_cache.clear();
+            self.message.push((
+                None,
+                DispatchMessageInner::OutputLayoutChanged(self.output_layout.clone()),
+            ));
+        }
 
         // do the step before, you get empty list
 

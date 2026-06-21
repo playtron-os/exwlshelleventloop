@@ -1100,11 +1100,27 @@ where
 
         // Handle output-info events (the logical size of the output the surface is
         // shown on) - they go through a subscription channel.
-        if let LayerShellWindowEvent::OutputLogicalSize { width, height } = event {
+        if let LayerShellWindowEvent::OutputLogicalSize {
+            width,
+            height,
+            output_name,
+            output_x,
+            output_y,
+        } = event
+        {
             crate::event::send_output_info_event(crate::event::OutputInfoEvent {
                 width: width.max(0) as u32,
                 height: height.max(0) as u32,
+                name: output_name,
+                x: output_x,
+                y: output_y,
             });
+            return true;
+        }
+
+        // The full output layout (every monitor's name + global geometry).
+        if let LayerShellWindowEvent::OutputLayout(outputs) = event {
+            crate::event::send_output_layout_event(crate::event::OutputLayoutEvent { outputs });
             return true;
         }
 

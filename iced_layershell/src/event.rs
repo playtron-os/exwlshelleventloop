@@ -264,6 +264,61 @@ pub fn output_info_subscription() -> iced_futures::Subscription<OutputInfoEvent>
     })
 }
 
+// Global channel for output-layout events (the logical geometry of every
+// output). Mirrors the output-info channel; always available.
+static OUTPUT_LAYOUT_CHANNEL: std::sync::OnceLock<SharedChannel<OutputLayoutEvent>> =
+    std::sync::OnceLock::new();
+
+fn get_output_layout_channel() -> &'static SharedChannel<OutputLayoutEvent> {
+    OUTPUT_LAYOUT_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send an output-layout event (called by the event loop).
+pub(crate) fn send_output_layout_event(event: OutputLayoutEvent) {
+    let (tx, _) = get_output_layout_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for output-layout events: the logical geometry (name + global
+/// position + size) of every output, reported at startup (and on hotplug). Use
+/// it to move a layer surface across monitors.
+pub fn output_layout_subscription() -> iced_futures::Subscription<OutputLayoutEvent> {
+    #[derive(Hash)]
+    struct OutputLayoutSubscription;
+
+    iced_futures::Subscription::run_with(OutputLayoutSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<OutputLayoutEvent>| async move {
+                use iced_futures::futures::SinkExt;
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<OutputLayoutEvent>(100);
+                std::thread::Builder::new()
+                    .name("output-layout-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_output_layout_channel();
+                        let rx = rx.lock().expect("output layout rx lock");
+                        while let Ok(event) = rx.recv() {
+                            if async_tx.clone().try_send(event).is_err() {
+                                log::warn!("Output layout bridge: async channel full, dropping");
+                            }
+                        }
+                    })
+                    .expect("spawn output layout bridge thread");
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
+                }
+            },
+        )
+    })
+}
+
 // Global channel for usable-area events (the non-exclusive area of the output a
 // layer surface is shown on — output size minus panels/docks). Mirrors the
 // output-info channel; always available (not feature-gated).
@@ -464,6 +519,11 @@ pub enum WindowEvent {
     OutputLogicalSize {
         width: i32,
         height: i32,
+        /// Name + global logical position of the surface's output (for
+        /// cross-monitor positioning).
+        output_name: String,
+        output_x: i32,
+        output_y: i32,
     },
     /// The usable (non-exclusive) area of the output the surface is shown on
     /// changed (output logical geometry minus panels/docks). Delivered to the
@@ -474,6 +534,9 @@ pub enum WindowEvent {
         width: i32,
         height: i32,
     },
+    /// The full logical layout of every output (startup + hotplug). Delivered to
+    /// the app through [`output_layout_subscription`].
+    OutputLayout(Vec<layershellev::OutputLayoutItem>),
 }
 
 /// The logical size (logical px) of the output a layer surface is shown on.
@@ -481,10 +544,22 @@ pub enum WindowEvent {
 /// Delivered via [`output_info_subscription`]. Use it to position/size centered
 /// or anchored surfaces relative to the actual display they appear on, rather
 /// than a cached or primary-monitor size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputInfoEvent {
     pub width: u32,
     pub height: u32,
+    /// The output's name (stable id for targeting it via `OutputOption`).
+    pub name: String,
+    /// The output's top-left in the compositor's global logical space.
+    pub x: i32,
+    pub y: i32,
+}
+
+/// The full logical layout of every output (global coords), delivered via
+/// [`output_layout_subscription`]. Use it to move a surface across monitors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputLayoutEvent {
+    pub outputs: Vec<layershellev::OutputLayoutItem>,
 }
 
 /// The usable (non-exclusive) area of the output a layer surface is shown on,
@@ -615,10 +690,22 @@ impl From<&DispatchMessage> for WindowEvent {
             #[cfg(feature = "screencopy")]
             DispatchMessage::Screencopy(event) => WindowEvent::Screencopy(event.clone()),
             DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
-            DispatchMessage::XdgInfoChanged { width, height } => WindowEvent::OutputLogicalSize {
+            DispatchMessage::XdgInfoChanged {
+                width,
+                height,
+                output_name,
+                output_x,
+                output_y,
+            } => WindowEvent::OutputLogicalSize {
                 width: *width,
                 height: *height,
+                output_name: output_name.clone(),
+                output_x: *output_x,
+                output_y: *output_y,
             },
+            DispatchMessage::OutputLayoutChanged(layout) => {
+                WindowEvent::OutputLayout(layout.clone())
+            }
             DispatchMessage::UsableAreaChanged {
                 x,
                 y,

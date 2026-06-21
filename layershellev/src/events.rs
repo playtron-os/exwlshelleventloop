@@ -331,6 +331,18 @@ pub enum XdgInfoChangedType {
     Description,
 }
 
+/// The logical geometry of one output, in the compositor's global logical
+/// coordinate space (xdg_output). Used by consumers that need the full monitor
+/// layout — e.g. to drag a layer surface across monitors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputLayoutItem {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 /// Describes a scroll along one axis
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct AxisScroll {
@@ -462,7 +474,15 @@ pub(crate) enum DispatchMessageInner {
         /// can position per-output surfaces without re-querying the unit.
         logical_width: i32,
         logical_height: i32,
+        /// The name + global logical position of the surface's output, so
+        /// consumers know which monitor it's on and where (for cross-output drag).
+        output_name: String,
+        output_x: i32,
+        output_y: i32,
     },
+    /// The full logical layout of every output changed (at startup and on
+    /// hotplug). Carries every monitor's name + global logical geometry.
+    OutputLayoutChanged(Vec<OutputLayoutItem>),
     /// The usable (non-exclusive) area of the surface's output changed, reported
     /// by the compositor via the `layer_usable_area_v1` protocol (output logical
     /// geometry minus panels/docks), in output-logical coordinates.
@@ -620,6 +640,11 @@ pub enum DispatchMessage {
     XdgInfoChanged {
         width: i32,
         height: i32,
+        /// The surface's output name + global logical position (for positioning
+        /// a surface across monitors).
+        output_name: String,
+        output_x: i32,
+        output_y: i32,
     },
     /// The usable (non-exclusive) area of the surface's output changed: the
     /// output logical geometry minus every exclusive zone (panels/docks), in
@@ -631,6 +656,8 @@ pub enum DispatchMessage {
         width: i32,
         height: i32,
     },
+    /// The full logical layout of every output (startup + hotplug).
+    OutputLayoutChanged(Vec<OutputLayoutItem>),
 }
 
 impl From<DispatchMessageInner> for DispatchMessage {
@@ -737,11 +764,20 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::XdgInfoChanged {
                 logical_width,
                 logical_height,
+                output_name,
+                output_x,
+                output_y,
                 ..
             } => DispatchMessage::XdgInfoChanged {
                 width: logical_width,
                 height: logical_height,
+                output_name,
+                output_x,
+                output_y,
             },
+            DispatchMessageInner::OutputLayoutChanged(layout) => {
+                DispatchMessage::OutputLayoutChanged(layout)
+            }
             DispatchMessageInner::UsableAreaChanged {
                 x,
                 y,
