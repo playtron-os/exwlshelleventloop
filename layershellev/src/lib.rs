@@ -126,6 +126,7 @@ mod events;
 pub mod foreign_toplevel;
 pub mod home_visibility;
 pub mod layer_auto_hide;
+pub mod layer_edge_resize;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
 pub mod layer_surface_visibility;
@@ -981,6 +982,12 @@ pub struct WindowState<T> {
         u32,
         layer_surface_placement::layer_surface_placement_v1::LayerSurfacePlacementV1,
     >,
+    /// Compositor-side edge-resize manager (bound lazily when opted in)
+    layer_edge_resize_manager:
+        Option<layer_edge_resize::layer_edge_resize_manager_v1::LayerEdgeResizeManagerV1>,
+    /// Edge-resize objects per surface (keyed by surface protocol ID)
+    layer_edge_resize_surfaces:
+        HashMap<u32, layer_edge_resize::layer_edge_resize_v1::LayerEdgeResizeV1>,
     /// Whether to request shadow effect for surfaces
     shadow: bool,
     /// Shadow manager (bound lazily when shadow is enabled)
@@ -1178,6 +1185,9 @@ impl<T> WindowState<T> {
         }
         if let Some(placement_obj) = self.layer_surface_placement_surfaces.remove(&surface_id) {
             placement_obj.destroy();
+        }
+        if let Some(edge_resize_obj) = self.layer_edge_resize_surfaces.remove(&surface_id) {
+            edge_resize_obj.destroy();
         }
         if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
             blur_obj.release();
@@ -1770,6 +1780,56 @@ impl<T: 'static> WindowState<T> {
         let surface_id = surface.id().protocol_id();
         if let Some(obj) = self.layer_surface_placement_surfaces.get(&surface_id) {
             obj.unset_max_height();
+            surface.commit();
+        }
+    }
+
+    /// Get (or lazily create) the compositor-side edge-resize object for a surface.
+    /// Returns a clone, or `None` if the compositor lacks
+    /// `layer_edge_resize_manager_v1` (or there is no queue yet).
+    fn edge_resize_object_for(
+        &mut self,
+        surface: &WlSurface,
+    ) -> Option<layer_edge_resize::layer_edge_resize_v1::LayerEdgeResizeV1> {
+        let surface_id = surface.id().protocol_id();
+        if !self.layer_edge_resize_surfaces.contains_key(&surface_id) {
+            let manager = self.layer_edge_resize_manager.as_ref()?;
+            let unit = self.units.first()?;
+            let data = layer_edge_resize::LayerEdgeResizeData {
+                surface: surface.clone(),
+            };
+            let obj = manager.get_edge_resize(surface, &unit.qh, data);
+            self.layer_edge_resize_surfaces.insert(surface_id, obj);
+        }
+        self.layer_edge_resize_surfaces.get(&surface_id).cloned()
+    }
+
+    /// Opt `surface` into the compositor-drawn edge resize sash, with width bounds
+    /// in logical px (`max_width == 0` means full output width). Requires compositor
+    /// support for `layer_edge_resize_manager_v1`; a no-op otherwise.
+    pub fn set_edge_resize_for_surface(
+        &mut self,
+        surface: &WlSurface,
+        min_width: i32,
+        max_width: i32,
+    ) {
+        if let Some(obj) = self.edge_resize_object_for(surface) {
+            obj.set_min_width(min_width);
+            obj.set_max_width(max_width);
+            surface.commit();
+        } else {
+            log::warn!(
+                "Layer edge-resize manager not available - compositor lacks layer_edge_resize_manager_v1"
+            );
+        }
+    }
+
+    /// Disable the compositor-drawn edge resize for `surface`. A no-op if it was
+    /// never opted in.
+    pub fn unset_edge_resize_for_surface(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+        if let Some(obj) = self.layer_edge_resize_surfaces.remove(&surface_id) {
+            obj.destroy();
             surface.commit();
         }
     }
@@ -2995,6 +3055,8 @@ impl<T> Default for WindowState<T> {
             corner_radius_surfaces: HashMap::new(),
             layer_surface_placement_manager: None,
             layer_surface_placement_surfaces: HashMap::new(),
+            layer_edge_resize_manager: None,
+            layer_edge_resize_surfaces: HashMap::new(),
             shadow: false,
             shadow_manager: None,
             shadow_surfaces: HashMap::new(),
@@ -4321,6 +4383,28 @@ impl<T: 'static>
     }
 }
 
+// Layer edge-resize protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore layer_edge_resize::layer_edge_resize_manager_v1::LayerEdgeResizeManagerV1);
+
+// Manual Dispatch impl for the edge-resize object since it has custom user data
+impl<T: 'static>
+    Dispatch<
+        layer_edge_resize::layer_edge_resize_v1::LayerEdgeResizeV1,
+        layer_edge_resize::LayerEdgeResizeData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &layer_edge_resize::layer_edge_resize_v1::LayerEdgeResizeV1,
+        _event: <layer_edge_resize::layer_edge_resize_v1::LayerEdgeResizeV1 as Proxy>::Event,
+        _data: &layer_edge_resize::LayerEdgeResizeData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for edge-resize objects
+    }
+}
+
 // Keyboard-shortcuts-inhibit protocol delegates. The manager has no events; the
 // inhibitor emits active/inactive, which are informational here (cosmic-comp
 // activates an inhibitor on creation), so both are ignored.
@@ -5324,6 +5408,21 @@ impl<T: 'static> WindowState<T> {
         if self.layer_surface_placement_manager.is_some() {
             log::info!(
                 "Successfully bound layer_surface_placement_manager_v1 protocol for compositor-side placement"
+            );
+        }
+
+        // Always try to bind the compositor-side edge-resize manager so a surface
+        // can opt into the compositor-drawn resize sash at any time.
+        self.layer_edge_resize_manager = globals
+            .bind::<layer_edge_resize::layer_edge_resize_manager_v1::LayerEdgeResizeManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.layer_edge_resize_manager.is_some() {
+            log::info!(
+                "Successfully bound layer_edge_resize_manager_v1 protocol for compositor-drawn edge resize"
             );
         }
 

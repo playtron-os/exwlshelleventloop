@@ -58,6 +58,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SetMaxHeight{id: iced_layershell::reexport::IcedId, fraction: f64, min_height: i32},
                 /// Clear the compositor-side height cap.
                 UnsetMaxHeight{id: iced_layershell::reexport::IcedId},
+                /// Opt the surface into the compositor-drawn edge resize sash (width bounds in px, max 0 = full output).
+                SetEdgeResize{id: iced_layershell::reexport::IcedId, min_width: i32, max_width: i32},
+                /// Disable the compositor-drawn edge resize for the surface.
+                UnsetEdgeResize{id: iced_layershell::reexport::IcedId},
                 ExclusiveZoneChange{id: iced_layershell::reexport::IcedId, zone_size: i32},
                 KeyboardInteractivityChange{id: iced_layershell::reexport::IcedId, interactivity: iced_layershell::reexport::KeyboardInteractivity},
                 VirtualKeyboardPressed {
@@ -140,6 +144,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::UnsetVerticalPlacement { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetVerticalPlacement)),
                             Self::SetMaxHeight { id, fraction, min_height } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetMaxHeight { fraction, min_height })),
                             Self::UnsetMaxHeight { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetMaxHeight)),
+                            Self::SetEdgeResize { id, min_width, max_width } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetEdgeResize { min_width, max_width })),
+                            Self::UnsetEdgeResize { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetEdgeResize)),
                             Self::ExclusiveZoneChange { id, zone_size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ExclusiveZoneChange(zone_size))),
                             Self::KeyboardInteractivityChange { id, interactivity } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(
@@ -192,6 +198,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SetMaxHeight{ fraction: f64, min_height: i32 },
                 /// Clear the compositor-side height cap.
                 UnsetMaxHeight,
+                /// Opt the surface into the compositor-drawn edge resize sash (width bounds in px, max 0 = full output).
+                SetEdgeResize{ min_width: i32, max_width: i32 },
+                /// Disable the compositor-drawn edge resize for the surface.
+                UnsetEdgeResize,
                 ExclusiveZoneChange(i32),
                 KeyboardInteractivityChange(iced_layershell::reexport::KeyboardInteractivity),
                 VirtualKeyboardPressed {
@@ -241,6 +251,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::UnsetVerticalPlacement => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetVerticalPlacement)),
                             Self::SetMaxHeight { fraction, min_height } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetMaxHeight { fraction, min_height })),
                             Self::UnsetMaxHeight => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetMaxHeight)),
+                            Self::SetEdgeResize { min_width, max_width } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetEdgeResize { min_width, max_width })),
+                            Self::UnsetEdgeResize => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetEdgeResize)),
                             Self::ExclusiveZoneChange(zone_size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ExclusiveZoneChange(zone_size))),
                             Self::KeyboardInteractivityChange(interactivity) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VirtualKeyboardPressed {

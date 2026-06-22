@@ -127,6 +127,15 @@ pub enum LayershellCustomAction {
     },
     /// Clear any compositor-side height cap.
     UnsetMaxHeight,
+    /// Opt the surface into the compositor-drawn edge resize sash, with width
+    /// bounds in logical px (`max_width == 0` means full output width). Requires
+    /// compositor support for `layer_edge_resize_manager_v1`.
+    SetEdgeResize {
+        min_width: i32,
+        max_width: i32,
+    },
+    /// Disable the compositor-drawn edge resize for the surface.
+    UnsetEdgeResize,
     /// Enable or disable blur effect for the surface (requires compositor support).
     BlurChange(bool),
     /// Enable blur on the surface with explicit frosted-glass params, storing

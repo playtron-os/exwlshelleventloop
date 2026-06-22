@@ -1402,6 +1402,23 @@ where
                 };
                 ev.unset_max_height_for_surface(&surface);
             }
+            LayershellCustomAction::SetEdgeResize {
+                min_width,
+                max_width,
+            } => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_edge_resize_for_surface(&surface, min_width, max_width);
+            }
+            LayershellCustomAction::UnsetEdgeResize => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.unset_edge_resize_for_surface(&surface);
+            }
             LayershellCustomAction::BlurChange(enabled) => {
                 let surface = {
                     ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
