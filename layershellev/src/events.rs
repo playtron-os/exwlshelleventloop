@@ -91,19 +91,22 @@ pub enum OutputOption {
 /// Show/hide transition animation a layer surface requests from the compositor
 /// via the `zcosmic_layer_surface_visibility` protocol (`set_transition`).
 ///
-/// When left unset, the compositor decides based on the surface's anchor: a
-/// surface anchored to a single lateral edge (left or right) slides in/out from
-/// that edge, while everything else cross-fades.  Setting this overrides that
-/// heuristic — e.g. a corner-anchored notification toast can request
-/// [`LayerTransition::Fade`] so it does not slide horizontally.
+/// When left unset, the compositor picks the default based on the surface's
+/// anchor: a surface anchored to a single lateral edge (left or right) slides
+/// in/out from that edge, while everything else fades in/out with a subtle
+/// upward slide.  Setting this overrides that default — request
+/// [`LayerTransition::Fade`] to keep the fade+rise on an edge-anchored surface,
+/// or [`LayerTransition::Slide`] to force the full edge slide (e.g. the dock,
+/// the only surface that should).
 ///
 /// Requires compositor support for `zcosmic_layer_surface_visibility` version 2;
 /// on older compositors the request is silently ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerTransition {
-    /// Slide in/out from the anchored screen edge.
+    /// Slide the whole surface in/out from its anchored screen edge.
     Slide,
-    /// Cross-fade the surface opacity.
+    /// Fade in/out with a subtle upward slide (the default for non-edge-anchored
+    /// surfaces) — the agentos-panel popover animation.
     Fade,
 }
 

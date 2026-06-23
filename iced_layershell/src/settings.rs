@@ -109,9 +109,11 @@ pub struct LayerShellSettings {
     /// (requires compositor support for layer_corner_radius_manager_v1)
     pub corner_radius: Option<[u32; 4]>,
     /// Show/hide transition animation requested when this surface is toggled via
-    /// the `layer_surface_visibility` protocol. `None` lets the compositor decide
-    /// based on the anchor (edge-anchored panels slide); `Some(Fade)` opts a
-    /// corner-anchored surface out of the slide. Requires
+    /// the `layer_surface_visibility` protocol. `None` takes the compositor
+    /// default (a left/right edge-anchored surface slides; everything else fades
+    /// in/out with a subtle upward slide). `Some(Fade)` keeps that fade+rise on
+    /// an edge-anchored surface; `Some(Slide)` forces the full edge slide (the
+    /// dock — the only surface that should). Requires
     /// `zcosmic_layer_surface_visibility` version 2.
     pub transition: Option<LayerTransition>,
     /// Home-only visibility mode - surface only visible when compositor is in "home" mode

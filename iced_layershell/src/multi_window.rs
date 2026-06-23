@@ -688,14 +688,32 @@ where
                 });
         }
 
-        // For auto_size windows, check if content might want to grow BEFORE draw
-        // We do unbounded measurement here, then relayout back for proper draw
+        // For auto_size windows, measure the true content size BEFORE drawing and,
+        // if it changed in EITHER direction (grow OR shrink), resize + relayout to
+        // it atomically — set_size + viewport + swapchain reconfigure + relayout, all
+        // before the draw — so the buffer committed THIS frame already matches the
+        // new size. A bottom-anchored surface then keeps its bottom edge pinned in a
+        // single frame: content never jumps-then-settles when expanding nor
+        // lifts-then-settles when collapsing.
+        //
+        // Previously only the GROW direction was atomic (gated on the content
+        // filling the window); SHRINK fell through to the post-draw dynamic block,
+        // which called set_size AFTER the draw/present. That left the committed
+        // buffer one frame TALLER than the just-configured geometry, so the compositor
+        // (which positions a bottom-anchored surface at output_bottom - configured_h)
+        // placed the oversized buffer too high and its bottom edge lifted off the
+        // anchor each collapse frame. Handling both directions here removes that.
+        //
+        // `auto_size_handled_predraw` switches the post-draw dynamic block off when
+        // this ran, so the two can't both issue a set_size in the same frame (a
+        // second, post-draw set_size from a re-measure would re-introduce the
+        // buffer/geometry mismatch this is meant to eliminate).
+        let mut auto_size_handled_predraw = false;
         let dynamic_resize_target: Option<(u32, u32)> = if self.auto_size_enabled.contains(&iced_id)
             && !self.auto_size_pending.contains(&iced_id)
         {
+            auto_size_handled_predraw = true;
             let window_size = window.state.window_size();
-            let content_size = ui.content_size();
-            let content_height = content_size.height.ceil() as u32;
 
             // Get max bounds
             let (max_width, max_height) = self
@@ -704,43 +722,87 @@ where
                 .copied()
                 .unwrap_or((10000, 10000));
 
-            // If content fills window height, it might want to be taller
-            let content_fills_window = content_height >= window_size.height.saturating_sub(1);
+            // Never let an auto_size surface grow taller than the display it's on:
+            // clamp the height bound to the output's logical height (reported
+            // per-surface via xdg_output). Without this, content taller than the
+            // screen would have the client request — and draw — a buffer taller than
+            // the output, which the compositor then clips and/or positions partly
+            // off-screen. The app's own max (`auto_size_max`) still applies; this only
+            // tightens it to the physical display.
+            //
+            // NB: this is the raw output height — it does NOT subtract other layers'
+            // exclusive zones (e.g. a panel), so a bottom-anchored surface above a
+            // panel could still want the slightly-smaller usable area. Clamping to the
+            // display is the safe screen-overflow guard; usable-area precision is a
+            // follow-up (the usable-area protocol is already plumbed for it).
+            let max_height = layer_shell_window
+                .get_xdgoutput_info()
+                .map(|o| o.get_logical_size().1)
+                .filter(|h| *h > 0)
+                .map_or(max_height, |display_h| max_height.min(display_h as u32));
 
-            if content_fills_window && window_size.height < max_height {
-                // Do measurement at max bounds
-                let max_bounds = Size::new(max_width as f32, max_height as f32);
-                ui = ui.relayout(max_bounds, &mut window.renderer);
-                let true_content_size = ui.content_size();
-                let measured_width = (true_content_size.width.ceil() as u32).min(max_width);
-                let measured_height = (true_content_size.height.ceil() as u32).min(max_height);
+            // Measure true content at max bounds. The widget tree reports its own
+            // intrinsic height (and, for an animated reveal, its currently-animating
+            // height) regardless of the bound, so this tracks a height animation
+            // frame by frame in both directions.
+            let max_bounds = Size::new(max_width as f32, max_height as f32);
+            ui = ui.relayout(max_bounds, &mut window.renderer);
+            let true_content_size = ui.content_size();
+            let measured_width = (true_content_size.width.ceil() as u32).min(max_width);
+            let measured_height = (true_content_size.height.ceil() as u32).min(max_height);
 
-                // Relayout back to current window size for proper draw
-                let current_bounds = Size::new(window_size.width as f32, window_size.height as f32);
-                ui = ui.relayout(current_bounds, &mut window.renderer);
+            // Resize whenever the measured size differs from the last one we set, in
+            // either dimension and either direction (grow or shrink).
+            let last_size = self.auto_size_last_content.get(&iced_id).copied();
+            let needs_resize = last_size
+                .map(|(last_w, last_h)| measured_width != last_w || measured_height != last_h)
+                .unwrap_or(true);
 
-                // Check if we need to resize
-                let last_size = self.auto_size_last_content.get(&iced_id).copied();
-                let needs_resize = last_size
-                    .map(|(_, last_h)| measured_height != last_h)
-                    .unwrap_or(true);
+            if needs_resize && measured_height > 0 && measured_width > 0 {
+                tracing::debug!(
+                    "Auto-size atomic resize for {:?}: ({}, {}), max=({}, {})",
+                    iced_id,
+                    measured_width,
+                    measured_height,
+                    max_width,
+                    max_height
+                );
+                layer_shell_window.set_size((measured_width, measured_height));
+                window.state.update_view_port(
+                    measured_width,
+                    measured_height,
+                    layer_shell_window.scale_float(),
+                );
+                ui = ui.relayout(window.state.viewport().logical_size(), &mut window.renderer);
 
-                if needs_resize && measured_height > 0 && measured_width > 0 {
-                    tracing::debug!(
-                        "Auto-size unbounded measure for {:?}: content fills window, true size=({}, {}), max=({}, {})",
-                        iced_id,
-                        measured_width,
-                        measured_height,
-                        max_width,
-                        max_height
-                    );
-                    Some((measured_width, measured_height))
-                } else {
-                    None
-                }
+                // update_view_port just changed the viewport's physical size, but the
+                // per-frame wgpu reconfigure above already ran with the OLD size and
+                // won't run again this frame. Reconfigure the swapchain NOW so the
+                // buffer we draw+present below is at the new physical size. Without
+                // this, present() renders into the stale surface and wp_viewport
+                // stretches it to the new destination — the new content would arrive
+                // distorted for a frame, defeating the atomic resize.
+                let new_physical = window.state.viewport().physical_size();
+                self.cached_layer_dimensions.insert(
+                    iced_id,
+                    (new_physical, window.state.viewport().scale_factor()),
+                );
+                compositor.configure_surface(
+                    &mut window.surface,
+                    new_physical.width,
+                    new_physical.height,
+                );
+
+                self.auto_size_last_content
+                    .insert(iced_id, (measured_width, measured_height));
             } else {
-                None
+                // No size change: relayout back to the current size for the draw.
+                let current_bounds =
+                    Size::new(window_size.width as f32, window_size.height as f32);
+                ui = ui.relayout(current_bounds, &mut window.renderer);
             }
+            // The resize (if any) is applied above; nothing is deferred to post-draw.
+            None
         } else {
             None
         };
@@ -921,8 +983,16 @@ where
             );
         }
 
-        // Check for dynamic content size changes on auto_size windows
-        if self.auto_size_enabled.contains(&iced_id) && initial_auto_size_target.is_none() {
+        // Check for dynamic content size changes on auto_size windows.
+        // Skipped when the pre-draw block already handled the resize atomically
+        // this frame (`auto_size_handled_predraw`), so the two never both issue a
+        // set_size — a post-draw re-measure could differ from the pre-draw one and
+        // re-introduce the buffer/geometry mismatch. This block is now only a
+        // fallback for frames where the pre-draw path didn't run.
+        if self.auto_size_enabled.contains(&iced_id)
+            && initial_auto_size_target.is_none()
+            && !auto_size_handled_predraw
+        {
             // Check for content size changes on auto_size windows (dynamic resize)
             // Use pre-measured target if available (for content that fills window)
             // Otherwise use current content size (for content shrinking)
@@ -1758,6 +1828,11 @@ where
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let surface = layer_shell_window.get_wlsurface().clone();
                 ev.disarm_dismiss(&surface);
+            }
+            LayershellCustomAction::SetDismissIgnoreLayerClicks => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.set_dismiss_ignore_layer_clicks(&surface);
             }
             LayershellCustomAction::AddMainSurfaceToDismissGroup => {
                 // Get the popup surface

@@ -241,6 +241,13 @@ pub enum LayershellCustomAction {
     AddAllSurfacesToDismissGroup,
     /// Remove the main panel surface from this popup's dismiss group.
     RemoveMainSurfaceFromDismissGroup,
+    /// Opt this surface's dismiss controller out of dismissing on clicks that
+    /// land on OTHER layer-shell surfaces (panels, docks, popovers). Clicks on
+    /// app content or the bare desktop still dismiss. For a surface whose
+    /// open/close is driven by a panel/dock button (e.g. a launcher), so the
+    /// controlling click can't race the button's toggle into a dismiss.
+    /// Requires the compositor's dismiss protocol v2 (no-op otherwise).
+    SetDismissIgnoreLayerClicks,
 }
 
 /// Please do not use this struct directly

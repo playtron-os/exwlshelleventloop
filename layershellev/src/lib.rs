@@ -2388,6 +2388,33 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
+    /// Opt a surface's dismiss controller out of dismissing on clicks that land
+    /// on OTHER layer-shell surfaces (panels, docks, popovers). Clicks on app
+    /// content or the bare desktop still dismiss. Needs the compositor's dismiss
+    /// protocol v2 — a no-op (with a log) on older compositors that only offer v1.
+    pub fn set_dismiss_ignore_layer_clicks(&mut self, surface: &WlSurface) {
+        if let Some(controller) = self.get_or_create_dismiss_controller(surface) {
+            if controller.version() >= 2 {
+                controller.set_ignore_layer_clicks();
+                if let Some(ref conn) = self.connection {
+                    let _ = conn.flush();
+                }
+                log::info!(
+                    "Dismiss controller for surface {} ignores layer-shell clicks",
+                    surface.id().protocol_id()
+                );
+            } else {
+                log::warn!(
+                    "set_ignore_layer_clicks needs dismiss protocol v2; compositor offers v1"
+                );
+            }
+        } else {
+            log::warn!(
+                "Layer surface dismiss manager not available - compositor may not support this protocol"
+            );
+        }
+    }
+
     /// Add a surface to the dismiss group of another surface
     /// When the popup_surface is armed, clicks outside both surfaces will trigger dismiss.
     /// The group_surface is typically the parent panel bar.
@@ -5483,7 +5510,8 @@ impl<T: 'static> WindowState<T> {
         self.layer_surface_dismiss_manager = globals
             .bind::<layer_surface_dismiss::zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1, _, _>(
                 &qh,
-                1..=1,
+                // v2 adds `set_ignore_layer_clicks`; fall back to v1 compositors.
+                1..=2,
                 layer_surface_dismiss::LayerSurfaceDismissManagerData,
             )
             .ok();

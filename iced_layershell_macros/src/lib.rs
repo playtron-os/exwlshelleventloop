@@ -223,6 +223,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 ArmDismiss,
                 /// Disarm click-outside dismiss.
                 DisarmDismiss,
+                /// Opt the dismiss controller out of dismissing on clicks that land
+                /// on other layer-shell surfaces (panels, docks). Clicks on app
+                /// content / the desktop still dismiss. Needs dismiss protocol v2.
+                SetDismissIgnoreLayerClicks,
                 /// Enable/disable a keyboard-shortcuts inhibitor for the surface so it
                 /// receives all keys (incl. compositor shortcuts like Alt+Tab) directly.
                 KeyboardShortcutsInhibitChange(bool),
@@ -267,6 +271,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VoiceDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VoiceDismiss)),
                             Self::ArmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ArmDismiss)),
                             Self::DisarmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DisarmDismiss)),
+                            Self::SetDismissIgnoreLayerClicks => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetDismissIgnoreLayerClicks)),
                             Self::KeyboardShortcutsInhibitChange(enabled) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardShortcutsInhibitChange(enabled))),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
