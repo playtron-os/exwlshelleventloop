@@ -797,8 +797,7 @@ where
                     .insert(iced_id, (measured_width, measured_height));
             } else {
                 // No size change: relayout back to the current size for the draw.
-                let current_bounds =
-                    Size::new(window_size.width as f32, window_size.height as f32);
+                let current_bounds = Size::new(window_size.width as f32, window_size.height as f32);
                 ui = ui.relayout(current_bounds, &mut window.renderer);
             }
             // The resize (if any) is applied above; nothing is deferred to post-draw.
