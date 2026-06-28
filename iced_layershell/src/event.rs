@@ -513,6 +513,13 @@ pub enum WindowEvent {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
+    /// A drag-and-drop offer from another app entered the surface (files dragged
+    /// over it) — for a drop-target highlight.
+    DndEntered,
+    /// The drag-and-drop offer left the surface without dropping.
+    DndLeft,
+    /// A file was dropped onto the surface (one event per dropped file).
+    FileDropped(std::path::PathBuf),
     /// The output the surface is shown on reported its logical size (logical px).
     /// Delivered to the app through [`output_info_subscription`] so it can position
     /// per-display layer surfaces correctly.
@@ -690,6 +697,9 @@ impl From<&DispatchMessage> for WindowEvent {
             #[cfg(feature = "screencopy")]
             DispatchMessage::Screencopy(event) => WindowEvent::Screencopy(event.clone()),
             DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
+            DispatchMessage::DndEntered => WindowEvent::DndEntered,
+            DispatchMessage::DndLeft => WindowEvent::DndLeft,
+            DispatchMessage::FileDropped(path) => WindowEvent::FileDropped(path.clone()),
             DispatchMessage::XdgInfoChanged {
                 width,
                 height,

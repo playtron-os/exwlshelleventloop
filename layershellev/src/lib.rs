@@ -154,12 +154,16 @@ use waycrate_xkbkeycode::xkb_keyboard::RepeatInfo;
 
 use wayland_client::{
     ConnectError, Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle, WEnum,
-    delegate_noop,
+    backend::ObjectId,
+    delegate_noop, event_created_child,
     globals::{BindError, GlobalError, GlobalList, GlobalListContents, registry_queue_init},
     protocol::{
         wl_buffer::WlBuffer,
         wl_callback::{Event as WlCallbackEvent, WlCallback},
         wl_compositor::WlCompositor,
+        wl_data_device::{self, WlDataDevice},
+        wl_data_device_manager::{DndAction, WlDataDeviceManager},
+        wl_data_offer::{self, WlDataOffer},
         wl_display::WlDisplay,
         wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
         wl_output::{self, WlOutput},
@@ -876,6 +880,21 @@ pub struct VirtualKeyRelease {
 /// later blur re-enable can re-apply them instead of the compositor defaults.
 type BlurParams = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
 
+/// The MIME type carrying a `\r\n`-separated list of `file://` URIs in a
+/// drag-and-drop offer — what file managers use to advertise dragged files.
+const URI_LIST_MIME: &str = "text/uri-list";
+
+/// The drag-and-drop offer currently hovering one of our surfaces.
+#[derive(Debug, Clone)]
+struct DndCurrent {
+    /// The hovering offer (destroyed on leave, or after a completed drop).
+    offer: WlDataOffer,
+    /// The surface the offer is over (for routing the drop to the right window).
+    surface_id: Option<id::Id>,
+    /// Whether the offer advertises [`URI_LIST_MIME`] (i.e. is droppable here).
+    has_uri_list: bool,
+}
+
 /// main state, store the main information
 #[derive(Debug)]
 pub struct WindowState<T> {
@@ -907,6 +926,15 @@ pub struct WindowState<T> {
     pointer: Option<WlPointer>,
     touch: Option<WlTouch>,
     virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
+
+    // drag-and-drop (receive only): the data device + the offered MIME types per
+    // live `wl_data_offer`, and the currently-hovering drag offer (if any).
+    data_device_manager: Option<WlDataDeviceManager>,
+    data_device: Option<WlDataDevice>,
+    /// MIME types advertised by each live `wl_data_offer`, keyed by its object id.
+    dnd_offer_mimes: HashMap<ObjectId, Vec<String>>,
+    /// The drag offer currently hovering a surface, plus the surface it's over.
+    dnd_current: Option<DndCurrent>,
 
     // states
     namespace: String,
@@ -3039,6 +3067,10 @@ impl<T> Default for WindowState<T> {
             keyboard_state: None,
             pointer: None,
             touch: None,
+            data_device_manager: None,
+            data_device: None,
+            dnd_offer_mimes: HashMap::new(),
+            dnd_current: None,
 
             namespace: "".to_owned(),
             keyboard_interactivity: zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
@@ -3853,6 +3885,213 @@ impl<T> Dispatch<wl_pointer::WlPointer, ()> for WindowState<T> {
             }
             _ => {
                 // TODO: not now
+            }
+        }
+    }
+}
+
+/// Parse a `text/uri-list` payload into local filesystem paths: one `file://`
+/// URI per line, ignoring blank lines and `#` comments, percent-decoding the
+/// path. Non-`file://` URIs (e.g. `http://`) are skipped — we can only attach
+/// local files.
+fn parse_uri_list(text: &str) -> Vec<std::path::PathBuf> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            // file://<host><abs-path>; host is normally empty (file:///path).
+            let rest = line.strip_prefix("file://")?;
+            let path_start = rest.find('/')?;
+            Some(percent_decode(&rest[path_start..]))
+        })
+        .map(std::path::PathBuf::from)
+        .collect()
+}
+
+/// Percent-decode a URI path component (`%20` → space, etc.). Invalid escapes
+/// are left as-is.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |c: u8| (c as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// The data device manager has no events; binding it just lets us create the
+// data device.
+delegate_noop!(@<T> WindowState<T>: ignore WlDataDeviceManager);
+
+/// The data device delivers drag-and-drop offers from other apps. We support the
+/// *receive* side only (dropping files in), routing each dropped file path to
+/// the surface it landed on as a [`DispatchMessageInner::FileDropped`].
+impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        _device: &WlDataDevice,
+        event: <WlDataDevice as Proxy>::Event,
+        _data: &(),
+        conn: &Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        use std::os::fd::AsFd;
+        match event {
+            // A new offer is introduced; its MIME types arrive next (on the
+            // offer object) before the matching enter/selection event.
+            wl_data_device::Event::DataOffer { id } => {
+                log::info!(target: "kcopy_dnd", "DataOffer (new offer)");
+                state.dnd_offer_mimes.insert(id.id(), Vec::new());
+            }
+            // A drag entered one of our surfaces. Accept the file-list MIME (and
+            // negotiate a copy action on v3+) so the compositor shows a "droppable"
+            // cursor and will later emit the drop.
+            wl_data_device::Event::Enter {
+                serial,
+                surface,
+                id,
+                ..
+            } => {
+                if let Some(prev) = state.dnd_current.take() {
+                    state.dnd_offer_mimes.remove(&prev.offer.id());
+                    prev.offer.destroy();
+                }
+                if let Some(offer) = id {
+                    let surface_id = state.get_id_from_surface(&surface);
+                    let has_uri_list = state
+                        .dnd_offer_mimes
+                        .get(&offer.id())
+                        .is_some_and(|mimes| mimes.iter().any(|m| m == URI_LIST_MIME));
+                    log::info!(
+                        target: "kcopy_dnd",
+                        "Enter surface={surface_id:?} has_uri_list={has_uri_list} mimes={:?}",
+                        state.dnd_offer_mimes.get(&offer.id())
+                    );
+                    if has_uri_list {
+                        offer.accept(serial, Some(URI_LIST_MIME.to_string()));
+                        if offer.version() >= 3 {
+                            offer.set_actions(DndAction::Copy, DndAction::Copy);
+                        }
+                        state
+                            .message
+                            .push((surface_id, DispatchMessageInner::DndEntered));
+                    } else {
+                        offer.accept(serial, None);
+                    }
+                    state.dnd_current = Some(DndCurrent {
+                        offer,
+                        surface_id,
+                        has_uri_list,
+                    });
+                }
+            }
+            // The drag left without dropping: destroy the offer and clear the
+            // highlight.
+            wl_data_device::Event::Leave => {
+                log::info!(target: "kcopy_dnd", "Leave");
+                if let Some(dnd) = state.dnd_current.take() {
+                    state.dnd_offer_mimes.remove(&dnd.offer.id());
+                    dnd.offer.destroy();
+                    if dnd.has_uri_list {
+                        state
+                            .message
+                            .push((dnd.surface_id, DispatchMessageInner::DndLeft));
+                    }
+                }
+            }
+            // The drop happened: pull the URI list off the offer and emit one
+            // FileDropped per file.
+            wl_data_device::Event::Drop => {
+                log::info!(target: "kcopy_dnd", "Drop (current={})", state.dnd_current.is_some());
+                if let Some(dnd) = state.dnd_current.take() {
+                    let surface_id = dnd.surface_id;
+                    if dnd.has_uri_list {
+                        // Receive over a socketpair: hand the compositor one end,
+                        // read the payload off the other. A socketpair avoids a
+                        // pipe dependency and gives EOF once the compositor closes
+                        // its end. Flush first so the compositor sees `receive`,
+                        // then drop our write end so the read terminates.
+                        if let Ok((mut reader, writer)) = std::os::unix::net::UnixStream::pair() {
+                            dnd.offer.receive(URI_LIST_MIME.to_string(), writer.as_fd());
+                            let _ = conn.flush();
+                            drop(writer);
+                            // Safety net: never block the event loop indefinitely
+                            // on a misbehaving source.
+                            let _ =
+                                reader.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+                            use std::io::Read;
+                            let mut buf = Vec::new();
+                            let _ = reader.read_to_end(&mut buf);
+                            if dnd.offer.version() >= 3 {
+                                dnd.offer.finish();
+                            }
+                            let text = String::from_utf8_lossy(&buf);
+                            let paths = parse_uri_list(&text);
+                            log::info!(
+                                target: "kcopy_dnd",
+                                "received {} bytes, {} paths: {paths:?}",
+                                buf.len(),
+                                paths.len()
+                            );
+                            for path in paths {
+                                state
+                                    .message
+                                    .push((surface_id, DispatchMessageInner::FileDropped(path)));
+                            }
+                        }
+                        state
+                            .message
+                            .push((surface_id, DispatchMessageInner::DndLeft));
+                    }
+                    state.dnd_offer_mimes.remove(&dnd.offer.id());
+                    dnd.offer.destroy();
+                }
+            }
+            // A clipboard selection offer — we don't read the clipboard through
+            // this device (iced uses its own), so release it to avoid leaking the
+            // offer object.
+            wl_data_device::Event::Selection { id } => {
+                if let Some(offer) = id {
+                    state.dnd_offer_mimes.remove(&offer.id());
+                    offer.destroy();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Opcode 0 is `wl_data_device.data_offer` — the event that introduces a new
+    // `wl_data_offer`, whose user data we set here.
+    event_created_child!(WindowState<T>, WlDataDevice, [
+        0 => (WlDataOffer, ()),
+    ]);
+}
+
+/// A data offer advertises its available MIME types (one `offer` event each)
+/// before the enter/selection that uses it; we accumulate them keyed by offer.
+impl<T> Dispatch<WlDataOffer, ()> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        offer: &WlDataOffer,
+        event: <WlDataOffer as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            log::info!(target: "kcopy_dnd", "Offer mime: {mime_type}");
+            if let Some(mimes) = state.dnd_offer_mimes.get_mut(&offer.id()) {
+                mimes.push(mime_type);
             }
         }
     }
@@ -5369,6 +5608,26 @@ impl<T: 'static> WindowState<T> {
         let shm = globals.bind::<WlShm, _, _>(&qh, 1..=1, ())?;
         self.shm = Some(shm);
         self.seat = Some(globals.bind::<WlSeat, _, _>(&qh, 1..=1, ())?);
+
+        // Drag-and-drop (receive only): bind the data device manager and get a
+        // data device for the seat, so the compositor delivers DnD offers from
+        // other apps to our surfaces. Version 3 gives us the action-negotiation
+        // (`set_actions`) + `finish` that some compositors require before they
+        // emit the drop. Optional: absence just means no DnD support.
+        match globals.bind::<WlDataDeviceManager, _, _>(&qh, 1..=3, ()) {
+            Ok(manager) => {
+                log::info!(target: "kcopy_dnd", "bound wl_data_device_manager v{}", manager.version());
+                if let Some(seat) = self.seat.as_ref() {
+                    let dd = manager.get_data_device(seat, &qh, ());
+                    log::info!(target: "kcopy_dnd", "created wl_data_device v{}", dd.version());
+                    self.data_device = Some(dd);
+                } else {
+                    log::warn!(target: "kcopy_dnd", "no seat — data device not created");
+                }
+                self.data_device_manager = Some(manager);
+            }
+            Err(e) => log::warn!(target: "kcopy_dnd", "no wl_data_device_manager: {e}"),
+        }
 
         let wmbase = globals.bind::<XdgWmBase, _, _>(&qh, 2..=6, ())?;
         self.wmbase = Some(wmbase);

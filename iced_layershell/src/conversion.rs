@@ -148,6 +148,18 @@ pub fn window_event(
         LayerShellEvent::ScaleFactorChanged { scale_float, .. } => Some(IcedEvent::Window(
             iced_core::window::Event::Rescaled(*scale_float as f32),
         )),
+        // Drag-and-drop from other apps. Wayland doesn't reveal the dragged paths
+        // until the drop, so hover carries an empty path (a highlight cue only);
+        // the real paths arrive on `FileDropped`.
+        LayerShellEvent::DndEntered => Some(IcedEvent::Window(
+            iced_core::window::Event::FileHovered(std::path::PathBuf::new()),
+        )),
+        LayerShellEvent::DndLeft => Some(IcedEvent::Window(
+            iced_core::window::Event::FilesHoveredLeft,
+        )),
+        LayerShellEvent::FileDropped(path) => Some(IcedEvent::Window(
+            iced_core::window::Event::FileDropped(path.clone()),
+        )),
         LayerShellEvent::Ime(event) => Some(IcedEvent::InputMethod(match event {
             layershellev::Ime::Enabled => input_method::Event::Opened,
             layershellev::Ime::Preedit(content, size) => {

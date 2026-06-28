@@ -512,6 +512,13 @@ pub(crate) enum DispatchMessageInner {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
+    /// A drag-and-drop offer from another app entered the surface (files are
+    /// being dragged over it) — for showing a drop-target highlight.
+    DndEntered,
+    /// The drag-and-drop offer left the surface without dropping.
+    DndLeft,
+    /// A file was dropped onto the surface (one message per dropped file).
+    FileDropped(std::path::PathBuf),
 }
 
 /// This tell the DispatchMessage by dispatch
@@ -635,6 +642,13 @@ pub enum DispatchMessage {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
+    /// A drag-and-drop offer from another app entered the surface (files are
+    /// being dragged over it) — for showing a drop-target highlight.
+    DndEntered,
+    /// The drag-and-drop offer left the surface without dropping.
+    DndLeft,
+    /// A file was dropped onto the surface (one message per dropped file).
+    FileDropped(std::path::PathBuf),
     /// The xdg_output info of the output the surface is shown on changed.
     /// Carries that output's current logical size (logical px) — used to
     /// position centered/anchored layer surfaces correctly per-display,
@@ -807,6 +821,9 @@ impl From<DispatchMessageInner> for DispatchMessage {
             #[cfg(feature = "screencopy")]
             DispatchMessageInner::Screencopy(event) => DispatchMessage::Screencopy(event),
             DispatchMessageInner::DismissRequested => DispatchMessage::DismissRequested,
+            DispatchMessageInner::DndEntered => DispatchMessage::DndEntered,
+            DispatchMessageInner::DndLeft => DispatchMessage::DndLeft,
+            DispatchMessageInner::FileDropped(path) => DispatchMessage::FileDropped(path),
         }
     }
 }
