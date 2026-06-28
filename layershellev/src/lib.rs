@@ -3890,22 +3890,80 @@ impl<T> Dispatch<wl_pointer::WlPointer, ()> for WindowState<T> {
     }
 }
 
-/// Parse a `text/uri-list` payload into local filesystem paths: one `file://`
-/// URI per line, ignoring blank lines and `#` comments, percent-decoding the
-/// path. Non-`file://` URIs (e.g. `http://`) are skipped — we can only attach
-/// local files.
-fn parse_uri_list(text: &str) -> Vec<std::path::PathBuf> {
+/// Parse a `text/uri-list` payload (raw bytes) into local filesystem paths: one
+/// `file:` URI per line, ignoring blank lines and `#` comments, percent-decoding
+/// the path. Non-`file:` URIs (e.g. `http://`) are skipped — we can only attach
+/// local files. The bytes are first decoded to text, transcoding UTF-16 sources
+/// (some X11/XWayland drags deliver wide-encoded URI lists).
+fn parse_uri_list(buf: &[u8]) -> Vec<std::path::PathBuf> {
+    let text = decode_uri_text(buf);
     text.lines()
-        .map(str::trim)
+        // Trim whitespace *and* stray NULs (wide-encoded leftovers / padding).
+        .map(|line| line.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter_map(|line| {
-            // file://<host><abs-path>; host is normally empty (file:///path).
-            let rest = line.strip_prefix("file://")?;
-            let path_start = rest.find('/')?;
-            Some(percent_decode(&rest[path_start..]))
-        })
-        .map(std::path::PathBuf::from)
+        .filter_map(uri_to_path)
         .collect()
+}
+
+/// Convert one `file:` URI to a path, accepting the `file:/path`,
+/// `file://host/path`, and `file:///path` spellings. Returns `None` for other
+/// schemes or malformed entries.
+fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    // Drop a UTF-8 BOM if it rode in on the first line.
+    let uri = uri.trim_start_matches('\u{feff}');
+    let rest = uri.strip_prefix("file:")?;
+    let path = if let Some(after_authority) = rest.strip_prefix("//") {
+        // `//host/abs-path` (host usually empty → `///abs-path`).
+        &after_authority[after_authority.find('/')?..]
+    } else if rest.starts_with('/') {
+        // `file:/abs-path` (no authority).
+        rest
+    } else {
+        return None;
+    };
+    Some(std::path::PathBuf::from(percent_decode(path)))
+}
+
+/// Decode a DnD/clipboard text payload to a UTF-8 string. Most sources send
+/// UTF-8, but some X11/XWayland sources deliver UTF-16 (with a BOM, or with NUL
+/// bytes interleaved between ASCII) — detect and transcode those so the URI
+/// lines are actually readable.
+fn decode_uri_text(buf: &[u8]) -> String {
+    // Explicit byte-order mark.
+    if let Some((&a, &b)) = buf.first().zip(buf.get(1)) {
+        match (a, b) {
+            (0xFF, 0xFE) => return decode_utf16(&buf[2..], false),
+            (0xFE, 0xFF) => return decode_utf16(&buf[2..], true),
+            _ => {}
+        }
+    }
+    // No BOM: if roughly half the bytes are NUL, it's UTF-16. Endianness is told
+    // by which column (even/odd byte positions) the zero high-bytes sit in.
+    if buf.len() >= 2 {
+        let nuls = buf.iter().filter(|&&b| b == 0).count();
+        if nuls * 2 >= buf.len().saturating_sub(1) {
+            let zeros_even = buf.iter().step_by(2).filter(|&&b| b == 0).count();
+            let zeros_odd = buf.iter().skip(1).step_by(2).filter(|&&b| b == 0).count();
+            // Big-endian: the zero high byte comes first (even positions).
+            return decode_utf16(buf, zeros_even > zeros_odd);
+        }
+    }
+    String::from_utf8_lossy(buf).into_owned()
+}
+
+/// Transcode raw UTF-16 bytes (given endianness) to a UTF-8 string.
+fn decode_utf16(buf: &[u8], big_endian: bool) -> String {
+    let units: Vec<u16> = buf
+        .chunks_exact(2)
+        .map(|c| {
+            if big_endian {
+                u16::from_be_bytes([c[0], c[1]])
+            } else {
+                u16::from_le_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 /// Percent-decode a URI path component (`%20` → space, etc.). Invalid escapes
@@ -4035,13 +4093,14 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                             if dnd.offer.version() >= 3 {
                                 dnd.offer.finish();
                             }
-                            let text = String::from_utf8_lossy(&buf);
-                            let paths = parse_uri_list(&text);
+                            let paths = parse_uri_list(&buf);
                             log::info!(
                                 target: "kcopy_dnd",
-                                "received {} bytes, {} paths: {paths:?}",
+                                "received {} bytes, {} paths: {paths:?}\n  raw(escaped)={:?}\n  hex={}",
                                 buf.len(),
-                                paths.len()
+                                paths.len(),
+                                String::from_utf8_lossy(&buf),
+                                buf.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
                             );
                             for path in paths {
                                 state
