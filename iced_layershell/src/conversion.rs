@@ -151,12 +151,47 @@ pub fn window_event(
         // Drag-and-drop from other apps. Wayland doesn't reveal the dragged paths
         // until the drop, so hover carries an empty path (a highlight cue only);
         // the real paths arrive on `FileDropped`.
-        LayerShellEvent::DndEntered => Some(IcedEvent::Window(
-            iced_core::window::Event::FileHovered(std::path::PathBuf::new()),
+        LayerShellEvent::DndEntered { x, y, mime_types } => {
+            Some(IcedEvent::Dnd(iced_core::dnd::Event::Enter {
+                x: *x,
+                y: *y,
+                mime_types: mime_types.clone(),
+            }))
+        }
+        LayerShellEvent::DndMotion { x, y } => {
+            Some(IcedEvent::Dnd(iced_core::dnd::Event::Motion {
+                x: *x,
+                y: *y,
+            }))
+        }
+        LayerShellEvent::DndLeft => Some(IcedEvent::Dnd(iced_core::dnd::Event::Leave)),
+        LayerShellEvent::DndDrop => Some(IcedEvent::Dnd(iced_core::dnd::Event::Drop)),
+        LayerShellEvent::DndDataReceived { mime_type, data } => {
+            Some(IcedEvent::Dnd(iced_core::dnd::Event::DataReceived {
+                mime_type: mime_type.clone(),
+                data: data.clone(),
+            }))
+        }
+        LayerShellEvent::DndSelectedAction(bits) => {
+            Some(IcedEvent::Dnd(iced_core::dnd::Event::SelectedAction(
+                iced_core::dnd::DndAction::from_bits_truncate(*bits),
+            )))
+        }
+        LayerShellEvent::DndSourceCancelled => Some(IcedEvent::Dnd(
+            iced_core::dnd::Event::SourceEvent(iced_core::dnd::SourceEvent::Cancelled),
         )),
-        LayerShellEvent::DndLeft => Some(IcedEvent::Window(
-            iced_core::window::Event::FilesHoveredLeft,
+        LayerShellEvent::DndSourceDropPerformed => Some(IcedEvent::Dnd(
+            iced_core::dnd::Event::SourceEvent(iced_core::dnd::SourceEvent::DropPerformed),
         )),
+        LayerShellEvent::DndSourceFinished => Some(IcedEvent::Dnd(
+            iced_core::dnd::Event::SourceEvent(iced_core::dnd::SourceEvent::Finished),
+        )),
+        LayerShellEvent::DndSourceAction(bits) => Some(IcedEvent::Dnd(
+            iced_core::dnd::Event::SourceEvent(iced_core::dnd::SourceEvent::Action(
+                iced_core::dnd::DndAction::from_bits_truncate(*bits),
+            )),
+        )),
+        // Kept for back-compat with consumers still on the legacy file-drop API.
         LayerShellEvent::FileDropped(path) => Some(IcedEvent::Window(
             iced_core::window::Event::FileDropped(path.clone()),
         )),

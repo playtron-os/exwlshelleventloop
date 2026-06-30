@@ -513,11 +513,36 @@ pub enum WindowEvent {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
-    /// A drag-and-drop offer from another app entered the surface (files dragged
-    /// over it) — for a drop-target highlight.
-    DndEntered,
+    /// A drag-and-drop offer entered the surface — surface-local position + mimes.
+    DndEntered {
+        x: f64,
+        y: f64,
+        mime_types: Vec<String>,
+    },
+    /// The drag cursor moved within the surface (surface-local position).
+    DndMotion {
+        x: f64,
+        y: f64,
+    },
     /// The drag-and-drop offer left the surface without dropping.
     DndLeft,
+    /// The drag was dropped on the surface.
+    DndDrop,
+    /// Data requested from the current offer arrived for a MIME type.
+    DndDataReceived {
+        mime_type: String,
+        data: Vec<u8>,
+    },
+    /// The compositor selected a DnD action for the current offer.
+    DndSelectedAction(u32),
+    /// Source side: the drag we started was cancelled.
+    DndSourceCancelled,
+    /// Source side: the destination performed the drop.
+    DndSourceDropPerformed,
+    /// Source side: the destination finished — the source may clean up / delete.
+    DndSourceFinished,
+    /// Source side: the negotiated action for the drag changed.
+    DndSourceAction(u32),
     /// A file was dropped onto the surface (one event per dropped file).
     FileDropped(std::path::PathBuf),
     /// The output the surface is shown on reported its logical size (logical px).
@@ -697,8 +722,23 @@ impl From<&DispatchMessage> for WindowEvent {
             #[cfg(feature = "screencopy")]
             DispatchMessage::Screencopy(event) => WindowEvent::Screencopy(event.clone()),
             DispatchMessage::DismissRequested => WindowEvent::DismissRequested,
-            DispatchMessage::DndEntered => WindowEvent::DndEntered,
+            DispatchMessage::DndEntered { x, y, mime_types } => WindowEvent::DndEntered {
+                x: *x,
+                y: *y,
+                mime_types: mime_types.clone(),
+            },
+            DispatchMessage::DndMotion { x, y } => WindowEvent::DndMotion { x: *x, y: *y },
             DispatchMessage::DndLeft => WindowEvent::DndLeft,
+            DispatchMessage::DndDrop => WindowEvent::DndDrop,
+            DispatchMessage::DndDataReceived { mime_type, data } => WindowEvent::DndDataReceived {
+                mime_type: mime_type.clone(),
+                data: data.clone(),
+            },
+            DispatchMessage::DndSelectedAction(a) => WindowEvent::DndSelectedAction(*a),
+            DispatchMessage::DndSourceCancelled => WindowEvent::DndSourceCancelled,
+            DispatchMessage::DndSourceDropPerformed => WindowEvent::DndSourceDropPerformed,
+            DispatchMessage::DndSourceFinished => WindowEvent::DndSourceFinished,
+            DispatchMessage::DndSourceAction(a) => WindowEvent::DndSourceAction(*a),
             DispatchMessage::FileDropped(path) => WindowEvent::FileDropped(path.clone()),
             DispatchMessage::XdgInfoChanged {
                 width,

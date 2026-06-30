@@ -512,11 +512,38 @@ pub(crate) enum DispatchMessageInner {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
-    /// A drag-and-drop offer from another app entered the surface (files are
-    /// being dragged over it) — for showing a drop-target highlight.
-    DndEntered,
+    /// A drag-and-drop offer entered the surface — carries the surface-local
+    /// position and the offered MIME types.
+    DndEntered {
+        x: f64,
+        y: f64,
+        mime_types: Vec<String>,
+    },
+    /// The drag cursor moved within the surface (surface-local position).
+    DndMotion {
+        x: f64,
+        y: f64,
+    },
     /// The drag-and-drop offer left the surface without dropping.
     DndLeft,
+    /// The drag was dropped on the surface (the client reads data via the offer
+    /// and calls `finish`).
+    DndDrop,
+    /// Data requested from the current offer arrived for a MIME type.
+    DndDataReceived {
+        mime_type: String,
+        data: Vec<u8>,
+    },
+    /// The compositor selected a DnD action for the current offer.
+    DndSelectedAction(u32),
+    /// Source side: the drag we started was cancelled.
+    DndSourceCancelled,
+    /// Source side: the destination performed the drop.
+    DndSourceDropPerformed,
+    /// Source side: the destination finished — the source may clean up / delete.
+    DndSourceFinished,
+    /// Source side: the negotiated action for the drag changed.
+    DndSourceAction(u32),
     /// A file was dropped onto the surface (one message per dropped file).
     FileDropped(std::path::PathBuf),
 }
@@ -642,11 +669,37 @@ pub enum DispatchMessage {
     Screencopy(ScreencopyEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
-    /// A drag-and-drop offer from another app entered the surface (files are
-    /// being dragged over it) — for showing a drop-target highlight.
-    DndEntered,
+    /// A drag-and-drop offer entered the surface — surface-local position + the
+    /// offered MIME types.
+    DndEntered {
+        x: f64,
+        y: f64,
+        mime_types: Vec<String>,
+    },
+    /// The drag cursor moved within the surface (surface-local position).
+    DndMotion {
+        x: f64,
+        y: f64,
+    },
     /// The drag-and-drop offer left the surface without dropping.
     DndLeft,
+    /// The drag was dropped on the surface.
+    DndDrop,
+    /// Data requested from the current offer arrived for a MIME type.
+    DndDataReceived {
+        mime_type: String,
+        data: Vec<u8>,
+    },
+    /// The compositor selected a DnD action for the current offer.
+    DndSelectedAction(u32),
+    /// Source side: the drag we started was cancelled.
+    DndSourceCancelled,
+    /// Source side: the destination performed the drop.
+    DndSourceDropPerformed,
+    /// Source side: the destination finished — the source may clean up / delete.
+    DndSourceFinished,
+    /// Source side: the negotiated action for the drag changed.
+    DndSourceAction(u32),
     /// A file was dropped onto the surface (one message per dropped file).
     FileDropped(std::path::PathBuf),
     /// The xdg_output info of the output the surface is shown on changed.
@@ -821,8 +874,20 @@ impl From<DispatchMessageInner> for DispatchMessage {
             #[cfg(feature = "screencopy")]
             DispatchMessageInner::Screencopy(event) => DispatchMessage::Screencopy(event),
             DispatchMessageInner::DismissRequested => DispatchMessage::DismissRequested,
-            DispatchMessageInner::DndEntered => DispatchMessage::DndEntered,
+            DispatchMessageInner::DndEntered { x, y, mime_types } => {
+                DispatchMessage::DndEntered { x, y, mime_types }
+            }
+            DispatchMessageInner::DndMotion { x, y } => DispatchMessage::DndMotion { x, y },
             DispatchMessageInner::DndLeft => DispatchMessage::DndLeft,
+            DispatchMessageInner::DndDrop => DispatchMessage::DndDrop,
+            DispatchMessageInner::DndDataReceived { mime_type, data } => {
+                DispatchMessage::DndDataReceived { mime_type, data }
+            }
+            DispatchMessageInner::DndSelectedAction(a) => DispatchMessage::DndSelectedAction(a),
+            DispatchMessageInner::DndSourceCancelled => DispatchMessage::DndSourceCancelled,
+            DispatchMessageInner::DndSourceDropPerformed => DispatchMessage::DndSourceDropPerformed,
+            DispatchMessageInner::DndSourceFinished => DispatchMessage::DndSourceFinished,
+            DispatchMessageInner::DndSourceAction(a) => DispatchMessage::DndSourceAction(a),
             DispatchMessageInner::FileDropped(path) => DispatchMessage::FileDropped(path),
         }
     }

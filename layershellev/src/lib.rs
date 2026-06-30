@@ -4017,8 +4017,9 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
             wl_data_device::Event::Enter {
                 serial,
                 surface,
+                x,
+                y,
                 id,
-                ..
             } => {
                 if let Some(prev) = state.dnd_current.take() {
                     state.dnd_offer_mimes.remove(&prev.offer.id());
@@ -4026,31 +4027,49 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                 }
                 if let Some(offer) = id {
                     let surface_id = state.get_id_from_surface(&surface);
-                    let has_uri_list = state
+                    let mimes = state
                         .dnd_offer_mimes
                         .get(&offer.id())
-                        .is_some_and(|mimes| mimes.iter().any(|m| m == URI_LIST_MIME));
+                        .cloned()
+                        .unwrap_or_default();
+                    let has_uri_list = mimes.iter().any(|m| m == URI_LIST_MIME);
                     log::info!(
                         target: "kcopy_dnd",
-                        "Enter surface={surface_id:?} has_uri_list={has_uri_list} mimes={:?}",
-                        state.dnd_offer_mimes.get(&offer.id())
+                        "Enter surface={surface_id:?} pos=({x},{y}) mimes={mimes:?}"
                     );
-                    if has_uri_list {
-                        offer.accept(serial, Some(URI_LIST_MIME.to_string()));
-                        if offer.version() >= 3 {
-                            offer.set_actions(DndAction::Copy, DndAction::Copy);
-                        }
-                        state
-                            .message
-                            .push((surface_id, DispatchMessageInner::DndEntered));
+                    // Accept a MIME + negotiate copy/move so the compositor shows a
+                    // "droppable" cursor. Prefer uri-list, else the first offered.
+                    let accept_mime = if has_uri_list {
+                        Some(URI_LIST_MIME.to_string())
                     } else {
-                        offer.accept(serial, None);
+                        mimes.first().cloned()
+                    };
+                    offer.accept(serial, accept_mime);
+                    if offer.version() >= 3 {
+                        offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Copy);
                     }
+                    state.message.push((
+                        surface_id,
+                        DispatchMessageInner::DndEntered {
+                            x,
+                            y,
+                            mime_types: mimes,
+                        },
+                    ));
                     state.dnd_current = Some(DndCurrent {
                         offer,
                         surface_id,
                         has_uri_list,
                     });
+                }
+            }
+            // The drag moved over the surface — forward the surface-local position
+            // so a drop target can track it (the Drop event itself carries none).
+            wl_data_device::Event::Motion { x, y, .. } => {
+                if let Some(dnd) = &state.dnd_current {
+                    state
+                        .message
+                        .push((dnd.surface_id, DispatchMessageInner::DndMotion { x, y }));
                 }
             }
             // The drag left without dropping: destroy the offer and clear the
@@ -4060,11 +4079,9 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                 if let Some(dnd) = state.dnd_current.take() {
                     state.dnd_offer_mimes.remove(&dnd.offer.id());
                     dnd.offer.destroy();
-                    if dnd.has_uri_list {
-                        state
-                            .message
-                            .push((dnd.surface_id, DispatchMessageInner::DndLeft));
-                    }
+                    state
+                        .message
+                        .push((dnd.surface_id, DispatchMessageInner::DndLeft));
                 }
             }
             // The drop happened: pull the URI list off the offer and emit one
@@ -4073,6 +4090,12 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                 log::info!(target: "kcopy_dnd", "Drop (current={})", state.dnd_current.is_some());
                 if let Some(dnd) = state.dnd_current.take() {
                     let surface_id = dnd.surface_id;
+                    // Notify the drop happened (position-flow consumers track the
+                    // last DndMotion); the uri-list auto-read below stays for
+                    // back-compat FileDropped consumers.
+                    state
+                        .message
+                        .push((surface_id, DispatchMessageInner::DndDrop));
                     if dnd.has_uri_list {
                         // Receive over a socketpair: hand the compositor one end,
                         // read the payload off the other. A socketpair avoids a
