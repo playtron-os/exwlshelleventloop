@@ -2006,7 +2006,13 @@ where
                 ..
             } => {
                 // Process clipboard requests even when rebuilding
-                run_clipboard(clipboard, clipboard_requests, window.iced_id, iced_events);
+                run_clipboard(
+                    ev,
+                    clipboard,
+                    clipboard_requests,
+                    window.iced_id,
+                    iced_events,
+                );
                 tracing::trace!(
                     "handle_ui_state: Outdated for window {:?} (rebuild needed)",
                     window.iced_id,
@@ -2021,7 +2027,13 @@ where
                 ..
             } => {
                 // Process clipboard requests from widgets
-                run_clipboard(clipboard, clipboard_requests, window.iced_id, iced_events);
+                run_clipboard(
+                    ev,
+                    clipboard,
+                    clipboard_requests,
+                    window.iced_id,
+                    iced_events,
+                );
 
                 tracing::trace!(
                     "handle_ui_state: Updated for window {:?}, mouse_interaction={:?}, cached={:?}",
@@ -2182,6 +2194,7 @@ pub(crate) fn update<P: IcedProgram, E: Executor>(
 
 /// Process clipboard requests from widget updates and feed results back as events.
 fn run_clipboard(
+    ev: &mut WindowState<IcedId>,
     clipboard: &mut LayerShellClipboard,
     requests: iced_core::Clipboard,
     window: IcedId,
@@ -2203,6 +2216,21 @@ fn run_clipboard(
             window,
             IcedEvent::Clipboard(iced_core::clipboard::Event::Written(result)),
         ));
+    }
+
+    // Outgoing drag-and-drop requests issued by widgets via `shell.start_dnd(..)`.
+    // We support starting a drag (source side); the incoming drop path is
+    // auto-handled in layershellev, so the other requests are no-ops here.
+    for request in requests.dnd_requests {
+        if let iced_core::dnd::Request::StartDrag {
+            mime_types,
+            actions,
+            data,
+            ..
+        } = request
+        {
+            ev.start_drag(mime_types, actions.bits(), data);
+        }
     }
 }
 

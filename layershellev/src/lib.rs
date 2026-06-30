@@ -164,6 +164,7 @@ use wayland_client::{
         wl_data_device::{self, WlDataDevice},
         wl_data_device_manager::{DndAction, WlDataDeviceManager},
         wl_data_offer::{self, WlDataOffer},
+        wl_data_source::{self, WlDataSource},
         wl_display::WlDisplay,
         wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
         wl_output::{self, WlOutput},
@@ -895,6 +896,15 @@ struct DndCurrent {
     has_uri_list: bool,
 }
 
+/// Pre-serialized payload attached to a `wl_data_source` we start, so the
+/// `Send` handler can write the requested MIME data to the destination app over
+/// the fd without needing any external state.
+#[derive(Debug, Clone, Default)]
+struct DndSourceData {
+    mime_types: Vec<String>,
+    data: Vec<Vec<u8>>,
+}
+
 /// main state, store the main information
 #[derive(Debug)]
 pub struct WindowState<T> {
@@ -935,6 +945,10 @@ pub struct WindowState<T> {
     dnd_offer_mimes: HashMap<ObjectId, Vec<String>>,
     /// The drag offer currently hovering a surface, plus the surface it's over.
     dnd_current: Option<DndCurrent>,
+    /// Surface that initiated an outgoing drag — routes source-side events.
+    dnd_source_origin: Option<id::Id>,
+    /// Serial of the most recent pointer button press (required by `start_drag`).
+    last_button_serial: Option<u32>,
 
     // states
     namespace: String,
@@ -1172,7 +1186,7 @@ pub struct WindowState<T> {
     #[cfg(feature = "screencopy")]
     screencopy: screencopy::ScreencopyState,
     /// Cached QueueHandle for use after event_queue is taken by the event loop
-    #[cfg(feature = "screencopy")]
+    /// (needed by screencopy and by `start_drag_for_surface`).
     queue_handle: Option<wayland_client::QueueHandle<WindowState<T>>>,
     /// Cached WlShm for use after shm is taken by the event loop
     #[cfg(feature = "screencopy")]
@@ -2237,6 +2251,57 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
+    /// Begin an outgoing Wayland drag-and-drop from the pointer-focused surface,
+    /// offering `mime_types` with the parallel pre-serialized `data`, advertising
+    /// the given DnD action `bits`. No custom drag icon for now — the compositor
+    /// renders its default. Source-side completion events route back to that
+    /// surface so the app can finish the operation.
+    pub fn start_drag(&mut self, mime_types: Vec<String>, actions: u32, data: Vec<Vec<u8>>)
+    where
+        T: 'static,
+    {
+        let Some(surface) = self.current_surface.clone() else {
+            log::warn!(target: "kcopy_dnd", "start_drag: no focused surface");
+            return;
+        };
+        let Some(manager) = self.data_device_manager.clone() else {
+            log::warn!(target: "kcopy_dnd", "start_drag: no data_device_manager");
+            return;
+        };
+        let Some(device) = self.data_device.clone() else {
+            log::warn!(target: "kcopy_dnd", "start_drag: no data_device");
+            return;
+        };
+        let Some(serial) = self.last_button_serial else {
+            log::warn!(target: "kcopy_dnd", "start_drag: no button serial yet");
+            return;
+        };
+        let qh = match self.queue_handle.as_ref() {
+            Some(qh) => qh.clone(),
+            None => {
+                log::warn!(target: "kcopy_dnd", "start_drag: queue_handle not initialized");
+                return;
+            }
+        };
+
+        let source = manager.create_data_source(
+            &qh,
+            DndSourceData {
+                mime_types: mime_types.clone(),
+                data,
+            },
+        );
+        for mime in &mime_types {
+            source.offer(mime.clone());
+        }
+        if source.version() >= 3 {
+            source.set_actions(DndAction::from_bits_truncate(actions));
+        }
+        self.dnd_source_origin = self.current_surface_id();
+        log::info!(target: "kcopy_dnd", "start_drag mimes={mime_types:?} serial={serial}");
+        device.start_drag(Some(&source), &surface, None, serial);
+    }
+
     /// Returns `true` when every live surface unit is currently hidden via the
     /// `layer_surface_visibility` protocol.  When this returns `true` the
     /// compositor is not rendering us, so we can save CPU by throttling updates.
@@ -3071,6 +3136,8 @@ impl<T> Default for WindowState<T> {
             data_device: None,
             dnd_offer_mimes: HashMap::new(),
             dnd_current: None,
+            dnd_source_origin: None,
+            last_button_serial: None,
 
             namespace: "".to_owned(),
             keyboard_interactivity: zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
@@ -3171,7 +3238,6 @@ impl<T> Default for WindowState<T> {
             ext_toplevel_handles: HashMap::new(),
             #[cfg(feature = "screencopy")]
             screencopy: screencopy::ScreencopyState::new(),
-            #[cfg(feature = "screencopy")]
             queue_handle: None,
             #[cfg(feature = "screencopy")]
             screencopy_shm: None,
@@ -3823,6 +3889,9 @@ impl<T> Dispatch<wl_pointer::WlPointer, ()> for WindowState<T> {
                 button,
                 time,
             } => {
+                // Remember the press serial — `wl_data_device.start_drag` needs the
+                // serial of the input event that began the drag.
+                state.last_button_serial = Some(serial);
                 let mouse_surface = mouse_surface.cloned();
                 state.update_current_surface(mouse_surface);
                 state.message.push((
@@ -4175,6 +4244,67 @@ impl<T> Dispatch<WlDataOffer, ()> for WindowState<T> {
             if let Some(mimes) = state.dnd_offer_mimes.get_mut(&offer.id()) {
                 mimes.push(mime_type);
             }
+        }
+    }
+}
+
+/// The *source* side of an outgoing drag we started: when the destination app
+/// requests the data, write the matching pre-serialized blob to the fd; route
+/// drop-performed / finished / cancelled back to the originating surface so the
+/// app can complete the operation.
+impl<T: 'static> Dispatch<WlDataSource, DndSourceData> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        source: &WlDataSource,
+        event: <WlDataSource as Proxy>::Event,
+        data: &DndSourceData,
+        _conn: &Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let origin = state.dnd_source_origin;
+        match event {
+            // The destination asked for the data for `mime_type` — write our
+            // pre-serialized blob to the fd. We must NOT close the fd here
+            // (wayland-client owns it and closes it after this callback).
+            wl_data_source::Event::Send { mime_type, fd } => {
+                if let Some(idx) = data.mime_types.iter().position(|m| m == &mime_type) {
+                    if let Some(blob) = data.data.get(idx) {
+                        let mut file = unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) };
+                        let _ = std::io::Write::write_all(&mut file, blob);
+                        std::mem::forget(file);
+                    }
+                }
+            }
+            wl_data_source::Event::Cancelled => {
+                state
+                    .message
+                    .push((origin, DispatchMessageInner::DndSourceCancelled));
+                source.destroy();
+                state.dnd_source_origin = None;
+            }
+            wl_data_source::Event::DndDropPerformed => {
+                state
+                    .message
+                    .push((origin, DispatchMessageInner::DndSourceDropPerformed));
+            }
+            wl_data_source::Event::DndFinished => {
+                state
+                    .message
+                    .push((origin, DispatchMessageInner::DndSourceFinished));
+                source.destroy();
+                state.dnd_source_origin = None;
+            }
+            wl_data_source::Event::Action { dnd_action } => {
+                let bits = match dnd_action {
+                    WEnum::Value(a) => a.bits(),
+                    _ => 0,
+                };
+                state
+                    .message
+                    .push((origin, DispatchMessageInner::DndSourceAction(bits)));
+            }
+            _ => {}
         }
     }
 }
@@ -6400,10 +6530,7 @@ impl<T: 'static> WindowState<T> {
         let globals = self.globals.take().unwrap();
         let mut event_queue_origin = self.event_queue.take().unwrap();
         let qh = event_queue_origin.handle();
-        #[cfg(feature = "screencopy")]
-        {
-            self.queue_handle = Some(qh.clone());
-        }
+        self.queue_handle = Some(qh.clone());
         let wmcompositer = self.wl_compositor.take().unwrap();
         let shm = self.shm.take().unwrap();
         #[cfg(feature = "screencopy")]
