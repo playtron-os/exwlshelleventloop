@@ -4165,36 +4165,34 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                     state
                         .message
                         .push((surface_id, DispatchMessageInner::DndDrop));
-                    if dnd.has_uri_list {
-                        // Receive over a socketpair: hand the compositor one end,
-                        // read the payload off the other. A socketpair avoids a
-                        // pipe dependency and gives EOF once the compositor closes
-                        // its end. Flush first so the compositor sees `receive`,
-                        // then drop our write end so the read terminates.
+                    // Self-drop: don't block-read our own uri-list (our source's
+                    // Send runs on this thread). finish() completes it; the drop
+                    // position comes from DndDrop + the last DndMotion.
+                    let is_self_drop = state.dnd_source_origin.is_some();
+                    if dnd.has_uri_list && is_self_drop {
+                        if dnd.offer.version() >= 3 {
+                            dnd.offer.finish();
+                        }
+                        state
+                            .message
+                            .push((surface_id, DispatchMessageInner::DndLeft));
+                    } else if dnd.has_uri_list {
+                        // External drag: read the uri-list off a socketpair and emit
+                        // FileDropped. A cooperating source writes immediately; the
+                        // short timeout only guards a misbehaving one.
                         if let Ok((mut reader, writer)) = std::os::unix::net::UnixStream::pair() {
                             dnd.offer.receive(URI_LIST_MIME.to_string(), writer.as_fd());
                             let _ = conn.flush();
                             drop(writer);
-                            // Safety net: never block the event loop indefinitely
-                            // on a misbehaving source.
-                            let _ =
-                                reader.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+                            let _ = reader
+                                .set_read_timeout(Some(std::time::Duration::from_millis(250)));
                             use std::io::Read;
                             let mut buf = Vec::new();
                             let _ = reader.read_to_end(&mut buf);
                             if dnd.offer.version() >= 3 {
                                 dnd.offer.finish();
                             }
-                            let paths = parse_uri_list(&buf);
-                            log::info!(
-                                target: "kcopy_dnd",
-                                "received {} bytes, {} paths: {paths:?}\n  raw(escaped)={:?}\n  hex={}",
-                                buf.len(),
-                                paths.len(),
-                                String::from_utf8_lossy(&buf),
-                                buf.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
-                            );
-                            for path in paths {
+                            for path in parse_uri_list(&buf) {
                                 state
                                     .message
                                     .push((surface_id, DispatchMessageInner::FileDropped(path)));
