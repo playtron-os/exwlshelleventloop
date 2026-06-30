@@ -905,6 +905,35 @@ struct DndSourceData {
     data: Vec<Vec<u8>>,
 }
 
+/// Pre-multiplied ARGB (`Argb8888`, little-endian) pixels for an outgoing drag
+/// icon, with size and buffer scale.
+pub struct DndIconPixels {
+    pub width: u32,
+    pub height: u32,
+    pub scale: i32,
+    pub argb: Vec<u8>,
+}
+
+/// Live wl_surface + SHM buffer backing an outgoing drag icon. Kept alive for
+/// the duration of the drag and destroyed (surface first) when it ends.
+#[derive(Debug)]
+struct DndIconResources {
+    surface: WlSurface,
+    buffer: WlBuffer,
+    pool: WlShmPool,
+    _file: std::fs::File,
+    width: i32,
+    height: i32,
+}
+
+impl DndIconResources {
+    fn destroy(self) {
+        self.surface.destroy();
+        self.buffer.destroy();
+        self.pool.destroy();
+    }
+}
+
 /// main state, store the main information
 #[derive(Debug)]
 pub struct WindowState<T> {
@@ -949,6 +978,12 @@ pub struct WindowState<T> {
     dnd_source_origin: Option<id::Id>,
     /// Serial of the most recent pointer button press (required by `start_drag`).
     last_button_serial: Option<u32>,
+    /// Live drag-icon resources, kept alive for the duration of an outgoing drag.
+    dnd_icon: Option<DndIconResources>,
+    /// Compositor + shm cached at loop start (the originals are taken by the loop)
+    /// so `start_drag` can build the drag-icon surface.
+    cached_compositor: Option<WlCompositor>,
+    cached_shm: Option<WlShm>,
 
     // states
     namespace: String,
@@ -2256,8 +2291,14 @@ impl<T: 'static> WindowState<T> {
     /// the given DnD action `bits`. No custom drag icon for now — the compositor
     /// renders its default. Source-side completion events route back to that
     /// surface so the app can finish the operation.
-    pub fn start_drag(&mut self, mime_types: Vec<String>, actions: u32, data: Vec<Vec<u8>>)
-    where
+    pub fn start_drag(
+        &mut self,
+        mime_types: Vec<String>,
+        actions: u32,
+        data: Vec<Vec<u8>>,
+        icon: Option<DndIconPixels>,
+        hotspot: Option<(i32, i32)>,
+    ) where
         T: 'static,
     {
         let Some(surface) = self.current_surface.clone() else {
@@ -2298,8 +2339,88 @@ impl<T: 'static> WindowState<T> {
             source.set_actions(DndAction::from_bits_truncate(actions));
         }
         self.dnd_source_origin = self.current_surface_id();
-        log::info!(target: "kcopy_dnd", "start_drag mimes={mime_types:?} serial={serial}");
-        device.start_drag(Some(&source), &surface, None, serial);
+        let icon_surface = icon.and_then(|i| self.build_dnd_icon(i));
+        log::info!(target: "kcopy_dnd", "start_drag mimes={mime_types:?} serial={serial} icon={}", icon_surface.is_some());
+        device.start_drag(Some(&source), &surface, icon_surface.as_ref(), serial);
+
+        // Apply the icon hotspot now that the dnd_icon role is assigned: re-commit
+        // the icon surface with a buffer offset so the grabbed point of the icon
+        // stays under the cursor (the compositor renders the icon at
+        // `cursor + offset`). Done post-`start_drag` because the offset is only
+        // recorded from commits made after the surface has the dnd_icon role.
+        if let (Some((hx, hy)), Some(res)) = (hotspot, self.dnd_icon.as_ref()) {
+            if hx != 0 || hy != 0 {
+                if res.surface.version() >= 5 {
+                    res.surface.attach(Some(&res.buffer), 0, 0);
+                    res.surface.offset(-hx, -hy);
+                } else {
+                    res.surface.attach(Some(&res.buffer), -hx, -hy);
+                }
+                res.surface.damage_buffer(0, 0, res.width, res.height);
+                res.surface.commit();
+            }
+        }
+    }
+
+    /// Build the drag-icon `wl_surface` from pre-multiplied ARGB pixels, keeping
+    /// its buffer/pool/file alive in `self.dnd_icon` for the drag's duration.
+    fn build_dnd_icon(&mut self, icon: DndIconPixels) -> Option<WlSurface>
+    where
+        T: 'static,
+    {
+        use std::io::Write;
+        use std::os::fd::AsFd;
+        let DndIconPixels {
+            width,
+            height,
+            scale,
+            argb,
+        } = icon;
+        let expected = (width * height * 4) as usize;
+        if width == 0 || height == 0 || argb.len() < expected {
+            return None;
+        }
+        let qh = self.queue_handle.as_ref()?.clone();
+        let compositor = self.cached_compositor.clone()?;
+        let shm = self.cached_shm.clone()?;
+
+        let mut file = tempfile::tempfile().ok()?;
+        file.write_all(&argb[..expected]).ok()?;
+        let pool = shm.create_pool(file.as_fd(), expected as i32, &qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            (width * 4) as i32,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+            &qh,
+            (),
+        );
+        let surface = compositor.create_surface(&qh, ());
+        if scale > 1 {
+            surface.set_buffer_scale(scale);
+        }
+        // Attach at the origin. The hotspot offset is applied *after*
+        // `start_drag` assigns the dnd_icon role — the compositor only records the
+        // icon offset from commits made once the surface has that role, so an
+        // offset committed here (pre-role) would be ignored.
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+
+        if let Some(old) = self.dnd_icon.take() {
+            old.destroy();
+        }
+        let surface_clone = surface.clone();
+        self.dnd_icon = Some(DndIconResources {
+            surface,
+            buffer,
+            pool,
+            _file: file,
+            width: width as i32,
+            height: height as i32,
+        });
+        Some(surface_clone)
     }
 
     /// Returns `true` when every live surface unit is currently hidden via the
@@ -3138,6 +3259,9 @@ impl<T> Default for WindowState<T> {
             dnd_current: None,
             dnd_source_origin: None,
             last_button_serial: None,
+            dnd_icon: None,
+            cached_compositor: None,
+            cached_shm: None,
 
             namespace: "".to_owned(),
             keyboard_interactivity: zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
@@ -4209,11 +4333,9 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
             // A clipboard selection offer — we don't read the clipboard through
             // this device (iced uses its own), so release it to avoid leaking the
             // offer object.
-            wl_data_device::Event::Selection { id } => {
-                if let Some(offer) = id {
-                    state.dnd_offer_mimes.remove(&offer.id());
-                    offer.destroy();
-                }
+            wl_data_device::Event::Selection { id: Some(offer) } => {
+                state.dnd_offer_mimes.remove(&offer.id());
+                offer.destroy();
             }
             _ => {}
         }
@@ -4266,12 +4388,12 @@ impl<T: 'static> Dispatch<WlDataSource, DndSourceData> for WindowState<T> {
             // pre-serialized blob to the fd. We must NOT close the fd here
             // (wayland-client owns it and closes it after this callback).
             wl_data_source::Event::Send { mime_type, fd } => {
-                if let Some(idx) = data.mime_types.iter().position(|m| m == &mime_type) {
-                    if let Some(blob) = data.data.get(idx) {
-                        let mut file = unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) };
-                        let _ = std::io::Write::write_all(&mut file, blob);
-                        std::mem::forget(file);
-                    }
+                if let Some(idx) = data.mime_types.iter().position(|m| m == &mime_type)
+                    && let Some(blob) = data.data.get(idx)
+                {
+                    let mut file = unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) };
+                    let _ = std::io::Write::write_all(&mut file, blob);
+                    std::mem::forget(file);
                 }
             }
             wl_data_source::Event::Cancelled => {
@@ -4280,6 +4402,9 @@ impl<T: 'static> Dispatch<WlDataSource, DndSourceData> for WindowState<T> {
                     .push((origin, DispatchMessageInner::DndSourceCancelled));
                 source.destroy();
                 state.dnd_source_origin = None;
+                if let Some(icon) = state.dnd_icon.take() {
+                    icon.destroy();
+                }
             }
             wl_data_source::Event::DndDropPerformed => {
                 state
@@ -4292,6 +4417,9 @@ impl<T: 'static> Dispatch<WlDataSource, DndSourceData> for WindowState<T> {
                     .push((origin, DispatchMessageInner::DndSourceFinished));
                 source.destroy();
                 state.dnd_source_origin = None;
+                if let Some(icon) = state.dnd_icon.take() {
+                    icon.destroy();
+                }
             }
             wl_data_source::Event::Action { dnd_action } => {
                 let bits = match dnd_action {
@@ -6531,6 +6659,8 @@ impl<T: 'static> WindowState<T> {
         self.queue_handle = Some(qh.clone());
         let wmcompositer = self.wl_compositor.take().unwrap();
         let shm = self.shm.take().unwrap();
+        self.cached_compositor = Some(wmcompositer.clone());
+        self.cached_shm = Some(shm.clone());
         #[cfg(feature = "screencopy")]
         {
             self.screencopy_shm = Some(shm.clone());

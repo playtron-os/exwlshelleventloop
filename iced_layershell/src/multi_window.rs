@@ -1061,6 +1061,7 @@ where
             true,
             &mut self.clipboard,
             &mut self.iced_events,
+            Some(&mut *compositor),
         );
 
         window.draw_preedit();
@@ -1930,6 +1931,7 @@ where
                 false,
                 &mut self.clipboard,
                 &mut self.iced_events,
+                self.compositor.as_mut(),
             ) {
                 rebuilds.push((iced_id, window));
             }
@@ -1999,12 +2001,22 @@ where
         update_ime: bool,
         clipboard: &mut LayerShellClipboard,
         iced_events: &mut Vec<(IcedId, IcedEvent)>,
+        mut compositor: Option<&mut C>,
     ) -> bool {
         match ui_state {
             user_interface::State::Outdated {
-                clipboard: clipboard_requests,
+                clipboard: mut clipboard_requests,
                 ..
             } => {
+                if let Some(c) = compositor.as_deref_mut() {
+                    resolve_dnd_icon_elements::<P, C>(
+                        &mut clipboard_requests,
+                        c,
+                        window.state.viewport(),
+                        window.state.theme(),
+                        window.state.text_color(),
+                    );
+                }
                 // Process clipboard requests even when rebuilding
                 run_clipboard(
                     ev,
@@ -2023,9 +2035,18 @@ where
                 redraw_request,
                 input_method,
                 mouse_interaction,
-                clipboard: clipboard_requests,
+                clipboard: mut clipboard_requests,
                 ..
             } => {
+                if let Some(c) = compositor.as_deref_mut() {
+                    resolve_dnd_icon_elements::<P, C>(
+                        &mut clipboard_requests,
+                        c,
+                        window.state.viewport(),
+                        window.state.theme(),
+                        window.state.text_color(),
+                    );
+                }
                 // Process clipboard requests from widgets
                 run_clipboard(
                     ev,
@@ -2226,11 +2247,115 @@ fn run_clipboard(
             mime_types,
             actions,
             data,
+            icon,
+            hotspot,
             ..
         } = request
         {
-            ev.start_drag(mime_types, actions.bits(), data);
+            // Element icons are resolved to Pixels by `resolve_dnd_icon_elements`
+            // before this point; the pixels are pre-multiplied ARGB (== Argb8888),
+            // which layershellev wraps in an SHM drag-icon surface.
+            let icon = match icon {
+                Some(iced_core::dnd::DndIcon::Pixels {
+                    width,
+                    height,
+                    pixels,
+                    scale,
+                }) => Some(layershellev::DndIconPixels {
+                    width,
+                    height,
+                    scale,
+                    argb: pixels,
+                }),
+                _ => None,
+            };
+            ev.start_drag(mime_types, actions.bits(), data, icon, hotspot);
         }
+    }
+}
+
+/// Render any `DndIcon::Element` in the pending drag requests to pre-multiplied
+/// ARGB pixels (offscreen, via the compositor), mirroring iced_winit. After this,
+/// `run_clipboard` only sees `DndIcon::Pixels`.
+fn resolve_dnd_icon_elements<P, C>(
+    clipboard_requests: &mut iced_core::Clipboard,
+    compositor: &mut C,
+    viewport: &iced_graphics::Viewport,
+    theme: &P::Theme,
+    text_color: iced_core::Color,
+) where
+    P: IcedProgram + 'static,
+    C: Compositor<Renderer = P::Renderer>,
+    P::Renderer: 'static,
+{
+    for req in &mut clipboard_requests.dnd_requests {
+        let iced_core::dnd::Request::StartDrag { icon, .. } = req else {
+            continue;
+        };
+        if !matches!(icon, Some(iced_core::dnd::DndIcon::Element(_))) {
+            continue;
+        }
+        let Some(iced_core::dnd::DndIcon::Element(elem_icon)) = icon.take() else {
+            continue;
+        };
+        let Some((mut element, state)) = elem_icon.downcast::<P::Theme, P::Renderer>() else {
+            continue;
+        };
+
+        let mut icon_renderer = compositor.create_renderer();
+        let icon_scale = viewport.scale_factor().max(2.0);
+        let lim = iced_core::layout::Limits::new(
+            iced_core::Size::new(1.0, 1.0),
+            iced_core::Size::new(
+                viewport.physical_width() as f32,
+                viewport.physical_height() as f32,
+            ),
+        );
+        let mut tree = iced_core::widget::Tree {
+            tag: element.as_widget().tag(),
+            state,
+            children: element.as_widget().children(),
+        };
+        let layout_node = element
+            .as_widget_mut()
+            .layout(&mut tree, &icon_renderer, &lim);
+        let size = lim.resolve(
+            iced_core::Length::Shrink,
+            iced_core::Length::Shrink,
+            layout_node.size(),
+        );
+        let physical = iced_core::Size::new(
+            (size.width * icon_scale).ceil() as u32,
+            (size.height * icon_scale).ceil() as u32,
+        );
+        let icon_viewport = iced_graphics::Viewport::with_physical_size(physical, icon_scale);
+        let mut ui = user_interface::UserInterface::build(
+            element,
+            size,
+            user_interface::Cache::default(),
+            &mut icon_renderer,
+        );
+        ui.draw(
+            &mut icon_renderer,
+            theme,
+            &iced_core::renderer::Style { text_color },
+            iced_core::mouse::Cursor::Unavailable,
+        );
+        let mut bytes = compositor.screenshot(
+            &mut icon_renderer,
+            &icon_viewport,
+            iced_core::Color::TRANSPARENT,
+        );
+        // RGBA -> pre-multiplied ARGB (Argb8888 byte order).
+        for pix in bytes.chunks_exact_mut(4) {
+            pix.swap(0, 2);
+        }
+        *icon = Some(iced_core::dnd::DndIcon::Pixels {
+            width: icon_viewport.physical_width(),
+            height: icon_viewport.physical_height(),
+            pixels: bytes,
+            scale: icon_scale.ceil() as i32,
+        });
     }
 }
 
