@@ -4239,7 +4239,7 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                     };
                     offer.accept(serial, accept_mime);
                     if offer.version() >= 3 {
-                        offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Copy);
+                        offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Move);
                     }
                     state.message.push((
                         surface_id,
