@@ -690,19 +690,54 @@ impl From<&DispatchMessage> for WindowEvent {
                 horizontal,
                 vertical,
                 scale,
+                source,
                 ..
             } => {
+                use layershellev::reexport::wayland_client::wl_pointer::AxisSource;
+                // Classify by the axis *source*, not by per-frame `discrete`
+                // presence: a wheel is a discrete device (→ logical lines, which
+                // apps animate smoothly), a touchpad is continuous (→ physical
+                // pixel deltas). The compositor can drop `axis_discrete` on some
+                // wheel notches (e.g. under a reduced scroll-speed setting), so
+                // keying on it per-frame makes wheel scrolling flip between lines
+                // and pixels and hiccup.
+                let is_touchpad = matches!(
+                    source,
+                    Some(AxisSource::Finger) | Some(AxisSource::Continuous)
+                );
                 if horizontal.stop && vertical.stop {
                     WindowEvent::ScrollStop
-                } else if vertical.discrete != 0 || horizontal.discrete != 0 {
-                    WindowEvent::Axis {
-                        x: (-horizontal.discrete as f64 * scale) as f32,
-                        y: (-vertical.discrete as f64 * scale) as f32,
-                    }
-                } else {
+                } else if is_touchpad {
+                    // Physical pixel deltas — scale to physical pixels.
                     WindowEvent::PixelDelta {
                         x: (-horizontal.absolute * scale) as f32,
                         y: (-vertical.absolute * scale) as f32,
+                    }
+                } else {
+                    // Wheel (or unknown source): logical "lines", scale-independent
+                    // like winit. Derive the amount from the compositor's
+                    // *continuous* magnitude rather than the discrete count, so the
+                    // OS scroll-speed setting — which the compositor bakes into that
+                    // value — flows through automatically. Normalize against the
+                    // per-notch value at 100% speed so one default notch == 1.0 line
+                    // (matching winit's discrete count and the browser-like default),
+                    // and the setting scales it (e.g. 75% → 0.75 line). Using the
+                    // continuous value also keeps every frame of a gesture consistent
+                    // (the per-frame `discrete` is unreliable under a reduced setting).
+                    const NOTCH_PIXELS: f64 = 15.0;
+                    let line = |discrete: i32, absolute: f64| -> f32 {
+                        if absolute != 0.0 {
+                            (-absolute / NOTCH_PIXELS) as f32
+                        } else if discrete != 0 {
+                            // Rare: a discrete step with no continuous sample.
+                            -discrete as f32
+                        } else {
+                            0.0
+                        }
+                    };
+                    WindowEvent::Axis {
+                        x: line(horizontal.discrete, horizontal.absolute),
+                        y: line(vertical.discrete, vertical.absolute),
                     }
                 }
             }

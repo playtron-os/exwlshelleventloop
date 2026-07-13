@@ -936,12 +936,39 @@ impl DndIconResources {
 
 /// main state, store the main information
 #[derive(Debug)]
+/// Accumulator for one `wl_pointer` axis frame. On v5+ the axis, axis_discrete,
+/// axis_source and axis_stop sub-events arrive as separate events grouped by a
+/// `frame`. We combine them here and emit a single axis message on `frame`, so
+/// `discrete` and `absolute` land together — mirroring winit/SCTK, which lets a
+/// discrete wheel notch surface as a `LineDelta` instead of a continuous
+/// `PixelDelta`. (The Wayland spec sends axis_discrete/value120 *before* the
+/// coupled axis event, so combining per-frame is the only order-safe approach.)
+#[derive(Default)]
+struct PendingAxisFrame {
+    /// Whether any scroll-bearing sub-event (axis / discrete / stop) accumulated.
+    active: bool,
+    surface_id: Option<id::Id>,
+    scale: f64,
+    time: u32,
+    horizontal: AxisScroll,
+    vertical: AxisScroll,
+}
+
 pub struct WindowState<T> {
     outputs: Vec<(u32, wl_output::WlOutput)>,
     current_surface: Option<WlSurface>,
     active_surfaces: HashMap<Option<i32>, (WlSurface, Option<id::Id>)>,
     units: Vec<WindowStateUnit<T>>,
     message: Vec<(Option<id::Id>, DispatchMessageInner)>,
+    /// In-progress pointer axis frame, flushed on `wl_pointer::Event::Frame`.
+    pending_axis: PendingAxisFrame,
+    /// Axis source (wheel vs touchpad) of the current scroll sequence. The
+    /// compositor sends `axis_source` only once per sequence, so it is persisted
+    /// across frames and used to classify every frame's scroll as discrete
+    /// (wheel → lines) or continuous (touchpad → pixels) — the per-frame
+    /// presence of `axis_discrete` is not reliable (e.g. under a reduced
+    /// scroll-speed setting the compositor drops it on some notches).
+    scroll_axis_source: Option<wl_pointer::AxisSource>,
 
     connection: Option<Connection>,
     event_queue: Option<EventQueue<WindowState<T>>>,
@@ -3233,6 +3260,8 @@ impl<T> Default for WindowState<T> {
             active_surfaces: HashMap::new(),
             units: Vec::new(),
             message: Vec::new(),
+            pending_axis: PendingAxisFrame::default(),
+            scroll_axis_source: None,
 
             background_surface: None,
             display: None,
@@ -3907,29 +3936,20 @@ impl<T> Dispatch<wl_pointer::WlPointer, ()> for WindowState<T> {
             .map(|unit| unit.scale_float())
             .unwrap_or(1.0);
         match event {
+            // Axis sub-events accumulate into the current frame and are emitted
+            // together on `wl_pointer::Event::Frame` (see PendingAxisFrame).
             wl_pointer::Event::Axis { time, axis, value } => match axis {
                 WEnum::Value(axis) => {
-                    let (mut horizontal, mut vertical) = <(AxisScroll, AxisScroll)>::default();
+                    let pending = &mut state.pending_axis;
+                    pending.active = true;
+                    pending.surface_id = surface_id;
+                    pending.scale = scale;
+                    pending.time = time;
                     match axis {
-                        wl_pointer::Axis::VerticalScroll => {
-                            vertical.absolute = value;
-                        }
-                        wl_pointer::Axis::HorizontalScroll => {
-                            horizontal.absolute = value;
-                        }
+                        wl_pointer::Axis::VerticalScroll => pending.vertical.absolute += value,
+                        wl_pointer::Axis::HorizontalScroll => pending.horizontal.absolute += value,
                         _ => unreachable!(),
-                    };
-
-                    state.message.push((
-                        surface_id,
-                        DispatchMessageInner::Axis {
-                            time,
-                            scale,
-                            horizontal,
-                            vertical,
-                            source: None,
-                        },
-                    ))
+                    }
                 }
                 WEnum::Unknown(unknown) => {
                     log::warn!(target: "layershellev", "{}: invalid pointer axis: {:x}", pointer.id(), unknown);
@@ -3937,76 +3957,64 @@ impl<T> Dispatch<wl_pointer::WlPointer, ()> for WindowState<T> {
             },
             wl_pointer::Event::AxisStop { time, axis } => match axis {
                 WEnum::Value(axis) => {
-                    let (mut horizontal, mut vertical) = <(AxisScroll, AxisScroll)>::default();
+                    let pending = &mut state.pending_axis;
+                    pending.active = true;
+                    pending.surface_id = surface_id;
+                    pending.scale = scale;
+                    pending.time = time;
                     match axis {
-                        wl_pointer::Axis::VerticalScroll => vertical.stop = true,
-                        wl_pointer::Axis::HorizontalScroll => horizontal.stop = true,
-
+                        wl_pointer::Axis::VerticalScroll => pending.vertical.stop = true,
+                        wl_pointer::Axis::HorizontalScroll => pending.horizontal.stop = true,
                         _ => unreachable!(),
                     }
-
-                    state.message.push((
-                        surface_id,
-                        DispatchMessageInner::Axis {
-                            time,
-                            scale,
-                            horizontal,
-                            vertical,
-                            source: None,
-                        },
-                    ));
                 }
-
                 WEnum::Unknown(unknown) => {
                     log::warn!(target: "layershellev", "{}: invalid pointer axis: {:x}", pointer.id(), unknown);
                 }
             },
             wl_pointer::Event::AxisSource { axis_source } => match axis_source {
-                WEnum::Value(source) => state.message.push((
-                    surface_id,
-                    DispatchMessageInner::Axis {
-                        horizontal: AxisScroll::default(),
-                        vertical: AxisScroll::default(),
-                        scale,
-                        source: Some(source),
-                        time: 0,
-                    },
-                )),
+                WEnum::Value(source) => {
+                    // Persist across frames: sent once per scroll sequence, but
+                    // every frame needs to know wheel vs touchpad.
+                    state.scroll_axis_source = Some(source);
+                }
                 WEnum::Unknown(unknown) => {
                     log::warn!(target: "layershellev", "unknown pointer axis source: {unknown:x}");
                 }
             },
             wl_pointer::Event::AxisDiscrete { axis, discrete } => match axis {
                 WEnum::Value(axis) => {
-                    let (mut horizontal, mut vertical) = <(AxisScroll, AxisScroll)>::default();
+                    let pending = &mut state.pending_axis;
+                    pending.active = true;
+                    pending.surface_id = surface_id;
+                    pending.scale = scale;
                     match axis {
-                        wl_pointer::Axis::VerticalScroll => {
-                            vertical.discrete = discrete;
-                        }
-
+                        wl_pointer::Axis::VerticalScroll => pending.vertical.discrete += discrete,
                         wl_pointer::Axis::HorizontalScroll => {
-                            horizontal.discrete = discrete;
+                            pending.horizontal.discrete += discrete
                         }
-
                         _ => unreachable!(),
-                    };
-
-                    state.message.push((
-                        surface_id,
-                        DispatchMessageInner::Axis {
-                            time: 0,
-                            scale,
-                            horizontal,
-                            vertical,
-                            source: None,
-                        },
-                    ));
+                    }
                 }
-
                 WEnum::Unknown(unknown) => {
                     log::warn!(target: "layershellev", "{}: invalid pointer axis: {:x}", pointer.id(), unknown);
                 }
             },
+            wl_pointer::Event::Frame => {
+                let pending = std::mem::take(&mut state.pending_axis);
+                if pending.active {
+                    state.message.push((
+                        pending.surface_id,
+                        DispatchMessageInner::Axis {
+                            time: pending.time,
+                            scale: pending.scale,
+                            horizontal: pending.horizontal,
+                            vertical: pending.vertical,
+                            source: state.scroll_axis_source,
+                        },
+                    ));
+                }
+            }
             wl_pointer::Event::Button {
                 state: btnstate,
                 serial,
@@ -5945,7 +5953,12 @@ impl<T: 'static> WindowState<T> {
 
         let shm = globals.bind::<WlShm, _, _>(&qh, 1..=1, ())?;
         self.shm = Some(shm);
-        self.seat = Some(globals.bind::<WlSeat, _, _>(&qh, 1..=1, ())?);
+        // Bind wl_seat up to v7 (like winit/SCTK). v5+ delivers axis_source,
+        // axis_stop, axis_discrete and `frame` grouping — without which a mouse
+        // wheel only produces the legacy continuous `axis` event and is
+        // misclassified as a touchpad-style PixelDelta instead of a LineDelta.
+        let seat = globals.bind::<WlSeat, _, _>(&qh, 1..=7, ())?;
+        self.seat = Some(seat);
 
         // Drag-and-drop (receive only): bind the data device manager and get a
         // data device for the seat, so the compositor delivers DnD offers from
