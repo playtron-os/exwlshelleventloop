@@ -4266,7 +4266,7 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                     };
                     offer.accept(serial, accept_mime);
                     if offer.version() >= 3 {
-                        offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Move);
+                        offer.set_actions(DndAction::Copy, DndAction::Copy);
                     }
                     state.message.push((
                         surface_id,
