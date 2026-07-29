@@ -68,3 +68,36 @@ where
         // No events for blur objects
     }
 }
+
+/// Encode per-rect corner radii for `set_region_radii` (blur v4): four
+/// native-endian `u32`s per rect — top-left, top-right, bottom-right,
+/// bottom-left — in the same order the rects were added to the region.
+pub fn encode_region_radii(radii: &[[u32; 4]]) -> Vec<u8> {
+    radii
+        .iter()
+        .flat_map(|corners| corners.iter().flat_map(|r| r.to_ne_bytes()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_region_radii;
+
+    #[test]
+    fn encodes_four_native_endian_u32_per_rect() {
+        let bytes = encode_region_radii(&[[16, 16, 16, 16], [1, 2, 3, 4]]);
+        // The compositor reads this back in 16-byte chunks, so the length must be
+        // exactly 4 u32 per rect or every later rect's radii shift.
+        assert_eq!(bytes.len(), 2 * 4 * 4);
+        let round_trip: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        assert_eq!(round_trip, vec![16, 16, 16, 16, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn no_radii_encodes_to_an_empty_array() {
+        assert!(encode_region_radii(&[]).is_empty());
+    }
+}

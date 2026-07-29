@@ -185,7 +185,17 @@ pub enum LayershellCustomAction {
     /// Set a specific blur region for the surface. The callback receives a `WlRegion`
     /// to which the caller adds rectangles defining where blur should be applied.
     /// To clear blur, add no rectangles.
-    SetBlurRegion(ActionCallback),
+    ///
+    /// `radii` rounds each rectangle individually — `[top-left, top-right,
+    /// bottom-right, bottom-left]` in logical px, in the SAME order the callback
+    /// adds the rectangles — so one surface can back a pill and smaller-radius
+    /// cards with correctly shaped backdrops. Empty leaves every rectangle on the
+    /// surface's single corner radius, as does any rectangle past the end of the
+    /// list. Requires blur protocol v4; older compositors ignore the radii.
+    SetBlurRegion {
+        callback: ActionCallback,
+        radii: Vec<[u32; 4]>,
+    },
     NewPopUp {
         settings: IcedNewPopupSettings,
         id: IcedId,

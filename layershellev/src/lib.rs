@@ -1957,7 +1957,7 @@ impl<T: 'static> WindowState<T> {
                 self.blur_manager = globals
                     .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                         &unit.qh,
-                        1..=3,
+                        1..=4,
                         (),
                     )
                     .ok();
@@ -2035,11 +2035,20 @@ impl<T: 'static> WindowState<T> {
     /// to which the caller adds rectangles. If no rectangles are added, blur is
     /// disabled for the surface.
     ///
+    /// `radii` gives each rectangle its own corner radii — `[top-left, top-right,
+    /// bottom-right, bottom-left]` in logical px — in the same order the callback
+    /// adds the rectangles, so a surface can round each backdrop to the shape it
+    /// draws there (a pill next to smaller-radius cards). Pass `&[]` to leave every
+    /// rectangle on the compositor's single radius. Rectangles past the end of
+    /// `radii` fall back the same way. Needs blur protocol v4; on an older
+    /// compositor the radii are dropped (with a warning) and the region still applies.
+    ///
     /// This creates/replaces the blur object each time to update the region.
     pub fn set_blur_region_for_surface<F>(
         &mut self,
         surface: &WlSurface,
         region: &WlRegion,
+        radii: &[[u32; 4]],
         set_region: F,
     ) where
         F: FnOnce(&WlRegion),
@@ -2054,7 +2063,7 @@ impl<T: 'static> WindowState<T> {
             self.blur_manager = globals
                 .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                     &unit.qh,
-                    1..=3,
+                    1..=4,
                     (),
                 )
                 .ok();
@@ -2097,6 +2106,16 @@ impl<T: 'static> WindowState<T> {
             surface_id
         );
         blur_obj.set_region(Some(region));
+        if !radii.is_empty() {
+            if blur_obj.version() >= 4 {
+                blur_obj.set_region_radii(blur::encode_region_radii(radii));
+            } else {
+                log::warn!(
+                    "Per-region blur radii requested but compositor only supports blur protocol v{}, ignoring",
+                    blur_obj.version()
+                );
+            }
+        }
         blur_obj.commit();
         self.blur_surfaces.insert(surface_id, blur_obj);
         surface.commit();
@@ -6012,7 +6031,7 @@ impl<T: 'static> WindowState<T> {
         // Always try to bind blur manager for dynamic blur support
         // (allows requesting blur on any surface, like popups, even if main window doesn't have blur)
         self.blur_manager = globals
-            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=3, ())
+            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=4, ())
             .ok();
         if self.blur_manager.is_some() {
             log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
@@ -7130,7 +7149,7 @@ impl<T: 'static> WindowState<T> {
                                             window_state.blur_manager = globals
                                                 .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                                                     &qh,
-                                                    1..=3,
+                                                    1..=4,
                                                     (),
                                                 )
                                                 .ok();

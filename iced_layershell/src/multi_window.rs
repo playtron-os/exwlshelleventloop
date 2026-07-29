@@ -1508,9 +1508,9 @@ where
                 };
                 ev.set_blur_for_surface_with_params(&surface, radius, saturation, tint, border);
             }
-            LayershellCustomAction::SetBlurRegion(set_region) => {
+            LayershellCustomAction::SetBlurRegion { callback, radii } => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
-                let set_region = set_region.0;
+                let set_region = callback.0;
                 let Some(region) = &self.wl_blur_region else {
                     tracing::warn!(
                         "wl_blur_region is not set, ignore SetBlurRegion, window_id: {:?}",
@@ -1537,7 +1537,7 @@ where
                     ?iced_id,
                     "SetBlurRegion: calling set_blur_region_for_surface (creates new blur obj, calls set_region + commit)"
                 );
-                ev.set_blur_region_for_surface(&surface, region, |r| set_region(r));
+                ev.set_blur_region_for_surface(&surface, region, &radii, |r| set_region(r));
                 tracing::info!(?iced_id, "SetBlurRegion: done");
             }
             LayershellCustomAction::ShadowChange(enabled) => {
