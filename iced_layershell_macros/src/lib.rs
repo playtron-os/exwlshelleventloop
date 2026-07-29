@@ -47,6 +47,9 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SizeChange{id: iced_layershell::reexport::IcedId, size: (u32, u32)},
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange{id: iced_layershell::reexport::IcedId, radii: Option<[u32; 4]>},
+                /// Ask the compositor for keyboard focus on this surface. One-shot
+                /// and advisory; a layer surface otherwise only gets focus on a click.
+                RequestFocus{id: iced_layershell::reexport::IcedId},
                 /// Position the surface vertically within its output's usable area:
                 /// top edge at `usable_top + round(fraction * usable_height) + offset`,
                 /// clamped to at least `min_margin` below the usable top. Maintained
@@ -140,6 +143,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::MarginChange { id, margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange { id, size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange { id, radii } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::CornerRadiusChange(radii))),
+                            Self::RequestFocus { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RequestFocus)),
                             Self::SetVerticalPlacement { id, fraction, offset, min_margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetVerticalPlacement { fraction, offset, min_margin })),
                             Self::UnsetVerticalPlacement { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetVerticalPlacement)),
                             Self::SetMaxHeight { id, fraction, min_height } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetMaxHeight { fraction, min_height })),
@@ -187,6 +191,9 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SizeChange((u32, u32)),
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange(Option<[u32; 4]>),
+                /// Ask the compositor for keyboard focus on this surface. One-shot
+                /// and advisory; a layer surface otherwise only gets focus on a click.
+                RequestFocus,
                 /// Position the surface vertically within its output's usable area:
                 /// top edge at `usable_top + round(fraction * usable_height) + offset`,
                 /// clamped to at least `min_margin` below the usable top. Maintained
@@ -251,6 +258,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::MarginChange(margin) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange(size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange(radii) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::CornerRadiusChange(radii))),
+                            Self::RequestFocus => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::RequestFocus)),
                             Self::SetVerticalPlacement { fraction, offset, min_margin } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetVerticalPlacement { fraction, offset, min_margin })),
                             Self::UnsetVerticalPlacement => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetVerticalPlacement)),
                             Self::SetMaxHeight { fraction, min_height } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetMaxHeight { fraction, min_height })),

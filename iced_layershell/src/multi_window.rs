@@ -1437,6 +1437,14 @@ where
                 };
                 ev.set_corner_radius_for_surface(&surface, radii);
             }
+            LayershellCustomAction::RequestFocus => {
+                // Same borrow dance as above: drop the window borrow first.
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.request_focus_for_surface(&surface);
+            }
             LayershellCustomAction::SetVerticalPlacement {
                 fraction,
                 offset,

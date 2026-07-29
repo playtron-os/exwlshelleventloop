@@ -101,6 +101,15 @@ pub enum LayershellCustomAction {
     MarginChange((i32, i32, i32, i32)),
     SizeChange((u32, u32)),
     CornerRadiusChange(Option<[u32; 4]>),
+    /// Ask the compositor to give this surface keyboard focus.
+    ///
+    /// Widget-level focus (`operation::focus`) only moves iced's own caret; a
+    /// layer surface additionally needs keyboard focus from the compositor, which
+    /// it otherwise only gets from a pointer click. Use this when something other
+    /// than a click should start text entry — a file dropped on an input, say.
+    ///
+    /// One-shot and advisory: the compositor may refuse, and it is not a grab.
+    RequestFocus,
     /// Ask the compositor to position the surface vertically within its output's
     /// usable (non-exclusive) area — top edge at
     /// `usable_top + round(fraction * usable_height) + offset`, clamped to at

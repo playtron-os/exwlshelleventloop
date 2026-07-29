@@ -232,6 +232,10 @@ use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::ZwpTextInputManagerV3,
     zwp_text_input_v3::{self, ContentHint, ContentPurpose, ZwpTextInputV3},
 };
+use wayland_protocols::xdg::activation::v1::client::{
+    xdg_activation_token_v1::{self, XdgActivationTokenV1},
+    xdg_activation_v1::XdgActivationV1,
+};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
@@ -1096,6 +1100,10 @@ pub struct WindowState<T> {
     shadow: bool,
     /// Shadow manager (bound lazily when shadow is enabled)
     shadow_manager: Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
+    /// xdg-activation, used to ask the compositor for keyboard focus. A layer
+    /// surface has no other way to request it: the compositor only hands focus to
+    /// one on a pointer click, or when it is shown/made exclusive on Top/Overlay.
+    xdg_activation: Option<XdgActivationV1>,
     /// Shadow objects per surface (keyed by surface protocol ID)
     shadow_surfaces: HashMap<u32, shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1>,
     /// Keyboard-shortcuts-inhibit manager (bound lazily when first requested)
@@ -1756,6 +1764,39 @@ impl<T: 'static> WindowState<T> {
 
     /// Set corner radius for a specific surface
     /// radii: [top_left, top_right, bottom_right, bottom_left] or None to unset
+    /// Ask the compositor to give `surface` keyboard focus.
+    ///
+    /// A layer surface cannot otherwise be focused on demand: the compositor
+    /// hands it focus on a pointer click, or when it is shown / made exclusive on
+    /// the Top or Overlay layer — none of which covers "the user just dropped a
+    /// file on me and wants to type". xdg-activation is the standard way to ask,
+    /// and cosmic-comp routes an activation request for a layer surface straight
+    /// to `set_focus`.
+    ///
+    /// One-shot, and advisory: the compositor is free to refuse (focus-stealing
+    /// prevention, a lock screen, an exclusive surface elsewhere). It is not a
+    /// grab — focus moves away again normally.
+    pub fn request_focus_for_surface(&mut self, surface: &WlSurface) {
+        let Some(activation) = self.xdg_activation.clone() else {
+            log::debug!("xdg_activation_v1 unavailable — cannot request focus");
+            return;
+        };
+        let Some(unit) = self.units.first() else {
+            return;
+        };
+        let qh = unit.qh.clone();
+
+        // The token carries its target, so `Done` knows what to activate.
+        let token = activation.get_activation_token(&qh, surface.clone());
+        if let (Some(seat), Some(serial)) = (self.seat.as_ref(), self.enter_serial) {
+            // Lets the compositor judge the request against a real input event
+            // rather than treating it as an unsolicited focus steal.
+            token.set_serial(serial, seat);
+        }
+        token.set_surface(surface);
+        token.commit();
+    }
+
     pub fn set_corner_radius_for_surface(&mut self, surface: &WlSurface, radii: Option<[u32; 4]>) {
         let surface_id = surface.id().protocol_id();
 
@@ -3357,6 +3398,7 @@ impl<T> Default for WindowState<T> {
             layer_edge_resize_surfaces: HashMap::new(),
             shadow: false,
             shadow_manager: None,
+            xdg_activation: None,
             shadow_surfaces: HashMap::new(),
             keyboard_shortcuts_inhibit_manager: None,
             keyboard_shortcuts_inhibitors: HashMap::new(),
@@ -4953,6 +4995,29 @@ delegate_noop!(@<T> WindowState<T>: ignore ZxdgToplevelDecorationV1);
 
 // Blur protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager);
+// The activation manager itself has no events.
+delegate_noop!(@<T> WindowState<T>: ignore XdgActivationV1);
+
+/// The token's user data is the surface it was minted for, so `Done` can activate
+/// it without any side table.
+impl<T: 'static> Dispatch<XdgActivationTokenV1, WlSurface> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        proxy: &XdgActivationTokenV1,
+        event: <XdgActivationTokenV1 as Proxy>::Event,
+        surface: &WlSurface,
+        _conn: &Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            if let Some(activation) = state.xdg_activation.as_ref() {
+                activation.activate(token, surface);
+            }
+            // The token is spent either way.
+            proxy.destroy();
+        }
+    }
+}
 
 // Manual Dispatch impl for blur object since it has custom user data
 impl<T: 'static> Dispatch<blur::org_kde_kwin_blur::OrgKdeKwinBlur, blur::BlurData>
@@ -6027,6 +6092,14 @@ impl<T: 'static> WindowState<T> {
             .ok();
 
         self.text_input_manager = text_input_manager;
+
+        // Ask for xdg-activation so a layer surface can request keyboard focus.
+        // Optional: on a compositor without it, `request_focus_for_surface` is a
+        // no-op and the surface keeps waiting for a click.
+        self.xdg_activation = globals.bind::<XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
+        if self.xdg_activation.is_some() {
+            log::info!("Successfully bound xdg_activation_v1 for layer-surface focus requests");
+        }
 
         // Always try to bind blur manager for dynamic blur support
         // (allows requesting blur on any surface, like popups, even if main window doesn't have blur)
