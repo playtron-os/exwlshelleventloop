@@ -563,8 +563,18 @@ where
             {
                 let layout_span = iced_debug::layout(iced_id);
                 window.state.update_view_port(width, height, scale_float);
-                if let Some(ui) = self.user_interfaces.ui_mut(&iced_id) {
-                    ui.relayout(window.state.viewport().logical_size(), &mut window.renderer);
+                let logical_size = window.state.viewport().logical_size();
+                // A stale window is rebuilt at the new size, which lays it out
+                // already — relayout only what was live and still sized to the old
+                // viewport.
+                if self.user_interfaces.is_stale(&iced_id) {
+                    self.user_interfaces
+                        .ui_mut(&iced_id, &mut window.renderer, logical_size);
+                } else if let Some(ui) =
+                    self.user_interfaces
+                        .ui_mut(&iced_id, &mut window.renderer, logical_size)
+                {
+                    ui.relayout(logical_size, &mut window.renderer);
                 }
                 layout_span.finish();
                 events.push(IcedEvent::Window(IcedWindowEvent::Resized(
@@ -635,9 +645,10 @@ where
             .as_mut()
             .expect("The compositor should have been created");
 
+        let logical_size = window.state.viewport().logical_size();
         let mut ui = self
             .user_interfaces
-            .ui_mut(&iced_id)
+            .ui_mut(&iced_id, &mut window.renderer, logical_size)
             .expect("Get User interface");
 
         let cursor = if ev.is_mouse_surface(layer_shell_window.id()) {
@@ -1900,7 +1911,6 @@ where
 
         let mut rebuilds = Vec::new();
         for (iced_id, window) in self.window_manager.iter_mut() {
-            let interact_span = iced_debug::interact(iced_id);
             let mut window_events = vec![];
 
             self.iced_events.retain(|(window_id, event)| {
@@ -1912,13 +1922,24 @@ where
                 }
             });
 
-            if window_events.is_empty() && self.messages.is_empty() {
+            // Nothing to dispatch: `UserInterface::update` with an empty event
+            // slice never reaches a widget, so it can only re-walk the tree for an
+            // overlay and a cursor icon it has no new input to change. Pending
+            // messages are no reason to pay that on every window — they are
+            // applied below, and every window is refreshed then anyway.
+            //
+            // Bail before opening the span: `Span::finish` consumes it and there is
+            // no `Drop`, so a span opened above this would log a start with no end
+            // every time a window sits out a dispatch.
+            if window_events.is_empty() {
                 continue;
             }
 
+            let interact_span = iced_debug::interact(iced_id);
+            let logical_size = window.state.viewport().logical_size();
             let (ui_state, statuses) = self
                 .user_interfaces
-                .ui_mut(&iced_id)
+                .ui_mut(&iced_id, &mut window.renderer, logical_size)
                 .expect("Get user interface")
                 .update(
                     &window_events,
@@ -1941,7 +1962,7 @@ where
                 &mut self.iced_events,
                 self.compositor.as_mut(),
             ) {
-                rebuilds.push((iced_id, window));
+                rebuilds.push(iced_id);
             }
 
             for (event, status) in window_events.drain(..).zip(statuses) {
@@ -1957,7 +1978,13 @@ where
 
         if !self.messages.is_empty() {
             ev.request_refresh_all(RefreshRequest::NextFrame);
-            let (caches, application) = self.user_interfaces.extract_all();
+            // Every window's view may depend on the state these messages change,
+            // so all of them go stale. They are NOT rebuilt here: a task chain
+            // that hands one message back at a time (`Task::done`) re-enters this
+            // branch once per message, and rebuilding eagerly would pay a `view()`
+            // + layout per window per hop. The refresh above brings each window
+            // through `ui_mut`, which rebuilds it once, right before it is drawn.
+            let application = self.user_interfaces.invalidate_all();
 
             // Update application
             update(
@@ -1975,28 +2002,11 @@ where
                     .first()
                     .and_then(|window| theme::Base::palette(window.state.theme()))
             });
-
-            for (iced_id, cache) in caches {
-                let Some(window) = self.window_manager.get_mut(iced_id) else {
-                    continue;
-                };
-                self.user_interfaces.build(
-                    iced_id,
-                    cache,
-                    &mut window.renderer,
-                    window.state.viewport().logical_size(),
-                );
-            }
         } else {
-            for (iced_id, window) in rebuilds {
-                if let Some(cache) = self.user_interfaces.remove(&iced_id) {
-                    self.user_interfaces.build(
-                        iced_id,
-                        cache,
-                        &mut window.renderer,
-                        window.state.viewport().logical_size(),
-                    );
-                }
+            // A widget reported its tree outdated. Same deal: mark it and let the
+            // refresh it already requested drive the one rebuild.
+            for iced_id in rebuilds {
+                self.user_interfaces.invalidate(&iced_id);
             }
         }
     }
@@ -2436,7 +2446,10 @@ pub(crate) fn run_action<P, C, E: Executor>(
                 // kind of suboptimal that we have to iterate over all windows, but since an operation does not have
                 // a window id associated with it, this is the best we can do for now
                 for (id, window) in window_manager.iter_mut() {
-                    if let Some(mut ui) = user_interfaces.ui_mut(&id) {
+                    let logical_size = window.state.viewport().logical_size();
+                    if let Some(mut ui) =
+                        user_interfaces.ui_mut(&id, &mut window.renderer, logical_size)
+                    {
                         ui.operate(&window.renderer, operation.as_mut());
                     }
                 }
@@ -2498,16 +2511,9 @@ pub(crate) fn run_action<P, C, E: Executor>(
                 ev.request_refresh_all(RefreshRequest::NextFrame);
             }
             WindowAction::RelayoutAll => {
-                // Rebuild all user interfaces and request refresh
-                for (iced_id, window) in window_manager.iter_mut() {
-                    if let Some(cache) = user_interfaces.remove(&iced_id) {
-                        user_interfaces.build(
-                            iced_id,
-                            cache,
-                            &mut window.renderer,
-                            window.state.viewport().logical_size(),
-                        );
-                    }
+                // Stale every user interface; the refresh rebuilds each one once.
+                for (iced_id, _window) in window_manager.iter_mut() {
+                    user_interfaces.invalidate(&iced_id);
                 }
                 ev.request_refresh_all(RefreshRequest::NextFrame);
             }
@@ -2551,15 +2557,8 @@ pub(crate) fn run_action<P, C, E: Executor>(
             }
         }
         Action::Reload => {
-            for (iced_id, window) in window_manager.iter_mut() {
-                if let Some(cache) = user_interfaces.remove(&iced_id) {
-                    user_interfaces.build(
-                        iced_id,
-                        cache,
-                        &mut window.renderer,
-                        window.state.viewport().logical_size(),
-                    );
-                }
+            for (iced_id, _window) in window_manager.iter_mut() {
+                user_interfaces.invalidate(&iced_id);
             }
             ev.request_refresh_all(RefreshRequest::NextFrame);
         }

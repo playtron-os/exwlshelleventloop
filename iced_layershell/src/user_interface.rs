@@ -98,6 +98,15 @@ pub struct UserInterfaces<P: Program> {
     // reference to application won't be leaked to public.
     #[allow(clippy::type_complexity)]
     uis: HashMap<Id, IcedUserInterface<'static, P::Message, P::Theme, P::Renderer>>,
+    /// Windows whose view is stale, holding the widget-tree cache their next
+    /// build will restore from.
+    ///
+    /// A window lands here when application state changes under it. Rebuilding is
+    /// deferred to [`Self::ui_mut`] — the first thing that actually needs the tree
+    /// — so a burst of messages costs one `view()` + layout per window instead of
+    /// one per message, and a window nothing touches before the next invalidation
+    /// costs none at all. An id lives in exactly one of the two maps.
+    stale: HashMap<Id, Cache>,
     application: Instance<P>,
 }
 
@@ -108,6 +117,7 @@ where
     pub fn new(application: Instance<P>) -> Self {
         Self {
             uis: HashMap::new(),
+            stale: HashMap::new(),
             application,
         }
     }
@@ -117,25 +127,56 @@ where
     }
 
     pub fn remove(&mut self, id: &Id) -> Option<Cache> {
-        self.uis.remove(id).map(IcedUserInterface::into_cache)
+        self.stale
+            .remove(id)
+            .or_else(|| self.uis.remove(id).map(IcedUserInterface::into_cache))
     }
 
-    pub fn extract_all(&mut self) -> (HashMap<Id, Cache>, &mut Instance<P>) {
+    /// Whether this window's view is waiting to be rebuilt.
+    ///
+    /// For callers that would otherwise lay a window out twice: the pending build
+    /// lays it out at whatever size [`Self::ui_mut`] is given, so a relayout on top
+    /// of it is wasted work.
+    pub fn is_stale(&self, id: &Id) -> bool {
+        self.stale.contains_key(id)
+    }
+
+    /// Mark one window's view stale, to be rebuilt on next access.
+    pub fn invalidate(&mut self, id: &Id) {
+        if let Some(ui) = self.uis.remove(id) {
+            self.stale.insert(*id, ui.into_cache());
+        }
+        // Already stale: keep the cache we have. Overwriting it with a fresh one
+        // would drop the widget state (focus, scroll offsets, running animations)
+        // the pending build is meant to restore.
+    }
+
+    /// Mark every window's view stale and hand back the application.
+    ///
+    /// Returning the `&mut Instance<P>` from the same call is what makes this
+    /// sound: dropping every live `UserInterface` first is precisely the
+    /// precondition for handing out a mutable reference to the application they
+    /// borrow from.
+    pub fn invalidate_all(&mut self) -> &mut Instance<P> {
         // SAFETY remove all references before return mut reference of application
-        let caches = self
-            .uis
-            .drain()
-            .map(|(id, ui)| (id, ui.into_cache()))
-            .collect();
-        (caches, &mut self.application)
+        for (id, ui) in self.uis.drain() {
+            self.stale.entry(id).or_insert_with(|| ui.into_cache());
+        }
+        &mut self.application
     }
 
     #[allow(clippy::type_complexity)]
     pub fn ui_mut(
         &mut self,
         id: &Id,
+        renderer: &mut P::Renderer,
+        size: Size,
     ) -> Option<UserInterfaceMutGuard<'static, P::Message, P::Theme, P::Renderer, (&mut Self, Id)>>
     {
+        if let Some(cache) = self.stale.remove(id) {
+            self.build(*id, cache, renderer, size);
+        }
+
         self.uis.remove(id).map(|ui| UserInterfaceMutGuard {
             reclaim: (self, *id),
             ui: Some(ui),
@@ -143,6 +184,10 @@ where
     }
 
     pub fn build(&mut self, id: Id, cache: Cache, renderer: &mut P::Renderer, size: Size) {
+        // A build supersedes any pending one, so the stale entry has to go with
+        // it — otherwise the next `ui_mut` would rebuild from the older cache.
+        self.stale.remove(&id);
+
         let view_span = iced_debug::view(id);
         let view = self.application.view(id);
         view_span.finish();
@@ -160,6 +205,7 @@ impl<P: Program> Drop for UserInterfaces<P> {
     fn drop(&mut self) {
         // SAFETY drop all references of application before dropping application
         self.uis.clear();
+        self.stale.clear();
     }
 }
 
