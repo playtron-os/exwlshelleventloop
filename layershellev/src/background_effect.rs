@@ -64,7 +64,7 @@ pub fn apply(
     region: Option<&WlRegion>,
     whole_surface: bool,
     radius: Option<u32>,
-    corner_radii: Option<[u32; 4]>,
+    region_radii: &[[u32; 4]],
 ) {
     if whole_surface && version >= VERSION_WITH_RADIUS {
         // Lets the compositor keep the blurred area matched to the surface. A
@@ -79,10 +79,19 @@ pub fn apply(
         if let Some(radius) = radius {
             effect.set_blur_radius(radius);
         }
-        if let Some([tl, tr, br, bl]) = corner_radii {
-            effect.set_corner_radius(tl, tr, br, bl);
+        if !region_radii.is_empty() {
+            effect.set_region_radii(encode_region_radii(region_radii));
         }
     }
+}
+
+/// Encode per-rect corner radii for the wire: four native-endian u32 per rect,
+/// clockwise from top-left, index-matched to the region's rectangles.
+pub fn encode_region_radii(radii: &[[u32; 4]]) -> Vec<u8> {
+    radii
+        .iter()
+        .flat_map(|corners| corners.iter().flat_map(|r| r.to_ne_bytes()))
+        .collect()
 }
 
 /// Blanket implementation for background effect manager dispatch

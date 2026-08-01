@@ -2075,7 +2075,7 @@ impl<T: 'static> WindowState<T> {
                             None,
                             true,
                             radius.map(|r| r as u32),
-                            None,
+                            &[],
                         );
                         self.background_effect_surfaces.insert(surface_id, effect);
                     }
@@ -2253,13 +2253,10 @@ impl<T: 'static> WindowState<T> {
                 });
             effect.set_blur_region(Some(region));
             if effect_manager.version() >= background_effect::VERSION_WITH_RADIUS
-                && let Some(first) = radii.first()
+                && !radii.is_empty()
             {
-                // One radius per surface here, against per-rect radii on the
-                // KDE protocol. The rects a client rounds differently are
-                // usually rounded the same, and the alternative is an effect
-                // object per rect.
-                effect.set_corner_radius(first[0], first[1], first[2], first[3]);
+                // Per-rect, index-matched to the region, same as the KDE path.
+                effect.set_region_radii(background_effect::encode_region_radii(radii));
             }
         }
         surface.commit();
