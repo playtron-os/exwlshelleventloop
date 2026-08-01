@@ -2174,10 +2174,25 @@ impl<T: 'static> WindowState<T> {
             }
         }
 
-        let Some(manager) = &self.blur_manager else {
-            log::warn!("Blur manager not available - compositor may not support blur");
+        // Bind the standard protocol too, so a compositor implementing either
+        // one gets the same region. The caller does not know or care which.
+        if self.background_effect_manager.is_none()
+            && let Some(globals) = &self.globals
+            && let Some(unit) = self.units.first()
+        {
+            self.background_effect_manager = globals
+                .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
+                    &unit.qh,
+                    1..=background_effect::VERSION_WITH_RADIUS,
+                    (),
+                )
+                .ok();
+        }
+
+        if self.blur_manager.is_none() && self.background_effect_manager.is_none() {
+            log::warn!("No blur protocol available - compositor may not support blur");
             return;
-        };
+        }
 
         // Release old blur object if any
         if let Some(old_blur) = self.blur_surfaces.remove(&surface_id) {
@@ -2192,34 +2207,61 @@ impl<T: 'static> WindowState<T> {
             return;
         };
 
-        let blur_data = blur::BlurData {
-            surface: surface.clone(),
-        };
-        let blur_obj = manager.create(surface, &unit.qh, blur_data);
-
-        // Let the caller define the blur region via the WlRegion
+        // Let the caller define the blur region via the WlRegion. Done once,
+        // before either protocol reads it, since both take the same region.
         log::info!(
             "set_blur_region_for_surface: surface={}, calling set_region callback",
             surface_id
         );
         set_region(region);
-        log::info!(
-            "set_blur_region_for_surface: surface={}, calling blur_obj.set_region + commit",
-            surface_id
-        );
-        blur_obj.set_region(Some(region));
-        if !radii.is_empty() {
-            if blur_obj.version() >= 4 {
-                blur_obj.set_region_radii(blur::encode_region_radii(radii));
-            } else {
-                log::warn!(
-                    "Per-region blur radii requested but compositor only supports blur protocol v{}, ignoring",
-                    blur_obj.version()
-                );
+
+        if let Some(manager) = &self.blur_manager {
+            let blur_data = blur::BlurData {
+                surface: surface.clone(),
+            };
+            let blur_obj = manager.create(surface, &unit.qh, blur_data);
+            blur_obj.set_region(Some(region));
+            if !radii.is_empty() {
+                if blur_obj.version() >= 4 {
+                    blur_obj.set_region_radii(blur::encode_region_radii(radii));
+                } else {
+                    log::warn!(
+                        "Per-region blur radii requested but compositor only supports blur protocol v{}, ignoring",
+                        blur_obj.version()
+                    );
+                }
+            }
+            blur_obj.commit();
+            self.blur_surfaces.insert(surface_id, blur_obj);
+        }
+
+        if let Some(effect_manager) = &self.background_effect_manager {
+            // Reuse the surface's effect object: the compositor treats a second
+            // get_background_effect for one surface as a protocol error, and the
+            // state is double-buffered anyway so re-setting it is enough.
+            let effect = self
+                .background_effect_surfaces
+                .entry(surface_id)
+                .or_insert_with(|| {
+                    effect_manager.get_background_effect(
+                        surface,
+                        &unit.qh,
+                        background_effect::BackgroundEffectData {
+                            surface: surface.clone(),
+                        },
+                    )
+                });
+            effect.set_blur_region(Some(region));
+            if effect_manager.version() >= background_effect::VERSION_WITH_RADIUS
+                && let Some(first) = radii.first()
+            {
+                // One radius per surface here, against per-rect radii on the
+                // KDE protocol. The rects a client rounds differently are
+                // usually rounded the same, and the alternative is an effect
+                // object per rect.
+                effect.set_corner_radius(first[0], first[1], first[2], first[3]);
             }
         }
-        blur_obj.commit();
-        self.blur_surfaces.insert(surface_id, blur_obj);
         surface.commit();
         log::info!(
             "set_blur_region_for_surface: surface={}, done (surface committed)",
