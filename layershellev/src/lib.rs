@@ -118,6 +118,7 @@ pub use events::RepositionPopUpSettings;
 pub use waycrate_xkbkeycode::keyboard;
 pub use waycrate_xkbkeycode::xkb_keyboard;
 
+pub mod background_effect;
 pub mod blur;
 pub mod corner_radius;
 pub mod dpi;
@@ -1067,6 +1068,14 @@ pub struct WindowState<T> {
     blur_border: Option<f32>,
     /// Blur manager (bound lazily when blur is enabled)
     blur_manager: Option<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
+    /// The standard background-effect manager. Compositors commonly implement
+    /// only one of this and KDE blur, so both are bound and both are set.
+    background_effect_manager:
+        Option<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1>,
+    background_effect_surfaces: HashMap<
+        u32,
+        background_effect::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+    >,
     /// Blur objects per surface (keyed by surface protocol ID)
     blur_surfaces: HashMap<u32, blur::org_kde_kwin_blur::OrgKdeKwinBlur>,
     /// Per-surface frosted-glass params `(radius, saturation, tint, border)`,
@@ -2007,6 +2016,28 @@ impl<T: 'static> WindowState<T> {
                 }
             }
 
+            // Bind the standard protocol too. Accepting version 1 means a
+            // compositor that only implements the upstream staging protocol
+            // still blurs, just without strength or corner control.
+            if self.background_effect_manager.is_none()
+                && let Some(globals) = &self.globals
+                && let Some(unit) = self.units.first()
+            {
+                self.background_effect_manager = globals
+                    .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
+                        &unit.qh,
+                        1..=background_effect::VERSION_WITH_RADIUS,
+                        (),
+                    )
+                    .ok();
+                if let Some(manager) = &self.background_effect_manager {
+                    log::info!(
+                        "Bound background effect manager (version {})",
+                        manager.version()
+                    );
+                }
+            }
+
             if let Some(manager) = &self.blur_manager {
                 if let Some(unit) = self.units.first() {
                     let blur_data = blur::BlurData {
@@ -2027,6 +2058,28 @@ impl<T: 'static> WindowState<T> {
                     apply_blur_params(&blur_obj, radius, saturation, tint, border);
                     blur_obj.commit();
                     self.blur_surfaces.insert(surface_id, blur_obj);
+
+                    if let Some(effect_manager) = &self.background_effect_manager
+                        && !self.background_effect_surfaces.contains_key(&surface_id)
+                    {
+                        let effect = effect_manager.get_background_effect(
+                            surface,
+                            &unit.qh,
+                            background_effect::BackgroundEffectData {
+                                surface: surface.clone(),
+                            },
+                        );
+                        background_effect::apply(
+                            &effect,
+                            effect_manager.version(),
+                            None,
+                            true,
+                            radius.map(|r| r as u32),
+                            None,
+                        );
+                        self.background_effect_surfaces.insert(surface_id, effect);
+                    }
+
                     surface.commit();
                     log::info!(
                         "Enabled blur for surface (radius={radius:?}, saturation={saturation:?}, tint={tint:?}, border={border:?})"
@@ -2039,6 +2092,14 @@ impl<T: 'static> WindowState<T> {
             // Disable blur by releasing the blur object
             if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
                 blur_obj.release();
+
+                // Tear down both, or the surface keeps whichever protocol the
+                // compositor actually honoured.
+                if let Some(effect) = self.background_effect_surfaces.remove(&surface_id) {
+                    effect.set_blur_region(None);
+                    effect.destroy();
+                }
+
                 surface.commit();
                 log::info!("Disabled blur for surface");
             }
@@ -3388,6 +3449,8 @@ impl<T> Default for WindowState<T> {
             blur_border: None,
             blur_manager: None,
             blur_surfaces: HashMap::new(),
+            background_effect_manager: None,
+            background_effect_surfaces: HashMap::new(),
             blur_params: HashMap::new(),
             corner_radius: None,
             corner_radius_manager: None,
@@ -5032,6 +5095,27 @@ impl<T: 'static> Dispatch<blur::org_kde_kwin_blur::OrgKdeKwinBlur, blur::BlurDat
         _qhandle: &QueueHandle<Self>,
     ) {
         // No events for blur objects
+    }
+}
+
+// Background effect protocol delegates
+delegate_noop!(@<T> WindowState<T>: ignore background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1);
+
+impl<T: 'static>
+    Dispatch<
+        background_effect::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+        background_effect::BackgroundEffectData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &background_effect::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+        _event: <background_effect::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1 as Proxy>::Event,
+        _data: &background_effect::BackgroundEffectData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // No events for background effect objects
     }
 }
 
