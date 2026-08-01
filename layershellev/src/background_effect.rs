@@ -43,6 +43,9 @@ use ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 
 /// The version at which the strength, corner and whole-surface requests appear.
 pub const VERSION_WITH_RADIUS: u32 = 2;
+/// The version at which the frosted-glass appearance requests appear
+/// (saturation, tint, border).
+pub const VERSION_WITH_APPEARANCE: u32 = 3;
 
 /// User data for background effect objects - stores the surface reference
 #[derive(Debug, Clone)]
@@ -58,6 +61,7 @@ pub struct BackgroundEffectData {
 ///
 /// The strength and corner radii are only sent on version 2, so a version 1
 /// compositor silently gets the region alone rather than a protocol error.
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     effect: &ExtBackgroundEffectSurfaceV1,
     version: u32,
@@ -65,6 +69,9 @@ pub fn apply(
     whole_surface: bool,
     radius: Option<u32>,
     region_radii: &[[u32; 4]],
+    saturation: Option<f64>,
+    tint: Option<f64>,
+    border: Option<f64>,
 ) {
     if whole_surface && version >= VERSION_WITH_RADIUS {
         // Lets the compositor keep the blurred area matched to the surface. A
@@ -81,6 +88,21 @@ pub fn apply(
         }
         if !region_radii.is_empty() {
             effect.set_region_radii(encode_region_radii(region_radii));
+        }
+    }
+
+    // Appearance. Each is only sent when the caller asked for it: there is no
+    // "reset to default" request, because 0 is a real value for all three
+    // (greyscale, no tint, no border) and cannot double as "unset".
+    if version >= VERSION_WITH_APPEARANCE {
+        if let Some(saturation) = saturation {
+            effect.set_saturation(saturation);
+        }
+        if let Some(tint) = tint {
+            effect.set_tint(tint);
+        }
+        if let Some(border) = border {
+            effect.set_border(border);
         }
     }
 }

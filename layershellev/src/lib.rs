@@ -2026,7 +2026,7 @@ impl<T: 'static> WindowState<T> {
                 self.background_effect_manager = globals
                     .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
                         &unit.qh,
-                        1..=background_effect::VERSION_WITH_RADIUS,
+                        1..=background_effect::VERSION_WITH_APPEARANCE,
                         (),
                     )
                     .ok();
@@ -2076,6 +2076,9 @@ impl<T: 'static> WindowState<T> {
                             true,
                             radius.map(|r| r as u32),
                             &[],
+                            saturation.map(|v| v as f64),
+                            tint.map(|v| v as f64),
+                            border.map(|v| v as f64),
                         );
                         self.background_effect_surfaces.insert(surface_id, effect);
                     }
@@ -2535,8 +2538,10 @@ impl<T: 'static> WindowState<T> {
         // stays under the cursor (the compositor renders the icon at
         // `cursor + offset`). Done post-`start_drag` because the offset is only
         // recorded from commits made after the surface has the dnd_icon role.
-        if let (Some((hx, hy)), Some(res)) = (hotspot, self.dnd_icon.as_ref()) {
-            if hx != 0 || hy != 0 {
+        if let (Some((hx, hy)), Some(res)) = (hotspot, self.dnd_icon.as_ref())
+            && (hx != 0 || hy != 0)
+        {
+            {
                 if res.surface.version() >= 5 {
                     res.surface.attach(Some(&res.buffer), 0, 0);
                     res.surface.offset(-hx, -hy);
