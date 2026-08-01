@@ -2016,9 +2016,9 @@ impl<T: 'static> WindowState<T> {
                 }
             }
 
-            // Bind the standard protocol too. Accepting version 1 means a
-            // compositor that only implements the upstream staging protocol
-            // still blurs, just without strength or corner control.
+            // Bind the standard protocol too, so a compositor that implements
+            // only the upstream staging protocol still blurs -- just the region,
+            // without strength, corner or appearance control.
             if self.background_effect_manager.is_none()
                 && let Some(globals) = &self.globals
                 && let Some(unit) = self.units.first()
@@ -2026,7 +2026,7 @@ impl<T: 'static> WindowState<T> {
                 self.background_effect_manager = globals
                     .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
                         &unit.qh,
-                        1..=background_effect::VERSION_WITH_APPEARANCE,
+                        1..=1,
                         (),
                     )
                     .ok();
@@ -2060,6 +2060,7 @@ impl<T: 'static> WindowState<T> {
                     self.blur_surfaces.insert(surface_id, blur_obj);
 
                     if let Some(effect_manager) = &self.background_effect_manager
+                        && let Some(compositor) = &self.wl_compositor
                         && !self.background_effect_surfaces.contains_key(&surface_id)
                     {
                         let effect = effect_manager.get_background_effect(
@@ -2069,17 +2070,15 @@ impl<T: 'static> WindowState<T> {
                                 surface: surface.clone(),
                             },
                         );
-                        background_effect::apply(
-                            &effect,
-                            effect_manager.version(),
-                            None,
-                            true,
-                            radius.map(|r| r as u32),
-                            &[],
-                            saturation.map(|v| v as f64),
-                            tint.map(|v| v as f64),
-                            border.map(|v| v as f64),
-                        );
+                        // This protocol has no whole-surface request, so ask for
+                        // an oversized region and let the compositor clip it to
+                        // the surface. That keeps it right across resizes, which
+                        // a surface-sized region would not without a resend.
+                        let (x, y, w, h) = background_effect::WHOLE_SURFACE;
+                        let region = compositor.create_region(&unit.qh, ());
+                        region.add(x, y, w, h);
+                        background_effect::apply(&effect, Some(&region));
+                        region.destroy();
                         self.background_effect_surfaces.insert(surface_id, effect);
                     }
 
@@ -2186,7 +2185,7 @@ impl<T: 'static> WindowState<T> {
             self.background_effect_manager = globals
                 .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
                     &unit.qh,
-                    1..=background_effect::VERSION_WITH_RADIUS,
+                    1..=1,
                     (),
                 )
                 .ok();
@@ -2195,15 +2194,6 @@ impl<T: 'static> WindowState<T> {
         if self.blur_manager.is_none() && self.background_effect_manager.is_none() {
             log::warn!("No blur protocol available - compositor may not support blur");
             return;
-        }
-
-        // Release old blur object if any
-        if let Some(old_blur) = self.blur_surfaces.remove(&surface_id) {
-            log::info!(
-                "set_blur_region_for_surface: releasing old blur object for surface {}",
-                surface_id
-            );
-            old_blur.release();
         }
 
         let Some(unit) = self.units.first() else {
@@ -2218,12 +2208,41 @@ impl<T: 'static> WindowState<T> {
         );
         set_region(region);
 
+        // The surface's frosted-glass parameters, captured before the borrows
+        // below. Both protocols describe the same glass, and both have to be
+        // re-sent whenever the region is, because a commit consumes them.
+        let (radius_param, saturation, tint, border) = self
+            .blur_params
+            .get(&surface_id)
+            .copied()
+            .unwrap_or((None, None, None, None));
+
         if let Some(manager) = &self.blur_manager {
-            let blur_data = blur::BlurData {
-                surface: surface.clone(),
-            };
-            let blur_obj = manager.create(surface, &unit.qh, blur_data);
+            // Reuse the surface's blur object rather than releasing and
+            // recreating it. All of this state is double-buffered, so re-setting
+            // it is enough -- and a client animating its region (a card lifting
+            // on hover re-sends at 60Hz) would otherwise churn a protocol object
+            // per frame and reset radius/saturation/tint/border to the
+            // compositor defaults every time, because a fresh object carries
+            // none of the previously-sent values.
+            let blur_obj = self.blur_surfaces.entry(surface_id).or_insert_with(|| {
+                manager.create(
+                    surface,
+                    &unit.qh,
+                    blur::BlurData {
+                        surface: surface.clone(),
+                    },
+                )
+            });
             blur_obj.set_region(Some(region));
+            // Re-assert the surface's frosted-glass parameters on every region
+            // update. The KDE object carries them as pending state that a commit
+            // consumes, so a region-only commit leaves the compositor falling
+            // back to its defaults -- visible as the backdrop's appearance
+            // changing the moment a client starts animating its region, e.g. a
+            // card lifting on hover re-sends at 60Hz and the border the surface
+            // asked to suppress reappears.
+            apply_blur_params(blur_obj, radius_param, saturation, tint, border);
             if !radii.is_empty() {
                 if blur_obj.version() >= 4 {
                     blur_obj.set_region_radii(blur::encode_region_radii(radii));
@@ -2235,7 +2254,6 @@ impl<T: 'static> WindowState<T> {
                 }
             }
             blur_obj.commit();
-            self.blur_surfaces.insert(surface_id, blur_obj);
         }
 
         if let Some(effect_manager) = &self.background_effect_manager {
@@ -2254,13 +2272,9 @@ impl<T: 'static> WindowState<T> {
                         },
                     )
                 });
-            effect.set_blur_region(Some(region));
-            if effect_manager.version() >= background_effect::VERSION_WITH_RADIUS
-                && !radii.is_empty()
-            {
-                // Per-rect, index-matched to the region, same as the KDE path.
-                effect.set_region_radii(background_effect::encode_region_radii(radii));
-            }
+            // The region is all this protocol carries. Corner radii and the
+            // frosted-glass appearance went over the KDE path above.
+            background_effect::apply(effect, Some(region));
         }
         surface.commit();
         log::info!(
