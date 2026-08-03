@@ -18,7 +18,8 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 #[cfg(not(all(feature = "linux-theme-detection", target_os = "linux")))]
 use iced_core::theme::Mode;
 use iced_core::{
-    Event as IcedEvent, auto_hide as iced_auto_hide, dismiss as iced_dismiss,
+    Event as IcedEvent, adaptive_foreground as iced_adaptive_foreground,
+    auto_hide as iced_auto_hide, dismiss as iced_dismiss,
     surface_visibility as iced_surface_visibility, theme, voice_mode as iced_voice_mode,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
@@ -242,6 +243,12 @@ where
                     None,
                     IcedLayerShellEvent::UpdateBlurRegion(wl_compositor.create_region(qh, ())),
                 ));
+                waiting_layer_shell_events.push_back((
+                    None,
+                    IcedLayerShellEvent::UpdateAdaptiveForegroundRegion(
+                        wl_compositor.create_region(qh, ()),
+                    ),
+                ));
 
                 if let Some(virtual_keyboard_setting) = settings.virtual_keyboard_support.as_ref() {
                     let virtual_keyboard_manager = globals
@@ -368,6 +375,7 @@ where
     clipboard: LayerShellClipboard,
     wl_input_region: Option<WlRegion>,
     wl_blur_region: Option<WlRegion>,
+    wl_adaptive_foreground_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
     waiting_layer_shell_actions: Vec<(Option<IcedId>, LayershellCustomAction)>,
     iced_events: Vec<(IcedId, IcedEvent)>,
@@ -420,6 +428,7 @@ where
             clipboard: LayerShellClipboard::unconnected(),
             wl_input_region: Default::default(),
             wl_blur_region: Default::default(),
+            wl_adaptive_foreground_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
             waiting_layer_shell_actions: Default::default(),
             iced_events: Default::default(),
@@ -491,6 +500,9 @@ where
         match layer_shell_event {
             IcedLayerShellEvent::UpdateInputRegion(region) => self.wl_input_region = Some(region),
             IcedLayerShellEvent::UpdateBlurRegion(region) => self.wl_blur_region = Some(region),
+            IcedLayerShellEvent::UpdateAdaptiveForegroundRegion(region) => {
+                self.wl_adaptive_foreground_region = Some(region)
+            }
             IcedLayerShellEvent::Window(LayerShellWindowEvent::Refresh) => {
                 self.handle_refresh_event(ev, layer_shell_id)
             }
@@ -1260,6 +1272,32 @@ where
             return true;
         }
 
+        // Backdrop luminance readings - convert to an iced event for the surface
+        // that marked the zones.
+        if let LayerShellWindowEvent::AdaptiveForeground { readings } = event {
+            tracing::debug!(
+                "handle_window_event: received AdaptiveForeground: {} reading(s)",
+                readings.len()
+            );
+            let iced_event =
+                IcedEvent::AdaptiveForeground(iced_adaptive_foreground::Event::Updated {
+                    readings: readings.clone(),
+                });
+            // Resolved from the layershell id, as auto-hide is below: in
+            // `AllScreens` mode each monitor has its own surface with its own
+            // zones, and routing every reading to the first window would restyle
+            // one monitor from another's wallpaper.
+            let mut target =
+                layer_shell_id.and_then(|lid| self.window_manager.get_alias(lid).map(|(id, _)| id));
+            if target.is_none() {
+                target = self.window_manager.iter_mut().next().map(|(id, _)| id);
+            }
+            if let Some(iced_id) = target {
+                self.iced_events.push((iced_id, iced_event));
+            }
+            return true;
+        }
+
         // Handle auto-hide visibility events - convert to iced event for immediate delivery
         if let LayerShellWindowEvent::AutoHideVisibilityChanged { visible } = event {
             tracing::debug!(
@@ -1564,6 +1602,28 @@ where
                     set_region(r)
                 });
                 tracing::info!(?iced_id, "SetBlurRegion: done");
+            }
+            LayershellCustomAction::SetAdaptiveForegroundRegion { callback } => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let add_zones = callback.0;
+                let Some(region) = &self.wl_adaptive_foreground_region else {
+                    tracing::warn!(
+                        "wl_adaptive_foreground_region is not set, ignore SetAdaptiveForegroundRegion, window_id: {:?}",
+                        iced_id
+                    );
+                    return;
+                };
+
+                // Clear before the callback re-adds, so zone indices stay tied to
+                // this update's rectangles rather than accumulating across updates.
+                let window_size = layer_shell_window.get_size();
+                let width: i32 = window_size.0.try_into().unwrap_or_default();
+                let height: i32 = window_size.1.try_into().unwrap_or_default();
+                region.subtract(0, 0, width, height);
+
+                let surface = layer_shell_window.get_wlsurface().clone();
+                ev.set_adaptive_foreground_region_for_surface(&surface, region, |r| add_zones(r));
+                tracing::debug!(?iced_id, "SetAdaptiveForegroundRegion: done");
             }
             LayershellCustomAction::ShadowChange(enabled) => {
                 let surface = {

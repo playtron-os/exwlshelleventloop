@@ -493,6 +493,11 @@ pub enum WindowEvent {
     HomeStateChanged {
         is_home: bool,
     },
+    /// Backdrop luminance readings for a surface's marked zones, as
+    /// `(zone index, luminance)`. Only changed zones are reported.
+    AdaptiveForeground {
+        readings: Vec<(u32, f32)>,
+    },
     /// Auto-hide visibility changed from compositor
     /// visible: true = surface is fully visible, false = surface is fully hidden
     AutoHideVisibilityChanged {
@@ -613,6 +618,10 @@ pub struct UsableAreaEvent {
 pub enum IcedLayerShellEvent<Message> {
     UpdateInputRegion(WlRegion),
     UpdateBlurRegion(WlRegion),
+    /// Adaptive-foreground zones get their own region rather than sharing the
+    /// blur one: the two are set independently, and clearing one to rebuild it
+    /// would drop the other's rectangles.
+    UpdateAdaptiveForegroundRegion(WlRegion),
     Window(WindowEvent),
     UserAction(Action<Message>),
     NormalDispatch,
@@ -745,6 +754,9 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::HomeStateChanged { is_home } => {
                 WindowEvent::HomeStateChanged { is_home: *is_home }
             }
+            DispatchMessage::AdaptiveForeground { readings } => WindowEvent::AdaptiveForeground {
+                readings: readings.clone(),
+            },
             DispatchMessage::AutoHideVisibilityChanged { visible } => {
                 WindowEvent::AutoHideVisibilityChanged { visible: *visible }
             }

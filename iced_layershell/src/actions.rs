@@ -214,6 +214,18 @@ pub enum LayershellCustomAction {
         radii: Vec<[u32; 4]>,
         geometry: Vec<(f32, f32, f32, f32)>,
     },
+    /// Mark the zones of this surface to be told the backdrop luminance behind,
+    /// so content drawn straight onto the wallpaper can stay legible against it.
+    ///
+    /// The callback receives a cleared `WlRegion` to add one rectangle per zone,
+    /// in surface-local logical px. Their order is the zone index the compositor
+    /// reports readings against, so a caller with more than one zone must add
+    /// them in a stable order -- typically the order they were measured.
+    ///
+    /// Adding no rectangles disables reporting for the surface.
+    SetAdaptiveForegroundRegion {
+        callback: ActionCallback,
+    },
     NewPopUp {
         settings: IcedNewPopupSettings,
         id: IcedId,

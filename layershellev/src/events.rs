@@ -496,6 +496,10 @@ pub(crate) enum DispatchMessageInner {
         height: i32,
     },
     Ime(Ime),
+    /// Backdrop luminance readings for a surface's zones, as `(index, luminance)`.
+    AdaptiveForeground {
+        readings: Vec<(u32, f32)>,
+    },
     /// Home state changed from compositor (true = at home, false = windows visible)
     HomeStateChanged(bool),
     /// Auto-hide visibility changed from compositor (true = visible, false = hidden)
@@ -644,6 +648,13 @@ pub enum DispatchMessage {
     },
     Ime(Ime),
     Closed,
+    /// Backdrop luminance readings for a surface's marked zones.
+    ///
+    /// Each entry is `(zone index, luminance)` where the index is the order the
+    /// surface added the zone to its region. Only changed zones are reported.
+    AdaptiveForeground {
+        readings: Vec<(u32, f32)>,
+    },
     /// Home state changed from compositor
     /// is_home: true = at home (no windows visible), false = windows visible
     HomeStateChanged {
@@ -859,6 +870,9 @@ impl From<DispatchMessageInner> for DispatchMessage {
                 width,
                 height,
             },
+            DispatchMessageInner::AdaptiveForeground { readings } => {
+                DispatchMessage::AdaptiveForeground { readings }
+            }
             DispatchMessageInner::HomeStateChanged(is_home) => {
                 DispatchMessage::HomeStateChanged { is_home }
             }

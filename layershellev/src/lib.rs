@@ -118,6 +118,7 @@ pub use events::RepositionPopUpSettings;
 pub use waycrate_xkbkeycode::keyboard;
 pub use waycrate_xkbkeycode::xkb_keyboard;
 
+pub mod adaptive_foreground;
 pub mod background_effect;
 pub mod blur;
 pub mod corner_radius;
@@ -1082,6 +1083,20 @@ pub struct WindowState<T> {
     /// captured at surface creation so a later blur re-enable (the auto-size
     /// deferred-effects path) re-applies them instead of compositor defaults.
     blur_params: HashMap<u32, BlurParams>,
+    /// Adaptive-foreground manager (bound with the other effect managers).
+    adaptive_foreground_manager: Option<
+        adaptive_foreground::adaptive_foreground_manager_v1::AdaptiveForegroundManagerV1,
+    >,
+    /// Adaptive-foreground objects per surface (keyed by surface protocol ID).
+    adaptive_foreground_surfaces: HashMap<
+        u32,
+        adaptive_foreground::adaptive_foreground_surface_v1::AdaptiveForegroundSurfaceV1,
+    >,
+    /// Luminance readings arrived since the last `done`, keyed by surface
+    /// protocol ID. The protocol batches so a surface with several zones
+    /// restyles once rather than once per zone, so they are held here until
+    /// `done` releases them.
+    adaptive_foreground_pending: HashMap<u32, Vec<(u32, f32)>>,
     /// Corner radius for surfaces (all four corners)
     corner_radius: Option<[u32; 4]>,
     /// Corner radius manager (bound lazily when corner_radius is set)
@@ -1313,6 +1328,12 @@ impl<T> WindowState<T> {
         if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
             blur_obj.release();
         }
+        if let Some(adaptive_fg_obj) = self.adaptive_foreground_surfaces.remove(&surface_id) {
+            adaptive_fg_obj.destroy();
+        }
+        // Readings for a surface that is going away would otherwise be flushed
+        // onto whichever surface next reused the protocol id.
+        self.adaptive_foreground_pending.remove(&surface_id);
         if let Some(shadow_obj) = self.shadow_surfaces.remove(&surface_id) {
             shadow_obj.destroy();
         }
@@ -2148,6 +2169,65 @@ impl<T: 'static> WindowState<T> {
     /// compositor the radii are dropped (with a warning) and the region still applies.
     ///
     /// This creates/replaces the blur object each time to update the region.
+    /// Mark the zones of `surface` to be told the backdrop luminance behind.
+    ///
+    /// `set_region` receives a fresh `WlRegion` to add one rectangle per zone;
+    /// their order is the index the compositor reports readings against, so a
+    /// caller with several zones must add them in a stable order.
+    ///
+    /// Passing a callback that adds nothing disables reporting for the surface.
+    pub fn set_adaptive_foreground_region_for_surface<F>(
+        &mut self,
+        surface: &WlSurface,
+        region: &WlRegion,
+        set_region: F,
+    ) where
+        F: FnOnce(&WlRegion),
+    {
+        let surface_id = surface.id().protocol_id();
+
+        if self.adaptive_foreground_manager.is_none()
+            && let Some(globals) = &self.globals
+            && let Some(unit) = self.units.first()
+        {
+            self.adaptive_foreground_manager = globals
+                .bind::<adaptive_foreground::adaptive_foreground_manager_v1::AdaptiveForegroundManagerV1, _, _>(
+                    &unit.qh,
+                    1..=1,
+                    (),
+                )
+                .ok();
+        }
+
+        let Some(manager) = self.adaptive_foreground_manager.clone() else {
+            log::warn!(
+                "No adaptive_foreground protocol available - compositor does not report backdrop luminance"
+            );
+            return;
+        };
+        let Some(unit) = self.units.first() else {
+            return;
+        };
+
+        set_region(region);
+
+        // One object per surface, kept for the surface's lifetime. The protocol
+        // raises `already_constructed` on a second get for the same surface, so
+        // unlike blur -- which creates a fresh object per region update -- this
+        // must reuse the existing one.
+        let object = self
+            .adaptive_foreground_surfaces
+            .entry(surface_id)
+            .or_insert_with(|| {
+                let data = adaptive_foreground::AdaptiveForegroundData {
+                    surface: surface.clone(),
+                };
+                manager.get_adaptive_foreground(surface, &unit.qh, data)
+            });
+
+        object.set_region(Some(region));
+    }
+
     pub fn set_blur_region_for_surface<F>(
         &mut self,
         surface: &WlSurface,
@@ -3519,6 +3599,9 @@ impl<T> Default for WindowState<T> {
             background_effect_manager: None,
             background_effect_surfaces: HashMap::new(),
             blur_params: HashMap::new(),
+            adaptive_foreground_manager: None,
+            adaptive_foreground_surfaces: HashMap::new(),
+            adaptive_foreground_pending: HashMap::new(),
             corner_radius: None,
             corner_radius_manager: None,
             corner_radius_surfaces: HashMap::new(),
@@ -5383,6 +5466,66 @@ impl<T: 'static>
     }
 }
 
+// Adaptive foreground protocol delegates.
+// The manager is event-less; the surface object carries the readings.
+delegate_noop!(@<T> WindowState<T>: ignore adaptive_foreground::adaptive_foreground_manager_v1::AdaptiveForegroundManagerV1);
+
+impl<T: 'static>
+    Dispatch<
+        adaptive_foreground::adaptive_foreground_surface_v1::AdaptiveForegroundSurfaceV1,
+        adaptive_foreground::AdaptiveForegroundData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &adaptive_foreground::adaptive_foreground_surface_v1::AdaptiveForegroundSurfaceV1,
+        event: <adaptive_foreground::adaptive_foreground_surface_v1::AdaptiveForegroundSurfaceV1 as Proxy>::Event,
+        data: &adaptive_foreground::AdaptiveForegroundData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use adaptive_foreground::adaptive_foreground_surface_v1::Event;
+
+        let surface_id = data.surface.id().protocol_id();
+        match event {
+            Event::Luminance { index, luminance } => {
+                // Held until `done`, so a surface with several zones restyles
+                // once rather than once per zone. A repeat of the same index
+                // within a batch replaces the earlier value rather than
+                // appending, which would leave the client applying whichever it
+                // read last by accident.
+                let readings = state
+                    .adaptive_foreground_pending
+                    .entry(surface_id)
+                    .or_default();
+                let luminance = adaptive_foreground::decode_luminance(luminance);
+                match readings.iter_mut().find(|(i, _)| *i == index) {
+                    Some(slot) => slot.1 = luminance,
+                    None => readings.push((index, luminance)),
+                }
+            }
+            Event::Done => {
+                let Some(readings) = state.adaptive_foreground_pending.remove(&surface_id) else {
+                    return;
+                };
+                if readings.is_empty() {
+                    return;
+                }
+                log::debug!(
+                    "adaptive_foreground: {} reading(s) for surface {}",
+                    readings.len(),
+                    surface_id
+                );
+                let window_id = state.get_id_from_surface(&data.surface);
+                state.message.push((
+                    window_id,
+                    DispatchMessageInner::AdaptiveForeground { readings },
+                ));
+            }
+        }
+    }
+}
+
 // Home visibility protocol delegates
 // Manager has the home_state event, so we need a proper Dispatch impl
 impl<T: 'static>
@@ -6259,6 +6402,21 @@ impl<T: 'static> WindowState<T> {
             .ok();
         if self.blur_manager.is_some() {
             log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
+        }
+
+        // Bind adaptive foreground, for surfaces that draw onto the wallpaper and
+        // have to stay legible against whatever it happens to be.
+        self.adaptive_foreground_manager = globals
+            .bind::<adaptive_foreground::adaptive_foreground_manager_v1::AdaptiveForegroundManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.adaptive_foreground_manager.is_some() {
+            log::info!(
+                "Successfully bound adaptive_foreground_manager_v1 protocol for backdrop luminance"
+            );
         }
 
         // Always try to bind corner radius manager for dynamic corner radius support

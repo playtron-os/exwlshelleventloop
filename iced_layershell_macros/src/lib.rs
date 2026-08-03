@@ -40,6 +40,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 AnchorChange{id: iced_layershell::reexport::IcedId, anchor: iced_layershell::reexport::Anchor},
                 SetInputRegion{ id: iced_layershell::reexport::IcedId, callback: iced_layershell::actions::ActionCallback },
                 SetBlurRegion{ id: iced_layershell::reexport::IcedId, callback: iced_layershell::actions::ActionCallback, radii: Vec<[u32; 4]>, geometry: Vec<(f32, f32, f32, f32)> },
+                SetAdaptiveForegroundRegion{ id: iced_layershell::reexport::IcedId, callback: iced_layershell::actions::ActionCallback },
                 AnchorSizeChange{id: iced_layershell::reexport::IcedId, anchor:iced_layershell::reexport::Anchor, size: (u32, u32)},
                 LayerChange{id: iced_layershell::reexport::IcedId, layer:iced_layershell::reexport::Layer},
                 /// Margin: top, left, bottom, right
@@ -137,6 +138,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                         match self {
                             Self::SetInputRegion{ id, callback } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetInputRegion(callback))),
                             Self::SetBlurRegion{ id, callback, radii, geometry } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetBlurRegion{ callback, radii, geometry })),
+                            Self::SetAdaptiveForegroundRegion{ id, callback } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetAdaptiveForegroundRegion{ callback })),
                             Self::AnchorChange { id, anchor } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::AnchorChange(anchor))),
                             Self::AnchorSizeChange { id, anchor, size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::AnchorSizeChange(anchor, size))),
                             Self::LayerChange { id, layer } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::LayerChange(layer))),
@@ -183,6 +185,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 AnchorChange(iced_layershell::reexport::Anchor),
                 SetInputRegion(iced_layershell::actions::ActionCallback),
                 SetBlurRegion{ callback: iced_layershell::actions::ActionCallback, radii: Vec<[u32; 4]>, geometry: Vec<(f32, f32, f32, f32)> },
+                SetAdaptiveForegroundRegion{ callback: iced_layershell::actions::ActionCallback },
                 // Ancher and Size (width, height)
                 AnchorSizeChange(iced_layershell::reexport::Anchor, (u32, u32)),
                 LayerChange(iced_layershell::reexport::Layer),
@@ -251,6 +254,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                         match self {
                             Self::SetInputRegion(callback) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetInputRegion(callback))),
                             Self::SetBlurRegion{ callback, radii, geometry } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetBlurRegion{ callback, radii, geometry })),
+                            Self::SetAdaptiveForegroundRegion{ callback } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetAdaptiveForegroundRegion{ callback })),
                             Self::AnchorChange(anchor) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::AnchorChange(anchor))),
                             Self::AnchorSizeChange(anchor, size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::AnchorSizeChange(anchor, size))),
                             Self::LayerChange(layer) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::LayerChange(layer))),
