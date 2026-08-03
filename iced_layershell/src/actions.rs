@@ -201,9 +201,18 @@ pub enum LayershellCustomAction {
     /// cards with correctly shaped backdrops. Empty leaves every rectangle on the
     /// surface's single corner radius, as does any rectangle past the end of the
     /// list. Requires blur protocol v4; older compositors ignore the radii.
+    ///
+    /// `geometry` is the EXACT sub-pixel area of each rectangle — `(x, y, width,
+    /// height)` in logical px, in the same order — for a surface that does not
+    /// sit on whole pixels, e.g. one laid out from measured text or under a
+    /// scale animation. The rectangles added by the callback stay the
+    /// whole-pixel bound; this is what the backdrop is drawn to, so it stops
+    /// being rounded away from the shape drawn over it. Empty leaves every
+    /// rectangle on its whole-pixel bound. Requires blur protocol v5.
     SetBlurRegion {
         callback: ActionCallback,
         radii: Vec<[u32; 4]>,
+        geometry: Vec<(f32, f32, f32, f32)>,
     },
     NewPopUp {
         settings: IcedNewPopupSettings,
