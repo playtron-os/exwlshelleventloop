@@ -100,4 +100,52 @@ impl SessionLockClipboard {
             }
         }
     }
+
+    /// Reads the primary selection synchronously.
+    ///
+    /// The primary selection is text-only, so unlike [`read_sync`] there is no
+    /// [`Kind`] to choose. A `None` from `window_clipboard` means the seat
+    /// offers no primary selection — nothing to paste, not a broken clipboard.
+    ///
+    /// [`read_sync`]: Self::read_sync
+    pub fn read_primary_sync(&self) -> Result<String, Error> {
+        match &self.state {
+            State::Connected(clipboard) => match clipboard.read_primary() {
+                Some(result) => result.map_err(|_| Error::ContentNotAvailable),
+                None => Err(Error::ContentNotAvailable),
+            },
+            State::Unavailable => Err(Error::ClipboardUnavailable),
+        }
+    }
+
+    /// Reads the primary selection.
+    pub fn read_primary(&self, callback: impl FnOnce(Result<String, Error>) + Send + 'static) {
+        callback(self.read_primary_sync());
+    }
+
+    /// Publishes the given text as the primary selection synchronously.
+    ///
+    /// Does not touch the clipboard: the two are separate selections, so
+    /// copy-on-select must not overwrite what the user last copied.
+    pub fn write_primary_sync(&mut self, text: String) -> Result<(), Error> {
+        match &mut self.state {
+            State::Connected(clipboard) => match clipboard.write_primary(text) {
+                Some(result) => result.map_err(|e| {
+                    log::warn!("error writing to primary selection: {e}");
+                    Error::ContentNotAvailable
+                }),
+                None => Err(Error::ClipboardUnavailable),
+            },
+            State::Unavailable => Err(Error::ClipboardUnavailable),
+        }
+    }
+
+    /// Publishes the given text as the primary selection.
+    pub fn write_primary(
+        &mut self,
+        text: String,
+        callback: impl FnOnce(Result<(), Error>) + Send + 'static,
+    ) {
+        callback(self.write_primary_sync(text));
+    }
 }

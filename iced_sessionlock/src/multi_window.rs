@@ -812,6 +812,27 @@ fn run_clipboard(
             IcedEvent::Clipboard(iced_core::clipboard::Event::Written(result)),
         ));
     }
+
+    // The primary selection is a separate channel from the clipboard, so its
+    // results come back as their own events — a middle-click paste must not be
+    // swallowed by whichever text input is focused.
+    if requests.primary_reads {
+        let result = clipboard.read_primary_sync();
+        iced_events.push((
+            window,
+            IcedEvent::Clipboard(iced_core::clipboard::Event::PrimaryRead(
+                result.map(Arc::new),
+            )),
+        ));
+    }
+
+    if let Some(text) = requests.primary_write {
+        let result = clipboard.write_primary_sync(text);
+        iced_events.push((
+            window,
+            IcedEvent::Clipboard(iced_core::clipboard::Event::PrimaryWritten(result)),
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -852,6 +873,16 @@ pub(crate) fn run_action<P, C, E: Executor>(
             }
             clipboard::Action::Write { content, channel } => {
                 clipboard.write(content, move |result| {
+                    let _ = channel.send(result);
+                });
+            }
+            clipboard::Action::ReadPrimary { channel } => {
+                clipboard.read_primary(move |result| {
+                    let _ = channel.send(result);
+                });
+            }
+            clipboard::Action::WritePrimary { text, channel } => {
+                clipboard.write_primary(text, move |result| {
                     let _ = channel.send(result);
                 });
             }
