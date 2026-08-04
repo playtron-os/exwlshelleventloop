@@ -2297,6 +2297,30 @@ pub(crate) fn update<P: IcedProgram, E: Executor>(
     runtime.track(recipes);
 }
 
+/// Read one [`Kind`] of clipboard content.
+///
+/// [`Kind::Files`] does not go through `window_clipboard`, which speaks only
+/// text: a file list lives on the Wayland selection as `text/uri-list`, and the
+/// event loop is the one holding that offer. Everything else is text and reads
+/// the way it always has.
+///
+/// [`Kind`]: iced_core::clipboard::Kind
+fn read_kind(
+    ev: &WindowState<IcedId>,
+    clipboard: &LayerShellClipboard,
+    kind: iced_core::clipboard::Kind,
+) -> Result<iced_core::clipboard::Content, iced_core::clipboard::Error> {
+    use iced_core::clipboard::{Content, Error, Kind};
+
+    if kind == Kind::Files {
+        return ev
+            .read_selection_uri_list()
+            .map(Content::Files)
+            .ok_or(Error::ContentNotAvailable);
+    }
+    clipboard.read_sync(kind)
+}
+
 /// Process clipboard requests from widget updates and feed results back as events.
 fn run_clipboard(
     ev: &mut WindowState<IcedId>,
@@ -2308,7 +2332,7 @@ fn run_clipboard(
     use std::sync::Arc;
 
     for kind in requests.reads {
-        let result = clipboard.read_sync(kind);
+        let result = read_kind(ev, clipboard, kind);
         iced_events.push((
             window,
             IcedEvent::Clipboard(iced_core::clipboard::Event::Read(result.map(Arc::new))),
@@ -2516,9 +2540,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
         },
         Action::Clipboard(action) => match action {
             clipboard::Action::Read { kind, channel } => {
-                clipboard.read(kind, move |result| {
-                    let _ = channel.send(result);
-                });
+                let _ = channel.send(read_kind(ev, clipboard, kind));
             }
             clipboard::Action::Write { content, channel } => {
                 clipboard.write(content, move |result| {

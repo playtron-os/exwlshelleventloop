@@ -891,6 +891,11 @@ type BlurParams = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
 /// drag-and-drop offer — what file managers use to advertise dragged files.
 const URI_LIST_MIME: &str = "text/uri-list";
 
+/// How long to wait for a source to write its URI list to the pipe we hand it.
+/// A cooperating source writes immediately; this only bounds a misbehaving one,
+/// and the read happens on the event-loop thread.
+const URI_LIST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// The drag-and-drop offer currently hovering one of our surfaces.
 #[derive(Debug, Clone)]
 struct DndCurrent {
@@ -1007,6 +1012,10 @@ pub struct WindowState<T> {
     dnd_offer_mimes: HashMap<ObjectId, Vec<String>>,
     /// The drag offer currently hovering a surface, plus the surface it's over.
     dnd_current: Option<DndCurrent>,
+    /// The clipboard selection offer and the MIME types it advertises. Held
+    /// rather than released on arrival so a paste can read `text/uri-list` off
+    /// it on demand — see [`WindowState::read_selection_uri_list`].
+    selection_offer: Option<(WlDataOffer, Vec<String>)>,
     /// Surface that initiated an outgoing drag — routes source-side events.
     dnd_source_origin: Option<id::Id>,
     /// Serial of the most recent pointer button press (required by `start_drag`).
@@ -2579,6 +2588,45 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
+    /// Read the clipboard selection as local file paths, for a paste.
+    ///
+    /// `None` when the clipboard holds no file list at all — nothing was ever
+    /// offered, or what is offered is not `text/uri-list` (plain text, say,
+    /// which the app's own clipboard already handles). An offered-but-empty
+    /// list comes back as `Some(vec![])`.
+    ///
+    /// Mirrors the drop path: the source writes the URI list to a pipe we hand
+    /// it, and we parse the paths out. The read blocks with the same short
+    /// timeout — a cooperating source writes immediately, so the timeout only
+    /// bounds the damage from one that does not.
+    ///
+    /// Note the selection is only offered to a client the compositor considers
+    /// focused, so this reads what was on the clipboard when this surface took
+    /// focus, which is exactly what a paste into it should see.
+    pub fn read_selection_uri_list(&self) -> Option<Vec<std::path::PathBuf>> {
+        use std::io::Read;
+        use std::os::fd::AsFd;
+
+        let (offer, mimes) = self.selection_offer.as_ref()?;
+        if !mimes.iter().any(|mime| mime == URI_LIST_MIME) {
+            return None;
+        }
+        let connection = self.connection.as_ref()?;
+
+        let (mut reader, writer) = std::os::unix::net::UnixStream::pair().ok()?;
+        offer.receive(URI_LIST_MIME.to_string(), writer.as_fd());
+        let _ = connection.flush();
+        // Our own end of the pipe must close, or the read below blocks until the
+        // timeout even after the source has written everything.
+        drop(writer);
+
+        let _ = reader.set_read_timeout(Some(URI_LIST_READ_TIMEOUT));
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+
+        Some(parse_uri_list(&buf))
+    }
+
     /// Begin an outgoing Wayland drag-and-drop from the pointer-focused surface,
     /// offering `mime_types` with the parallel pre-serialized `data`, advertising
     /// the given DnD action `bits`. No custom drag icon for now — the compositor
@@ -3554,6 +3602,7 @@ impl<T> Default for WindowState<T> {
             data_device: None,
             dnd_offer_mimes: HashMap::new(),
             dnd_current: None,
+            selection_offer: None,
             dnd_source_origin: None,
             last_button_serial: None,
             dnd_icon: None,
@@ -4590,8 +4639,7 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                             dnd.offer.receive(URI_LIST_MIME.to_string(), writer.as_fd());
                             let _ = conn.flush();
                             drop(writer);
-                            let _ = reader
-                                .set_read_timeout(Some(std::time::Duration::from_millis(250)));
+                            let _ = reader.set_read_timeout(Some(URI_LIST_READ_TIMEOUT));
                             use std::io::Read;
                             let mut buf = Vec::new();
                             let _ = reader.read_to_end(&mut buf);
@@ -4612,12 +4660,24 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                     dnd.offer.destroy();
                 }
             }
-            // A clipboard selection offer — we don't read the clipboard through
-            // this device (iced uses its own), so release it to avoid leaking the
-            // offer object.
-            wl_data_device::Event::Selection { id: Some(offer) } => {
-                state.dnd_offer_mimes.remove(&offer.id());
-                offer.destroy();
+            // A clipboard selection offer. Text still goes through iced's own
+            // clipboard, but a file list does not: it lives on the selection as
+            // `text/uri-list`, which `window_clipboard` cannot read. So hold the
+            // offer (releasing the one it replaces) and let a paste pull the URI
+            // list off it — see `read_selection_uri_list`. `None` means the
+            // selection was cleared.
+            wl_data_device::Event::Selection { id } => {
+                if let Some((previous, _)) = state.selection_offer.take() {
+                    state.dnd_offer_mimes.remove(&previous.id());
+                    previous.destroy();
+                }
+                if let Some(offer) = id {
+                    let mimes = state
+                        .dnd_offer_mimes
+                        .remove(&offer.id())
+                        .unwrap_or_default();
+                    state.selection_offer = Some((offer, mimes));
+                }
             }
             _ => {}
         }

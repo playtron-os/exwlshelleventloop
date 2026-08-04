@@ -45,25 +45,6 @@ impl LayerShellClipboard {
         }
     }
 
-    /// Reads the current content of the [`Clipboard`].
-    pub fn read(&self, kind: Kind, callback: impl FnOnce(Result<Content, Error>) + Send + 'static) {
-        match &self.state {
-            State::Connected(clipboard) => {
-                let result = match kind {
-                    Kind::Text => clipboard
-                        .read()
-                        .map(Content::Text)
-                        .map_err(|_| Error::ContentNotAvailable),
-                    _ => Err(Error::ContentNotAvailable),
-                };
-                callback(result);
-            }
-            State::Unavailable => {
-                callback(Err(Error::ClipboardUnavailable));
-            }
-        }
-    }
-
     /// Writes the given content to the [`Clipboard`] synchronously.
     pub fn write_sync(&mut self, content: Content) -> Result<(), Error> {
         match &mut self.state {
