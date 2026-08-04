@@ -2607,11 +2607,22 @@ impl<T: 'static> WindowState<T> {
         use std::io::Read;
         use std::os::fd::AsFd;
 
-        let (offer, mimes) = self.selection_offer.as_ref()?;
+        let Some((offer, mimes)) = self.selection_offer.as_ref() else {
+            log::info!(target: "kcopy_dnd", "read_selection_uri_list: no selection offer held");
+            return None;
+        };
         if !mimes.iter().any(|mime| mime == URI_LIST_MIME) {
+            log::info!(target: "kcopy_dnd", "read_selection_uri_list: no uri-list among {mimes:?}");
             return None;
         }
-        let connection = self.connection.as_ref()?;
+        // Taken from the offer rather than `self.connection`, which is only ever
+        // populated by the optional `with_connection` builder — iced_layershell
+        // leaves it `None`, so reading it here silently found nothing to flush.
+        let Some(backend) = offer.backend().upgrade() else {
+            log::info!(target: "kcopy_dnd", "read_selection_uri_list: offer backend is gone");
+            return None;
+        };
+        let connection = Connection::from_backend(backend);
 
         let (mut reader, writer) = std::os::unix::net::UnixStream::pair().ok()?;
         offer.receive(URI_LIST_MIME.to_string(), writer.as_fd());
@@ -2624,7 +2635,9 @@ impl<T: 'static> WindowState<T> {
         let mut buf = Vec::new();
         let _ = reader.read_to_end(&mut buf);
 
-        Some(parse_uri_list(&buf))
+        let paths = parse_uri_list(&buf);
+        log::info!(target: "kcopy_dnd", "read_selection_uri_list: {} bytes -> {} path(s)", buf.len(), paths.len());
+        Some(paths)
     }
 
     /// Begin an outgoing Wayland drag-and-drop from the pointer-focused surface,
@@ -4676,7 +4689,10 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                         .dnd_offer_mimes
                         .remove(&offer.id())
                         .unwrap_or_default();
+                    log::info!(target: "kcopy_dnd", "Selection offer, mimes: {mimes:?}");
                     state.selection_offer = Some((offer, mimes));
+                } else {
+                    log::info!(target: "kcopy_dnd", "Selection cleared");
                 }
             }
             _ => {}
