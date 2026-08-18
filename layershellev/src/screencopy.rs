@@ -82,6 +82,12 @@ pub(crate) struct SessionConstraints {
     pub shm_format: Option<wl_shm::Format>,
 }
 
+impl SessionConstraints {
+    fn matches(&self, width: u32, height: u32, shm_format: wl_shm::Format) -> bool {
+        self.width == width && self.height == height && self.shm_format == Some(shm_format)
+    }
+}
+
 /// One SHM-backed buffer in the double-buffer swapchain
 pub(crate) struct ShmBuffer {
     pub file: std::fs::File,
@@ -113,8 +119,8 @@ pub(crate) struct BufferSwapchain {
     pub buffers: [ShmBuffer; 2],
     /// Index of the back buffer (being captured into)
     pub back: usize,
-    /// Whether a capture is currently in flight (waiting for Ready)
-    pub capture_in_flight: bool,
+    /// Protocol ID of the frame currently being captured into the back buffer.
+    pub in_flight: Option<u32>,
 }
 
 impl BufferSwapchain {
@@ -166,6 +172,19 @@ impl ScreencopyState {
 
     pub fn is_available(&self) -> bool {
         self.source_manager.is_some() && self.capture_manager.is_some()
+    }
+
+    /// Drop every trace of a toplevel's capture state.
+    ///
+    /// Wayland recycles object IDs, so anything left keyed under a dead
+    /// toplevel becomes a trap for the next window that inherits the ID.
+    pub fn forget_toplevel(&mut self, toplevel_id: u32) {
+        if let Some(session) = self.sessions.remove(&toplevel_id) {
+            session.destroy();
+        }
+        self.constraints.remove(&toplevel_id);
+        self.swapchains.remove(&toplevel_id);
+        self.last_capture.remove(&toplevel_id);
     }
 }
 
@@ -371,9 +390,22 @@ where
         BufferSwapchain {
             buffers: [buf0, buf1],
             back: 0,
-            capture_in_flight: false,
+            in_flight: None,
         },
     );
+}
+
+/// Whether the allocated buffers no longer match the session's constraints.
+fn swapchain_is_stale(state: &impl ScreencopyHandler, toplevel_id: u32) -> bool {
+    let sc = state.screencopy_state();
+    let (Some(swap), Some(constraints)) = (
+        sc.swapchains.get(&toplevel_id),
+        sc.constraints.get(&toplevel_id),
+    ) else {
+        return false;
+    };
+    let buffer = &swap.buffers[0];
+    !constraints.matches(buffer.width, buffer.height, buffer.shm_format)
 }
 
 /// Start capturing into the back buffer of the swapchain
@@ -385,7 +417,7 @@ where
     {
         let sc = state.screencopy_state();
         if let Some(swap) = sc.swapchains.get(&toplevel_id) {
-            if swap.capture_in_flight {
+            if swap.in_flight.is_some() {
                 return;
             }
         } else {
@@ -416,7 +448,7 @@ where
         .swapchains
         .get_mut(&toplevel_id)
         .unwrap()
-        .capture_in_flight = true;
+        .in_flight = Some(frame.id().protocol_id());
 }
 
 /// Read pixels from the back buffer (just captured), swap, and emit the event.
@@ -428,7 +460,7 @@ fn read_frame_pixels(state: &mut impl ScreencopyHandler, toplevel_id: u32) {
         return;
     };
 
-    swap.capture_in_flight = false;
+    swap.in_flight = None;
 
     let back = &mut swap.buffers[swap.back];
     let src_w = back.width;
@@ -651,7 +683,11 @@ where
             }
             ext_image_copy_capture_session_v1::Event::Done => {
                 log::debug!("Screencopy constraints done toplevel={}", tid);
-                // Allocate double-buffer swapchain if not yet created
+                // Constraints change while the session is live when the window
+                // resizes; buffers that no longer match fail every later frame.
+                if swapchain_is_stale(state, tid) {
+                    state.screencopy_state_mut().swapchains.remove(&tid);
+                }
                 if !state.screencopy_state().swapchains.contains_key(&tid) {
                     create_swapchain(state, tid, qh);
                 }
@@ -721,6 +757,14 @@ where
                     _ => "unrecognized".to_string(),
                 };
                 log::warn!("Screencopy frame failed toplevel={}: {}", tid, reason_str);
+                // Only release the slot if this is still the pending frame; a
+                // constraints change may already have issued a replacement.
+                let failed_frame = proxy.id().protocol_id();
+                if let Some(swap) = state.screencopy_state_mut().swapchains.get_mut(&tid)
+                    && swap.in_flight == Some(failed_frame)
+                {
+                    swap.in_flight = None;
+                }
                 state.screencopy_event(ScreencopyEvent::Failed {
                     toplevel_id: tid,
                     reason: reason_str,
@@ -761,5 +805,56 @@ where
         _conn: &Connection,
         _qh: &QueueHandle<D>,
     ) {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn constraints(
+        width: u32,
+        height: u32,
+        shm_format: Option<wl_shm::Format>,
+    ) -> SessionConstraints {
+        SessionConstraints {
+            width,
+            height,
+            shm_format,
+        }
+    }
+
+    #[test]
+    fn constraints_match_a_buffer_of_the_same_shape() {
+        assert!(
+            constraints(960, 576, Some(wl_shm::Format::Abgr8888)).matches(
+                960,
+                576,
+                wl_shm::Format::Abgr8888
+            )
+        );
+    }
+
+    #[test]
+    fn a_resized_window_no_longer_matches_its_buffers() {
+        let c = constraints(1440, 864, Some(wl_shm::Format::Abgr8888));
+        assert!(!c.matches(1440, 800, wl_shm::Format::Abgr8888));
+        assert!(!c.matches(1280, 864, wl_shm::Format::Abgr8888));
+    }
+
+    #[test]
+    fn a_different_format_no_longer_matches() {
+        assert!(
+            !constraints(960, 576, Some(wl_shm::Format::Abgr8888)).matches(
+                960,
+                576,
+                wl_shm::Format::Xbgr8888
+            )
+        );
+    }
+
+    #[test]
+    fn constraints_that_never_arrived_match_nothing() {
+        assert!(!constraints(0, 0, None).matches(0, 0, wl_shm::Format::Abgr8888));
     }
 }

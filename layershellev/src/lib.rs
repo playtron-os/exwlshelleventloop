@@ -5930,6 +5930,8 @@ impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
 
     fn remove_ext_toplevel_handle(&mut self, id: u32) {
         self.ext_toplevel_handles.remove(&id);
+        #[cfg(feature = "screencopy")]
+        self.screencopy.forget_toplevel(id);
     }
 
     fn get_ext_toplevel_handle(&self, id: u32) -> Option<&wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1>{
