@@ -26,6 +26,11 @@ iced_renderer.workspace = true
 iced_runtime.workspace = true
 iced_core.workspace = true
 iced_futures.workspace = true
+# For `session_hold`, which talks to the compositor on its own connection —
+# see that module for why it cannot use the runtime's.
+wayland-client.workspace = true
+wayland-backend.workspace = true
+wayland-scanner.workspace = true
 iced_graphics.workspace = true
 iced_layershell_macros.workspace = true
 iced_program.workspace = true

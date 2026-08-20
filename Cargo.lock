@@ -1873,6 +1873,9 @@ dependencies = [
  "mundy",
  "thiserror 2.0.20",
  "tracing",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
  "window_clipboard",
 ]
 
