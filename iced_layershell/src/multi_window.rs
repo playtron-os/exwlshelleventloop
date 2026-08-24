@@ -33,10 +33,7 @@ use iced_runtime::user_interface;
 use layershellev::{
     LayerShellEvent, NewPopUpSettings, RefreshRequest, ReturnData, WindowState, WindowWrapper,
     id::Id as LayerShellId,
-    reexport::{
-        wayland_client::{WlCompositor, WlRegion},
-        zwp_virtual_keyboard_v1,
-    },
+    reexport::{wayland_client::WlCompositor, zwp_virtual_keyboard_v1},
 };
 use std::{
     borrow::Cow,
@@ -198,17 +195,7 @@ where
                     .expect("could not bind wl_compositor");
                 waiting_layer_shell_events.push_back((
                     None,
-                    IcedLayerShellEvent::UpdateInputRegion(wl_compositor.create_region(qh, ())),
-                ));
-                waiting_layer_shell_events.push_back((
-                    None,
-                    IcedLayerShellEvent::UpdateBlurRegion(wl_compositor.create_region(qh, ())),
-                ));
-                waiting_layer_shell_events.push_back((
-                    None,
-                    IcedLayerShellEvent::UpdateAdaptiveForegroundRegion(
-                        wl_compositor.create_region(qh, ()),
-                    ),
+                    IcedLayerShellEvent::UpdateCompositor(wl_compositor.clone()),
                 ));
 
                 if let Some(virtual_keyboard_setting) = settings.virtual_keyboard_support.as_ref() {
@@ -334,9 +321,8 @@ where
     /// Deferred shadow/blur/corner_radius for auto_size windows (applied after resize completes)
     auto_size_deferred_effects: HashMap<IcedId, (bool, bool, Option<[u32; 4]>)>,
     clipboard: LayerShellClipboard,
-    wl_input_region: Option<WlRegion>,
-    wl_blur_region: Option<WlRegion>,
-    wl_adaptive_foreground_region: Option<WlRegion>,
+    /// Kept so every region request can have a `wl_region` of its own.
+    wl_compositor: Option<WlCompositor>,
     user_interfaces: UserInterfaces<P>,
     waiting_layer_shell_actions: Vec<(Option<IcedId>, LayershellCustomAction)>,
     iced_events: Vec<(IcedId, IcedEvent)>,
@@ -387,9 +373,7 @@ where
             auto_size_max: HashMap::new(),
             auto_size_deferred_effects: HashMap::new(),
             clipboard: LayerShellClipboard::unconnected(),
-            wl_input_region: Default::default(),
-            wl_blur_region: Default::default(),
-            wl_adaptive_foreground_region: Default::default(),
+            wl_compositor: Default::default(),
             user_interfaces: UserInterfaces::new(application),
             waiting_layer_shell_actions: Default::default(),
             iced_events: Default::default(),
@@ -459,10 +443,8 @@ where
         }
 
         match layer_shell_event {
-            IcedLayerShellEvent::UpdateInputRegion(region) => self.wl_input_region = Some(region),
-            IcedLayerShellEvent::UpdateBlurRegion(region) => self.wl_blur_region = Some(region),
-            IcedLayerShellEvent::UpdateAdaptiveForegroundRegion(region) => {
-                self.wl_adaptive_foreground_region = Some(region)
+            IcedLayerShellEvent::UpdateCompositor(compositor) => {
+                self.wl_compositor = Some(compositor)
             }
             IcedLayerShellEvent::Window(LayerShellWindowEvent::Refresh) => {
                 self.handle_refresh_event(ev, layer_shell_id)
@@ -1523,57 +1505,47 @@ where
             } => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let set_region = callback.0;
-                let Some(region) = &self.wl_blur_region else {
+                let Some(compositor) = &self.wl_compositor else {
                     tracing::warn!(
-                        "wl_blur_region is not set, ignore SetBlurRegion, window_id: {:?}",
+                        "wl_compositor is not bound, ignore SetBlurRegion, window_id: {:?}",
                         iced_id
                     );
                     return;
                 };
 
-                let window_size = layer_shell_window.get_size();
-                let width: i32 = window_size.0.try_into().unwrap_or_default();
-                let height: i32 = window_size.1.try_into().unwrap_or_default();
-
-                tracing::info!(
-                    "SetBlurRegion: window_size=({}, {}), subtracting old then applying new regions",
-                    width,
-                    height
-                );
-
-                // Clear region first, then let callback add blur rectangles
-                region.subtract(0, 0, width, height);
+                // This surface's own region, starting empty — see the note in
+                // `SetInputRegion`. Sharing one across surfaces made a region
+                // whatever the last caller left behind, and clearing it by
+                // subtracting the current window's rect missed anything a larger
+                // surface had added.
+                let region = compositor.create_region(layer_shell_window.qh(), ());
 
                 let surface = layer_shell_window.get_wlsurface().clone();
-                tracing::info!(
-                    ?iced_id,
-                    "SetBlurRegion: calling set_blur_region_for_surface (creates new blur obj, calls set_region + commit)"
-                );
-                ev.set_blur_region_for_surface(&surface, region, &radii, &geometry, |r| {
+                ev.set_blur_region_for_surface(&surface, &region, &radii, &geometry, |r| {
                     set_region(r)
                 });
-                tracing::info!(?iced_id, "SetBlurRegion: done");
+                region.destroy();
+                tracing::debug!(?iced_id, "SetBlurRegion: done");
             }
             LayershellCustomAction::SetAdaptiveForegroundRegion { callback } => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let add_zones = callback.0;
-                let Some(region) = &self.wl_adaptive_foreground_region else {
+                let Some(compositor) = &self.wl_compositor else {
                     tracing::warn!(
-                        "wl_adaptive_foreground_region is not set, ignore SetAdaptiveForegroundRegion, window_id: {:?}",
+                        "wl_compositor is not bound, ignore SetAdaptiveForegroundRegion, window_id: {:?}",
                         iced_id
                     );
                     return;
                 };
 
-                // Clear before the callback re-adds, so zone indices stay tied to
-                // this update's rectangles rather than accumulating across updates.
-                let window_size = layer_shell_window.get_size();
-                let width: i32 = window_size.0.try_into().unwrap_or_default();
-                let height: i32 = window_size.1.try_into().unwrap_or_default();
-                region.subtract(0, 0, width, height);
+                // Fresh and empty, so zone indices stay tied to this update's
+                // rectangles — and belong to this surface alone. See the note in
+                // `SetInputRegion`.
+                let region = compositor.create_region(layer_shell_window.qh(), ());
 
                 let surface = layer_shell_window.get_wlsurface().clone();
-                ev.set_adaptive_foreground_region_for_surface(&surface, region, |r| add_zones(r));
+                ev.set_adaptive_foreground_region_for_surface(&surface, &region, |r| add_zones(r));
+                region.destroy();
                 tracing::debug!(?iced_id, "SetAdaptiveForegroundRegion: done");
             }
             LayershellCustomAction::ShadowChange(enabled) => {
@@ -1621,25 +1593,33 @@ where
             LayershellCustomAction::SetInputRegion(set_region) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let set_region = set_region.0;
-                let Some(region) = &self.wl_input_region else {
+                let Some(compositor) = &self.wl_compositor else {
                     tracing::warn!(
-                        "wl_input_region is not set, ignore SetInputRegion, window_id: {:?}",
+                        "wl_compositor is not bound, ignore SetInputRegion, window_id: {:?}",
                         iced_id
                     );
                     return;
                 };
 
-                let window_size = layer_shell_window.get_size();
-                let width: i32 = window_size.0.try_into().unwrap_or_default();
-                let height: i32 = window_size.1.try_into().unwrap_or_default();
+                // A region of this surface's own, not one shared with every
+                // other surface in the application. The compositor copies a
+                // region when the surface commits, so a shared object handed to
+                // two surfaces gives whichever commits later the other's
+                // rectangles — silently, and depending only on ordering.
+                //
+                // Starting empty also removes the need to clear it first. The
+                // old code subtracted the CURRENT window's rect, which left
+                // anything belonging to a larger surface untouched.
+                let region = compositor.create_region(layer_shell_window.qh(), ());
+                set_region(&region);
 
-                region.subtract(0, 0, width, height);
-                set_region(region);
-
-                layer_shell_window
-                    .get_wlsurface()
-                    .set_input_region(self.wl_input_region.as_ref());
-                layer_shell_window.get_wlsurface().commit();
+                let surface = layer_shell_window.get_wlsurface();
+                surface.set_input_region(Some(&region));
+                surface.commit();
+                // The compositor took its copy at commit; this object has no
+                // further use, and leaking one per request would accumulate for
+                // the lifetime of the application.
+                region.destroy();
             }
             LayershellCustomAction::VirtualKeyboardPressed { time, key } => {
                 use layershellev::reexport::wayland_client::KeyState;

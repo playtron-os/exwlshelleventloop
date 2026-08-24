@@ -4,7 +4,7 @@ use layershellev::DispatchMessage;
 #[cfg(feature = "foreign-toplevel")]
 use layershellev::foreign_toplevel::ForeignToplevelEvent;
 use layershellev::keyboard::ModifiersState;
-use layershellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlRegion};
+use layershellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlCompositor};
 #[cfg(feature = "screencopy")]
 pub use layershellev::screencopy::{CapturedFrame, ScreencopyEvent};
 use layershellev::xkb_keyboard::KeyEvent as LayerShellKeyEvent;
@@ -611,12 +611,17 @@ pub struct UsableAreaEvent {
 
 #[derive(Debug)]
 pub enum IcedLayerShellEvent<Message> {
-    UpdateInputRegion(WlRegion),
-    UpdateBlurRegion(WlRegion),
-    /// Adaptive-foreground zones get their own region rather than sharing the
-    /// blur one: the two are set independently, and clearing one to rebuild it
-    /// would drop the other's rectangles.
-    UpdateAdaptiveForegroundRegion(WlRegion),
+    /// The compositor global, kept so a fresh `wl_region` can be made per
+    /// request.
+    ///
+    /// This used to be three long-lived regions — one for input, one for blur,
+    /// one for adaptive-foreground zones — shared by every surface in the
+    /// application. Separating them by PURPOSE was not enough: a region is
+    /// copied by the compositor when a surface commits, so one surface's
+    /// rectangles were whatever the last caller had left in the shared object.
+    /// A client that set a region on two surfaces got a result that depended on
+    /// commit ordering, silently and with nothing logged.
+    UpdateCompositor(WlCompositor),
     Window(WindowEvent),
     UserAction(Action<Message>),
     NormalDispatch,

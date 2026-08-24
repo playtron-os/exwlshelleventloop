@@ -680,6 +680,14 @@ impl<T> rwh_06::HasDisplayHandle for WindowState<T> {
 }
 impl<T> WindowStateUnit<T> {
     /// get the wl surface from WindowState
+    /// The queue handle this surface was created with.
+    ///
+    /// Exposed so callers can create short-lived protocol objects — a
+    /// `wl_region` per request, rather than sharing one across every surface.
+    pub fn qh(&self) -> &QueueHandle<WindowState<T>> {
+        &self.qh
+    }
+
     pub fn get_wlsurface(&self) -> &WlSurface {
         &self.wl_surface
     }
