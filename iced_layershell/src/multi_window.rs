@@ -1613,6 +1613,15 @@ where
                 let region = compositor.create_region(layer_shell_window.qh(), ());
                 set_region(&region);
 
+                // TEMPORARY: an empty region has been landing on the wrong
+                // surface. The window size distinguishes them where the
+                // namespace is not reachable from here.
+                tracing::info!(
+                    ?iced_id,
+                    window_size = ?layer_shell_window.get_size(),
+                    "SetInputRegion applied"
+                );
+
                 let surface = layer_shell_window.get_wlsurface();
                 surface.set_input_region(Some(&region));
                 surface.commit();
