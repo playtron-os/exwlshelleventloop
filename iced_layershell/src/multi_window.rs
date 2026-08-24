@@ -1663,13 +1663,6 @@ where
                 );
                 set_region(region);
 
-                // TEMPORARY: which window each request reaches, by size.
-                tracing::info!(
-                    ?iced_id,
-                    window_size = ?layer_shell_window.get_size(),
-                    "SetInputRegion applied"
-                );
-
                 let surface = layer_shell_window.get_wlsurface();
                 surface.set_input_region(Some(region));
                 surface.commit();
