@@ -19,7 +19,6 @@ use wayland_client::{
 use crate::foreign_toplevel::ForeignToplevelEvent;
 #[cfg(feature = "screencopy")]
 use crate::screencopy::ScreencopyEvent;
-use crate::voice_mode::VoiceModeEvent;
 use crate::{id, xkb_keyboard::KeyEvent};
 
 use crate::keyboard::ModifiersState;
@@ -506,8 +505,6 @@ pub(crate) enum DispatchMessageInner {
     AutoHideVisibilityChanged(bool),
     /// Layer-surface visibility changed via hide/show protocol (true = visible, false = hidden)
     SurfaceVisibilityChanged(bool),
-    /// Voice mode event from compositor
-    VoiceMode(VoiceModeEvent),
     /// Foreign toplevel event
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
@@ -670,8 +667,6 @@ pub enum DispatchMessage {
     SurfaceVisibilityChanged {
         visible: bool,
     },
-    /// Voice mode event from compositor (enabled/disabled, partial result, final result)
-    VoiceMode(VoiceModeEvent),
     /// Foreign toplevel event (new window, window changed, window closed)
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
@@ -882,7 +877,6 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::SurfaceVisibilityChanged(visible) => {
                 DispatchMessage::SurfaceVisibilityChanged { visible }
             }
-            DispatchMessageInner::VoiceMode(event) => DispatchMessage::VoiceMode(event),
             #[cfg(feature = "foreign-toplevel")]
             DispatchMessageInner::ForeignToplevel(event) => DispatchMessage::ForeignToplevel(event),
             #[cfg(feature = "screencopy")]

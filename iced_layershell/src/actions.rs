@@ -252,15 +252,6 @@ pub enum LayershellCustomAction {
     ShowWindow,
     /// Change the home visibility mode for the surface
     VisibilityModeChange(VisibilityMode),
-    /// Acknowledge a will_stop event from the compositor.
-    /// serial - the serial from the will_stop event
-    /// freeze - if true, freeze the orb in place for processing.
-    ///          if false, proceed with hiding the orb.
-    VoiceAckStop(u32, bool),
-    /// Dismiss the frozen voice orb.
-    /// This tells the compositor to hide the orb when transcription completes
-    /// without spawning a new window (e.g., empty result or error).
-    VoiceDismiss,
     /// Execute a toplevel action (activate, close, minimize, etc.)
     ToplevelAction(ToplevelAction),
     /// Execute a screencopy action (capture a toplevel window screenshot)

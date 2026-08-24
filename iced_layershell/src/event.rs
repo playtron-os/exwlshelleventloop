@@ -7,7 +7,6 @@ use layershellev::keyboard::ModifiersState;
 use layershellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlRegion};
 #[cfg(feature = "screencopy")]
 pub use layershellev::screencopy::{CapturedFrame, ScreencopyEvent};
-pub use layershellev::voice_mode::VoiceModeEvent;
 use layershellev::xkb_keyboard::KeyEvent as LayerShellKeyEvent;
 #[cfg(any(feature = "foreign-toplevel", feature = "screencopy"))]
 use std::sync::OnceLock;
@@ -508,8 +507,6 @@ pub enum WindowEvent {
     SurfaceVisibilityChanged {
         visible: bool,
     },
-    /// Voice mode event from compositor (started, stopped, cancelled, orb attached/detached)
-    VoiceMode(VoiceModeEvent),
     /// Foreign toplevel event (window created, changed, or closed)
     #[cfg(feature = "foreign-toplevel")]
     ForeignToplevel(ForeignToplevelEvent),
@@ -763,7 +760,6 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::SurfaceVisibilityChanged { visible } => {
                 WindowEvent::SurfaceVisibilityChanged { visible: *visible }
             }
-            DispatchMessage::VoiceMode(event) => WindowEvent::VoiceMode(event.clone()),
             #[cfg(feature = "foreign-toplevel")]
             DispatchMessage::ForeignToplevel(event) => WindowEvent::ForeignToplevel(event.clone()),
             #[cfg(feature = "screencopy")]

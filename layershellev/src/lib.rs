@@ -138,7 +138,6 @@ pub mod screencopy;
 pub mod shadow;
 mod strtoshape;
 pub mod tooltip;
-pub mod voice_mode;
 
 use events::DispatchMessageInner;
 
@@ -1199,17 +1198,6 @@ pub struct WindowState<T> {
     /// Current home state from compositor (true = at home, false = windows visible)
     is_home: bool,
 
-    /// Whether to register for voice mode events
-    voice_mode_enabled: bool,
-    /// Voice mode manager (bound lazily when voice_mode_enabled is true)
-    voice_mode_manager:
-        Option<voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1>,
-    /// Voice mode receivers per surface (keyed by surface protocol ID)
-    voice_mode_receivers:
-        HashMap<u32, voice_mode::zcosmic_voice_mode_v1::ZcosmicVoiceModeV1>,
-    /// Pending voice mode events from compositor
-    voice_mode_events: Vec<voice_mode::VoiceModeEvent>,
-
     /// Layer surface visibility manager (bound lazily when needed)
     layer_surface_visibility_manager: Option<
         layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
@@ -1372,9 +1360,6 @@ impl<T> WindowState<T> {
         if let Some(home_obj) = self.home_visibility_controllers.remove(&surface_id) {
             home_obj.destroy();
         }
-        if let Some(voice_obj) = self.voice_mode_receivers.remove(&surface_id) {
-            voice_obj.destroy();
-        }
 
         self.units[index].shell.destroy();
         self.units[index].wl_surface.destroy();
@@ -1416,28 +1401,6 @@ impl<T> WindowState<T> {
     /// Returns true if at home (no windows visible), false otherwise
     pub fn is_home(&self) -> bool {
         self.is_home
-    }
-
-    /// Acknowledge a will_stop event from the compositor.
-    /// serial - the serial from the will_stop event
-    /// freeze - if true, freeze the orb in place for processing.
-    ///          if false, proceed with hiding the orb.
-    pub fn voice_ack_stop(&self, serial: u32, freeze: bool) {
-        let freeze_val: u32 = if freeze { 1 } else { 0 };
-        for receiver in self.voice_mode_receivers.values() {
-            receiver.ack_stop(serial, freeze_val);
-        }
-    }
-
-    /// Dismiss the frozen voice orb.
-    /// This tells the compositor to hide the orb when transcription completes
-    /// without spawning a new window (e.g., empty result or error).
-    /// Only valid when orb is in frozen state.
-    pub fn voice_dismiss(&self) {
-        log::info!("Sending voice dismiss to compositor");
-        for receiver in self.voice_mode_receivers.values() {
-            receiver.dismiss();
-        }
     }
 
     fn push_window(&mut self, window_state_unit: WindowStateUnit<T>) {
@@ -1717,7 +1680,7 @@ impl<T> WindowState<T> {
 
 impl<T: 'static> WindowState<T> {
     /// Apply the configured surface effects (blur, corner radius, shadow, home
-    /// visibility, voice mode) to a freshly created layer-shell surface.
+    /// visibility) to a freshly created layer-shell surface.
     ///
     /// Shared by the initial `AllScreens` surface creation and the runtime
     /// `NewDisplay` path, so a monitor that is enabled after startup gets the
@@ -1778,19 +1741,6 @@ impl<T: 'static> WindowState<T> {
         {
             self.home_visibility_controllers
                 .insert(surface_id, controller);
-        }
-
-        // Register surface for voice mode events if enabled
-        if self.voice_mode_enabled {
-            let is_default = self.voice_mode_receivers.is_empty();
-            if let Some(receiver) = register_voice_mode_for_surface(
-                &self.voice_mode_manager,
-                wl_surface,
-                qh,
-                is_default,
-            ) {
-                self.voice_mode_receivers.insert(surface_id, receiver);
-            }
         }
 
         // Register surface for compositor usable-area reporting.
@@ -3303,35 +3253,6 @@ fn apply_home_visibility_to_surface<T: 'static>(
     }
 }
 
-/// Register a surface for voice mode events using the voice mode protocol
-/// Returns the voice mode receiver so it can be stored and destroyed later
-fn register_voice_mode_for_surface<T: 'static>(
-    voice_mode_manager: &Option<
-        voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1,
-    >,
-    surface: &WlSurface,
-    qh: &QueueHandle<WindowState<T>>,
-    is_default: bool,
-) -> Option<voice_mode::zcosmic_voice_mode_v1::ZcosmicVoiceModeV1> {
-    if let Some(manager) = voice_mode_manager {
-        let receiver_data = voice_mode::VoiceModeReceiverData {
-            surface: surface.clone(),
-            is_default,
-        };
-        // is_default is passed as uint (1 for default, 0 for window-specific)
-        let is_default_uint = if is_default { 1 } else { 0 };
-        let receiver = manager.get_voice_mode(surface, is_default_uint, qh, receiver_data);
-        if is_default {
-            log::info!("Registered surface as default voice mode receiver");
-        } else {
-            log::info!("Registered surface for voice mode events");
-        }
-        Some(receiver)
-    } else {
-        None
-    }
-}
-
 impl<T> WindowState<T> {
     /// create a WindowState, you need to pass a namespace in
     pub fn new(namespace: &str) -> Self {
@@ -3456,14 +3377,6 @@ impl<T> WindowState<T> {
     #[cfg(feature = "foreign-toplevel")]
     pub fn with_foreign_toplevel(mut self, enabled: bool) -> Self {
         self.foreign_toplevel_enabled = enabled;
-        self
-    }
-
-    /// Enable voice mode protocol support (requires compositor support for zcosmic_voice_mode_v1)
-    /// When enabled, the surface will receive voice mode events from the compositor.
-    /// The surface is automatically registered as a voice mode receiver with the compositor.
-    pub fn with_voice_mode(mut self, enabled: bool) -> Self {
-        self.voice_mode_enabled = enabled;
         self
     }
 
@@ -3691,11 +3604,6 @@ impl<T> Default for WindowState<T> {
             home_visibility_manager: None,
             home_visibility_controllers: HashMap::new(),
             is_home: false,
-
-            voice_mode_enabled: false,
-            voice_mode_manager: None,
-            voice_mode_receivers: HashMap::new(),
-            voice_mode_events: Vec::new(),
 
             layer_surface_visibility_manager: None,
             layer_surface_visibility_controllers: HashMap::new(),
@@ -5750,129 +5658,6 @@ impl<T: 'static>
     }
 }
 
-// Voice mode protocol delegates
-impl<T: 'static>
-    Dispatch<
-        voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1,
-        voice_mode::VoiceModeManagerData,
-    > for WindowState<T>
-{
-    fn event(
-        _state: &mut Self,
-        _proxy: &voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1,
-        _event: <voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1 as Proxy>::Event,
-        _data: &voice_mode::VoiceModeManagerData,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        // No events for manager
-    }
-}
-
-impl<T: 'static>
-    Dispatch<
-        voice_mode::zcosmic_voice_mode_v1::ZcosmicVoiceModeV1,
-        voice_mode::VoiceModeReceiverData,
-    > for WindowState<T>
-{
-    fn event(
-        state: &mut Self,
-        _proxy: &voice_mode::zcosmic_voice_mode_v1::ZcosmicVoiceModeV1,
-        event: <voice_mode::zcosmic_voice_mode_v1::ZcosmicVoiceModeV1 as Proxy>::Event,
-        data: &voice_mode::VoiceModeReceiverData,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        use voice_mode::zcosmic_voice_mode_v1::{Event, OrbState};
-        use wayland_client::WEnum;
-
-        log::debug!(
-            "Voice mode receiver event: {:?}, is_default: {}",
-            event,
-            data.is_default
-        );
-
-        let voice_event = match event {
-            Event::Start { orb_state } => {
-                let orb_state = match orb_state {
-                    WEnum::Value(s) => s,
-                    WEnum::Unknown(v) => {
-                        log::warn!("Unknown orb state value: {}", v);
-                        OrbState::Hidden
-                    }
-                };
-                // Set voice active immediately so will_stop can respond correctly
-                // Don't wait for iced's event loop to process the message
-                voice_mode::set_voice_active(true);
-                log::info!(
-                    "Voice mode started, orb_state: {:?}, voice_active set to true",
-                    orb_state
-                );
-                voice_mode::VoiceModeEvent::Started { orb_state }
-            }
-            Event::Stop => {
-                // Clear voice active on stop
-                voice_mode::set_voice_active(false);
-                log::info!("Voice mode stopped, voice_active set to false");
-                voice_mode::VoiceModeEvent::Stopped
-            }
-            Event::Cancel => {
-                // Clear voice active on cancel
-                voice_mode::set_voice_active(false);
-                log::info!("Voice mode cancelled, voice_active set to false");
-                voice_mode::VoiceModeEvent::Cancelled
-            }
-            Event::OrbAttached {
-                x,
-                y,
-                width,
-                height,
-            } => {
-                log::debug!(
-                    "Voice orb attached: x={}, y={}, width={}, height={}",
-                    x,
-                    y,
-                    width,
-                    height
-                );
-                voice_mode::VoiceModeEvent::OrbAttached {
-                    x,
-                    y,
-                    width,
-                    height,
-                }
-            }
-            Event::OrbDetached => {
-                log::debug!("Voice orb detached");
-                voice_mode::VoiceModeEvent::OrbDetached
-            }
-            Event::WillStop { serial } => {
-                // Immediately respond with cached voice active state
-                // This avoids round-trip through iced's event loop
-                let freeze = voice_mode::is_voice_active();
-                log::info!(
-                    "Voice mode will_stop, serial: {}, auto-responding with freeze: {}",
-                    serial,
-                    freeze
-                );
-                _proxy.ack_stop(serial, if freeze { 1 } else { 0 });
-                voice_mode::VoiceModeEvent::WillStop { serial }
-            }
-            Event::FocusInput => {
-                log::info!("Voice mode focus_input (tap detected)");
-                voice_mode::VoiceModeEvent::FocusInput
-            }
-        };
-
-        // Store the event for later processing
-        state.voice_mode_events.push(voice_event.clone());
-        // Also push to message queue
-        state
-            .message
-            .push((None, DispatchMessageInner::VoiceMode(voice_event)));
-    }
-}
-
 // Layer surface dismiss protocol implementation
 #[allow(private_interfaces)]
 impl<T: 'static> layer_surface_dismiss::LayerSurfaceDismissHandler for WindowState<T> {
@@ -6630,26 +6415,6 @@ impl<T: 'static> WindowState<T> {
             }
         }
 
-        // Bind voice mode manager if voice mode is enabled
-        if self.voice_mode_enabled {
-            self.voice_mode_manager = globals
-                .bind::<voice_mode::zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1, _, _>(
-                    &qh,
-                    1..=1,
-                    voice_mode::VoiceModeManagerData,
-                )
-                .ok();
-            if self.voice_mode_manager.is_none() {
-                log::warn!(
-                    "Voice mode requested but compositor does not support zcosmic_voice_mode_v1 protocol"
-                );
-            } else {
-                log::info!(
-                    "Successfully bound zcosmic_voice_mode_manager_v1 protocol for voice mode support"
-                );
-            }
-        }
-
         // Bind foreign toplevel protocols if enabled
         // We need zwlr_foreign_toplevel_manager for control operations (activate, close, etc.)
         // ext_foreign_toplevel_list + cosmic_toplevel_info provide better info but no control
@@ -6958,20 +6723,6 @@ impl<T: 'static> WindowState<T> {
                     .insert(surface_id, controller);
             }
 
-            // Register surface for voice mode events if enabled
-            if self.voice_mode_enabled {
-                // First surface is registered as default receiver
-                let is_default = self.voice_mode_receivers.is_empty();
-                if let Some(receiver) = register_voice_mode_for_surface(
-                    &self.voice_mode_manager,
-                    &wl_surface,
-                    &qh,
-                    is_default,
-                ) {
-                    self.voice_mode_receivers.insert(surface_id, receiver);
-                }
-            }
-
             // Register surface for compositor usable-area reporting.
             if let Some(obj) =
                 register_usable_area_for_surface(&self.usable_area_manager, &wl_surface, &qh)
@@ -7051,8 +6802,8 @@ impl<T: 'static> WindowState<T> {
                     region.destroy();
                 }
 
-                // Apply blur / corner radius / shadow / home visibility / voice
-                // mode (shared with the runtime NewDisplay path).
+                // Apply blur / corner radius / shadow / home visibility
+                // (shared with the runtime NewDisplay path).
                 self.apply_surface_effects(&wl_surface, &qh);
 
                 wl_surface.commit();
@@ -7422,8 +7173,8 @@ impl<T: 'static> WindowState<T> {
                                 }
 
                                 // Apply blur / corner radius / shadow / home
-                                // visibility / voice mode. Without this a monitor
-                                // enabled after startup gets a panel with none of
+                                // visibility. Without this a monitor enabled
+                                // after startup gets a panel with none of
                                 // these effects (e.g. no blur).
                                 window_state.apply_surface_effects(&wl_surface, &qh);
 
@@ -7668,19 +7419,6 @@ impl<T: 'static> WindowState<T> {
                                         ) {
                                             window_state.home_visibility_controllers.insert(surface_id, controller);
                                         }
-
-                                    // Register surface for voice mode events if enabled
-                                    if window_state.voice_mode_enabled {
-                                        let is_default = window_state.voice_mode_receivers.is_empty();
-                                        if let Some(receiver) = register_voice_mode_for_surface(
-                                            &window_state.voice_mode_manager,
-                                            &wl_surface,
-                                            &qh,
-                                            is_default,
-                                        ) {
-                                            window_state.voice_mode_receivers.insert(surface_id, receiver);
-                                        }
-                                    }
 
                                     // Register surface for compositor usable-area reporting.
                                     if let Some(obj) = register_usable_area_for_surface(

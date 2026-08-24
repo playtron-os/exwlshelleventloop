@@ -20,7 +20,7 @@ use iced_core::theme::Mode;
 use iced_core::{
     Event as IcedEvent, adaptive_foreground as iced_adaptive_foreground,
     auto_hide as iced_auto_hide, dismiss as iced_dismiss,
-    surface_visibility as iced_surface_visibility, theme, voice_mode as iced_voice_mode,
+    surface_visibility as iced_surface_visibility, theme,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
 use iced_core::{Size, mouse, mouse::Cursor, time::Instant};
@@ -51,46 +51,6 @@ use window_manager::Window;
 
 mod state;
 mod window_manager;
-
-/// Convert layershellev voice mode event to iced voice mode event
-fn convert_voice_mode_event(event: &layershellev::voice_mode::VoiceModeEvent) -> Option<IcedEvent> {
-    use layershellev::voice_mode::{OrbState as LayerOrbState, VoiceModeEvent};
-
-    let convert_orb_state = |state: LayerOrbState| -> iced_voice_mode::OrbState {
-        match state {
-            LayerOrbState::Hidden => iced_voice_mode::OrbState::Hidden,
-            LayerOrbState::Floating => iced_voice_mode::OrbState::Floating,
-            LayerOrbState::Attached => iced_voice_mode::OrbState::Attached,
-            LayerOrbState::Frozen => iced_voice_mode::OrbState::Frozen,
-            LayerOrbState::Transitioning => iced_voice_mode::OrbState::Transitioning,
-            _ => iced_voice_mode::OrbState::Hidden, // Unknown state, default to hidden
-        }
-    };
-
-    let iced_event = match event {
-        VoiceModeEvent::Started { orb_state } => iced_voice_mode::Event::Started {
-            orb_state: convert_orb_state(*orb_state),
-        },
-        VoiceModeEvent::Stopped => iced_voice_mode::Event::Stopped,
-        VoiceModeEvent::Cancelled => iced_voice_mode::Event::Cancelled,
-        VoiceModeEvent::OrbAttached {
-            x,
-            y,
-            width,
-            height,
-        } => iced_voice_mode::Event::OrbAttached {
-            x: *x,
-            y: *y,
-            width: *width,
-            height: *height,
-        },
-        VoiceModeEvent::OrbDetached => iced_voice_mode::Event::OrbDetached,
-        VoiceModeEvent::WillStop { serial } => iced_voice_mode::Event::WillStop { serial: *serial },
-        VoiceModeEvent::FocusInput => iced_voice_mode::Event::FocusInput,
-    };
-
-    Some(IcedEvent::VoiceMode(iced_event))
-}
 
 type MultiRuntime<E, Message> = Runtime<E, IcedProxy<Action<Message>>, Action<Message>>;
 
@@ -151,8 +111,7 @@ where
         .with_shadow(settings.layer_settings.shadow)
         .with_transition(settings.layer_settings.transition)
         .with_home_only(settings.layer_settings.home_only)
-        .with_hide_on_home(settings.layer_settings.hide_on_home)
-        .with_voice_mode(settings.layer_settings.voice_mode);
+        .with_hide_on_home(settings.layer_settings.hide_on_home);
 
     #[cfg(feature = "foreign-toplevel")]
     let ev = ev.with_foreign_toplevel(settings.layer_settings.foreign_toplevel);
@@ -510,10 +469,10 @@ where
                 self.handle_closed_event(ev, layer_shell_id)
             }
             IcedLayerShellEvent::Window(window_event) => {
-                // Voice mode events need to trigger a refresh to process the subscription message
+                // Some events need to trigger a refresh to process the subscription message
                 let needs_refresh = self.handle_window_event(layer_shell_id, window_event);
                 if needs_refresh {
-                    // Process any iced_events that were added immediately (e.g. voice mode events)
+                    // Process any iced_events that were added immediately
                     // This ensures the UI updates without waiting for the next NormalDispatch
                     if !self.iced_events.is_empty() {
                         tracing::debug!(
@@ -1171,7 +1130,7 @@ where
     }
 
     /// Handle window events. Returns true if a refresh should be requested
-    /// (for events that go through subscription channels like voice mode).
+    /// (for events that go through subscription channels).
     fn handle_window_event(
         &mut self,
         layer_shell_id: Option<LayerShellId>,
@@ -1233,33 +1192,6 @@ where
                 height,
             });
             return true;
-        }
-
-        // Handle voice mode events - convert to iced event and push to iced_events for immediate processing
-        if let LayerShellWindowEvent::VoiceMode(ref voice_event) = event {
-            tracing::debug!(
-                "handle_window_event: received VoiceMode event: {:?}",
-                voice_event
-            );
-            if let Some(iced_event) = convert_voice_mode_event(voice_event) {
-                // Push to first window (voice mode events are global, not per-window)
-                if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
-                    tracing::debug!(
-                        "handle_window_event: pushing iced voice event to window {:?}, iced_events count: {}",
-                        iced_id,
-                        self.iced_events.len() + 1
-                    );
-                    self.iced_events.push((iced_id, iced_event));
-                } else {
-                    tracing::warn!(
-                        "handle_window_event: no windows in window_manager to receive voice event"
-                    );
-                }
-            } else {
-                tracing::warn!("handle_window_event: failed to convert voice event");
-            }
-            tracing::debug!("handle_window_event: requesting refresh for voice event");
-            return true; // Request refresh
         }
 
         // Handle dismiss events - convert to iced event for immediate delivery
@@ -1894,12 +1826,6 @@ where
             }
             #[cfg(not(feature = "screencopy"))]
             LayershellCustomAction::ScreencopyAction(action) => match action {},
-            LayershellCustomAction::VoiceAckStop(serial, freeze) => {
-                ev.voice_ack_stop(serial, freeze);
-            }
-            LayershellCustomAction::VoiceDismiss => {
-                ev.voice_dismiss();
-            }
             LayershellCustomAction::ArmDismiss => {
                 // Resolve the surface with the single-window fallback (id == None →
                 // the first/only window), like every other action does. Without this
