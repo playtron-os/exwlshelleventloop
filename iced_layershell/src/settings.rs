@@ -125,6 +125,13 @@ pub struct LayerShellSettings {
     /// When true, the initial size is used as a maximum, and the surface will be resized
     /// to match the actual content size after the first render.
     pub auto_size: bool,
+
+    /// Receive the device's special key on this surface
+    /// (requires compositor support for zcosmic_special_action_v1)
+    pub special_action: bool,
+
+    /// Also act as the fallback receiver, used when no registered surface is focused
+    pub special_action_default: bool,
 }
 
 impl Default for LayerShellSettings {
@@ -149,6 +156,8 @@ impl Default for LayerShellSettings {
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel: false,
             auto_size: false,
+            special_action: false,
+            special_action_default: false,
         }
     }
 }
@@ -235,6 +244,8 @@ mod tests {
             corner_radius: None,
             transition: None,
             auto_size: false,
+            special_action: false,
+            special_action_default: false,
         };
 
         assert_eq!(layer_settings.anchor, Anchor::Top | Anchor::Left);

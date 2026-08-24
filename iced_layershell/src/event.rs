@@ -492,6 +492,9 @@ pub enum WindowEvent {
     AdaptiveForeground {
         readings: Vec<(u32, f32)>,
     },
+    /// The device's special key was used while this surface was the receiver
+    SpecialAction(layershellev::special_action::SpecialActionEvent),
+
     /// Auto-hide visibility changed from compositor
     /// visible: true = surface is fully visible, false = surface is fully hidden
     AutoHideVisibilityChanged {
@@ -746,6 +749,7 @@ impl From<&DispatchMessage> for WindowEvent {
             DispatchMessage::AdaptiveForeground { readings } => WindowEvent::AdaptiveForeground {
                 readings: readings.clone(),
             },
+            DispatchMessage::SpecialAction(event) => WindowEvent::SpecialAction(*event),
             DispatchMessage::AutoHideVisibilityChanged { visible } => {
                 WindowEvent::AutoHideVisibilityChanged { visible: *visible }
             }

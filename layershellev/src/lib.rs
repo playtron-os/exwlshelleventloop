@@ -135,6 +135,7 @@ pub mod layer_usable_area;
 #[cfg(feature = "screencopy")]
 pub mod screencopy;
 pub mod shadow;
+pub mod special_action;
 mod strtoshape;
 pub mod tooltip;
 
@@ -1180,6 +1181,17 @@ pub struct WindowState<T> {
     /// Tooltip manager (bound lazily when a popup with tooltip settings is created)
     tooltip_manager:
         Option<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1>,
+    /// Register surfaces to receive the device's special key.
+    special_action: bool,
+    /// Whether the first registered surface is also the fallback receiver.
+    special_action_default: bool,
+    /// Special action manager (bound lazily when `special_action` is set)
+    special_action_manager:
+        Option<special_action::zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1>,
+    /// Special action receivers per surface (keyed by surface protocol ID)
+    special_action_receivers:
+        HashMap<u32, special_action::zcosmic_special_action_v1::ZcosmicSpecialActionV1>,
+
     /// Tooltip objects per popup surface (keyed by surface protocol ID)
     tooltip_surfaces:
         HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
@@ -1284,6 +1296,27 @@ pub struct WindowState<T> {
     ping_sender: Option<calloop::ping::Ping>,
 }
 
+/// Register a surface to receive the device's special key.
+fn register_special_action_for_surface<T: 'static>(
+    manager: &Option<
+        special_action::zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1,
+    >,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+    is_default: bool,
+) -> Option<special_action::zcosmic_special_action_v1::ZcosmicSpecialActionV1> {
+    let manager = manager.as_ref()?;
+    let data = special_action::SpecialActionData {
+        surface: surface.clone(),
+    };
+    let receiver = manager.get_special_action(surface, u32::from(is_default), qh, data);
+    log::info!(
+        "Registered layer surface as a special action receiver (default: {})",
+        is_default
+    );
+    Some(receiver)
+}
+
 impl<T> WindowState<T> {
     pub fn append_return_data(&mut self, data: ReturnData<T>) {
         self.return_data.push(data);
@@ -1343,6 +1376,9 @@ impl<T> WindowState<T> {
         self.transitions.remove(&surface_id);
         if let Some(dismiss_obj) = self.layer_surface_dismiss_controllers.remove(&surface_id) {
             dismiss_obj.destroy();
+        }
+        if let Some(action_obj) = self.special_action_receivers.remove(&surface_id) {
+            action_obj.destroy();
         }
 
         self.units[index].shell.destroy();
@@ -1696,6 +1732,18 @@ impl<T: 'static> WindowState<T> {
         // Apply shadow if enabled
         if self.shadow {
             apply_shadow_to_surface(&self.shadow_manager, wl_surface, qh);
+        }
+
+        // Register the surface to receive the device's special key.
+        if self.special_action
+            && let Some(receiver) = register_special_action_for_surface(
+                &self.special_action_manager,
+                wl_surface,
+                qh,
+                self.special_action_default && self.special_action_receivers.is_empty(),
+            )
+        {
+            self.special_action_receivers.insert(surface_id, receiver);
         }
 
         // Register surface for compositor usable-area reporting.
@@ -3251,6 +3299,17 @@ impl<T> WindowState<T> {
         self
     }
 
+    /// Register surfaces to receive the device's special key.
+    ///
+    /// `is_default` also makes the first registered surface the fallback
+    /// receiver, used whenever no registered surface is focused — a home screen
+    /// wants that, a chat window does not.
+    pub fn with_special_action(mut self, enabled: bool, is_default: bool) -> Self {
+        self.special_action = enabled;
+        self.special_action_default = is_default;
+        self
+    }
+
     /// if the shell is a single one, only display on one screen,
     /// fi true, the layer will binding to current screen
     pub fn with_active(mut self) -> Self {
@@ -3470,6 +3529,10 @@ impl<T> Default for WindowState<T> {
             usable_area_surfaces: HashMap::new(),
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
+            special_action: false,
+            special_action_default: false,
+            special_action_manager: None,
+            special_action_receivers: HashMap::new(),
 
             layer_surface_visibility_manager: None,
             layer_surface_visibility_controllers: HashMap::new(),
@@ -5376,6 +5439,55 @@ impl<T: 'static>
     }
 }
 
+// Special action protocol delegates
+impl<T: 'static>
+    Dispatch<
+        special_action::zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1,
+        special_action::SpecialActionManagerData,
+    > for WindowState<T>
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &special_action::zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1,
+        _event: <special_action::zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1 as Proxy>::Event,
+        _data: &special_action::SpecialActionManagerData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        // The manager has no events.
+    }
+}
+
+impl<T: 'static>
+    Dispatch<
+        special_action::zcosmic_special_action_v1::ZcosmicSpecialActionV1,
+        special_action::SpecialActionData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &special_action::zcosmic_special_action_v1::ZcosmicSpecialActionV1,
+        event: <special_action::zcosmic_special_action_v1::ZcosmicSpecialActionV1 as Proxy>::Event,
+        _data: &special_action::SpecialActionData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use special_action::SpecialActionEvent;
+        use special_action::zcosmic_special_action_v1::Event;
+
+        let resolved = match event {
+            Event::Activate => SpecialActionEvent::Activate,
+            Event::HoldStart => SpecialActionEvent::HoldStart,
+            Event::HoldEnd => SpecialActionEvent::HoldEnd,
+            Event::Cancel => SpecialActionEvent::Cancel,
+        };
+        log::debug!("Special action event: {:?}", resolved);
+        state
+            .message
+            .push((None, DispatchMessageInner::SpecialAction(resolved)));
+    }
+}
+
 // Layer surface visibility protocol delegates
 impl<T: 'static>
     Dispatch<
@@ -6214,6 +6326,22 @@ impl<T: 'static> WindowState<T> {
             );
         }
 
+        // Bind the special action manager if any surface wants the key.
+        if self.special_action {
+            self.special_action_manager = globals
+                .bind::<special_action::zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1, _, _>(
+                    &qh,
+                    1..=1,
+                    special_action::SpecialActionManagerData,
+                )
+                .ok();
+            if self.special_action_manager.is_none() {
+                log::warn!(
+                    "Special action requested but compositor does not support zcosmic_special_action_v1"
+                );
+            }
+        }
+
         // Bind foreign toplevel protocols if enabled
         // We need zwlr_foreign_toplevel_manager for control operations (activate, close, etc.)
         // ext_foreign_toplevel_list + cosmic_toplevel_info provide better info but no control
@@ -6497,6 +6625,18 @@ impl<T: 'static> WindowState<T> {
             // Apply shadow if enabled
             if self.shadow {
                 apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
+            }
+
+            // Register the surface to receive the device's special key.
+            if self.special_action
+                && let Some(receiver) = register_special_action_for_surface(
+                    &self.special_action_manager,
+                    &wl_surface,
+                    &qh,
+                    self.special_action_default && self.special_action_receivers.is_empty(),
+                )
+            {
+                self.special_action_receivers.insert(surface_id, receiver);
             }
 
             // Register surface for compositor usable-area reporting.
@@ -7174,6 +7314,18 @@ impl<T: 'static> WindowState<T> {
                                         apply_shadow_to_surface(&window_state.shadow_manager, &wl_surface, &qh);
                                     } else {
                                         log::debug!("NewLayerShell: shadow not requested for this surface");
+                                    }
+
+                                    // Register the surface to receive the device's special key.
+                                    if window_state.special_action
+                                        && let Some(receiver) = register_special_action_for_surface(
+                                            &window_state.special_action_manager,
+                                            &wl_surface,
+                                            &qh,
+                                            window_state.special_action_default && window_state.special_action_receivers.is_empty(),
+                                        )
+                                    {
+                                        window_state.special_action_receivers.insert(surface_id, receiver);
                                     }
 
 

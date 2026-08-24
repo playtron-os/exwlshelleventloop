@@ -499,6 +499,8 @@ pub(crate) enum DispatchMessageInner {
     AdaptiveForeground {
         readings: Vec<(u32, f32)>,
     },
+    /// The device's special key was used while this surface was the receiver
+    SpecialAction(crate::special_action::SpecialActionEvent),
     /// Auto-hide visibility changed from compositor (true = visible, false = hidden)
     AutoHideVisibilityChanged(bool),
     /// Layer-surface visibility changed via hide/show protocol (true = visible, false = hidden)
@@ -650,6 +652,8 @@ pub enum DispatchMessage {
     AdaptiveForeground {
         readings: Vec<(u32, f32)>,
     },
+    /// The device's special key was used while this surface was the receiver
+    SpecialAction(crate::special_action::SpecialActionEvent),
     /// Auto-hide visibility changed from compositor
     /// visible: true = surface is fully visible, false = surface is fully hidden
     AutoHideVisibilityChanged {
@@ -861,6 +865,7 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::AdaptiveForeground { readings } => {
                 DispatchMessage::AdaptiveForeground { readings }
             }
+            DispatchMessageInner::SpecialAction(event) => DispatchMessage::SpecialAction(event),
             DispatchMessageInner::AutoHideVisibilityChanged(visible) => {
                 DispatchMessage::AutoHideVisibilityChanged { visible }
             }

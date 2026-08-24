@@ -19,7 +19,7 @@ use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 use iced_core::theme::Mode;
 use iced_core::{
     Event as IcedEvent, adaptive_foreground as iced_adaptive_foreground,
-    auto_hide as iced_auto_hide, dismiss as iced_dismiss,
+    auto_hide as iced_auto_hide, dismiss as iced_dismiss, special_action as iced_special_action,
     surface_visibility as iced_surface_visibility, theme,
     window::{Event as IcedWindowEvent, Id as IcedId, RedrawRequest},
 };
@@ -109,7 +109,11 @@ where
         .with_blur_tint(settings.layer_settings.blur_tint)
         .with_blur_border(settings.layer_settings.blur_border)
         .with_shadow(settings.layer_settings.shadow)
-        .with_transition(settings.layer_settings.transition);
+        .with_transition(settings.layer_settings.transition)
+        .with_special_action(
+            settings.layer_settings.special_action,
+            settings.layer_settings.special_action_default,
+        );
 
     #[cfg(feature = "foreign-toplevel")]
     let ev = ev.with_foreign_toplevel(settings.layer_settings.foreign_toplevel);
@@ -1193,6 +1197,23 @@ where
         }
 
         // Handle dismiss events - convert to iced event for immediate delivery
+        // The device's special key, resolved by the compositor. Routed to the
+        // first surface: the compositor already decided who should receive it,
+        // so there is nothing left to route here.
+        if let LayerShellWindowEvent::SpecialAction(action) = event {
+            use layershellev::special_action::SpecialActionEvent;
+            let iced_event = IcedEvent::SpecialAction(match action {
+                SpecialActionEvent::Activate => iced_special_action::Event::Activate,
+                SpecialActionEvent::HoldStart => iced_special_action::Event::HoldStart,
+                SpecialActionEvent::HoldEnd => iced_special_action::Event::HoldEnd,
+                SpecialActionEvent::Cancel => iced_special_action::Event::Cancel,
+            });
+            if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+                self.iced_events.push((iced_id, iced_event));
+            }
+            return true;
+        }
+
         if let LayerShellWindowEvent::DismissRequested = event {
             tracing::debug!("handle_window_event: received DismissRequested event");
             let iced_event = IcedEvent::Dismiss(iced_dismiss::Event::Requested);
