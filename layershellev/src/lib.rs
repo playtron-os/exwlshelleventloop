@@ -6722,6 +6722,7 @@ impl<T: 'static> WindowState<T> {
                 }
 
                 if self.events_transparent {
+                    log::info!("set_input_region: EMPTY via events_transparent (initial settings)");
                     let region = wmcompositer.create_region(&qh, ());
                     wl_surface.set_input_region(Some(&region));
                     region.destroy();
@@ -7092,6 +7093,9 @@ impl<T: 'static> WindowState<T> {
                                 }
 
                                 if window_state.events_transparent {
+                                    log::info!(
+                                        "set_input_region: EMPTY via events_transparent (NewDisplay)"
+                                    );
                                     let region = wmcompositer.create_region(&qh, ());
                                     wl_surface.set_input_region(Some(&region));
                                     region.destroy();
@@ -7273,6 +7277,9 @@ impl<T: 'static> WindowState<T> {
                                     }
 
                                     if events_transparent {
+                                        log::info!(
+                                            "set_input_region: EMPTY via events_transparent (NewLayerShell)"
+                                        );
                                         let region = wmcompositer.create_region(&qh, ());
                                         wl_surface.set_input_region(Some(&region));
                                         region.destroy();
