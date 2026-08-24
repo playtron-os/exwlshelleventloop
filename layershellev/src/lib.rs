@@ -5545,8 +5545,14 @@ impl<T: 'static>
         } else {
             state.hidden_surfaces.insert(surface_id);
         }
+        // Name the surface that actually changed, as auto-hide does above. A
+        // process can own several surfaces and hide them independently -- the
+        // desktop, its input, the strip that stands in for it -- and a message
+        // that carries `None` is misattributed to the first window, so every
+        // surface hears about a visibility change that belongs to one of them.
+        let window_id = state.get_id_from_surface(&data.surface);
         state.message.push((
-            None,
+            window_id,
             DispatchMessageInner::SurfaceVisibilityChanged(visible),
         ));
     }

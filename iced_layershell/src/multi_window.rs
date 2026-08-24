@@ -1283,15 +1283,26 @@ where
         // Handle layer-surface-visibility events - convert to iced event
         if let LayerShellWindowEvent::SurfaceVisibilityChanged { visible } = event {
             tracing::debug!(
-                "handle_window_event: received SurfaceVisibilityChanged: visible={}",
-                visible
+                "handle_window_event: received SurfaceVisibilityChanged: visible={}, layer_shell_id={:?}",
+                visible,
+                layer_shell_id
             );
             let iced_event = IcedEvent::SurfaceVisibility(if visible {
                 iced_surface_visibility::Event::Shown
             } else {
                 iced_surface_visibility::Event::Hidden
             });
-            if let Some((iced_id, _)) = self.window_manager.iter_mut().next() {
+            // Route to the surface that actually changed, resolved from its
+            // layershell id, exactly as auto-hide is above. A process can hide
+            // its surfaces independently, and delivering every change to the
+            // first window tells a surface it is hidden while it is on screen —
+            // which any widget that skips work while away then acts on.
+            let mut target =
+                layer_shell_id.and_then(|lid| self.window_manager.get_alias(lid).map(|(id, _)| id));
+            if target.is_none() {
+                target = self.window_manager.iter_mut().next().map(|(id, _)| id);
+            }
+            if let Some(iced_id) = target {
                 self.iced_events.push((iced_id, iced_event));
             }
             return true;
