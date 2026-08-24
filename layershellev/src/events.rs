@@ -107,6 +107,13 @@ pub enum LayerTransition {
     /// Fade in/out with a subtle upward slide (the default for non-edge-anchored
     /// surfaces) — the agentos-panel popover animation.
     Fade,
+    /// The design's `fluidReveal` / `fluidDismiss`: rises further than [`Self::Fade`]
+    /// and overshoots on the way in, accelerates away on the way out.
+    ///
+    /// Ask for this when the surface has a BACKDROP BLUR that has to travel with
+    /// it. A client animating its own pixels cannot move the blur — that belongs
+    /// to the surface, and stays behind as a rectangle.
+    FluidReveal,
 }
 
 /// layershell settings to create a new layershell surface

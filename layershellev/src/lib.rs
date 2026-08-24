@@ -3180,6 +3180,7 @@ fn apply_transition_to_controller(
     let proto = match transition {
         LayerTransition::Slide => ProtoTransition::Slide,
         LayerTransition::Fade => ProtoTransition::Fade,
+        LayerTransition::FluidReveal => ProtoTransition::FluidReveal,
     };
     controller.set_transition(proto);
     log::debug!(
@@ -6301,7 +6302,7 @@ impl<T: 'static> WindowState<T> {
         self.layer_surface_visibility_manager = globals
             .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
                 &qh,
-                1..=2,
+                1..=3,
                 layer_surface_visibility::LayerSurfaceVisibilityManagerData,
             )
             .ok();
