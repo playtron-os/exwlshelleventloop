@@ -116,12 +116,6 @@ pub struct LayerShellSettings {
     /// dock — the only surface that should). Requires
     /// `zcosmic_layer_surface_visibility` version 2.
     pub transition: Option<LayerTransition>,
-    /// Home-only visibility mode - surface only visible when compositor is in "home" mode
-    /// (requires compositor support for zcosmic_home_visibility_v1)
-    pub home_only: bool,
-    /// Hide-on-home visibility mode - surface hidden when compositor is in "home" mode
-    /// (inverse of home_only, requires compositor support for zcosmic_home_visibility_v1)
-    pub hide_on_home: bool,
     /// Enable foreign toplevel tracking - receive events for all opened windows on the system
     /// (requires compositor support for zwlr_foreign_toplevel_manager_v1)
     /// This field is only available when the `foreign-toplevel` feature is enabled.
@@ -152,8 +146,6 @@ impl Default for LayerShellSettings {
             shadow: false,
             corner_radius: None,
             transition: None,
-            home_only: false,
-            hide_on_home: false,
             #[cfg(feature = "foreign-toplevel")]
             foreign_toplevel: false,
             auto_size: false,
@@ -242,8 +234,6 @@ mod tests {
             shadow: false,
             corner_radius: None,
             transition: None,
-            home_only: false,
-            hide_on_home: false,
             auto_size: false,
         };
 

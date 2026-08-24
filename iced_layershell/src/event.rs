@@ -487,11 +487,6 @@ pub enum WindowEvent {
     Refresh,
     Closed,
     ThemeChanged(iced_core::theme::Mode),
-    /// Home state changed from compositor
-    /// is_home: true = at home (no windows visible), false = windows visible
-    HomeStateChanged {
-        is_home: bool,
-    },
     /// Backdrop luminance readings for a surface's marked zones, as
     /// `(zone index, luminance)`. Only changed zones are reported.
     AdaptiveForeground {
@@ -748,9 +743,6 @@ impl From<&DispatchMessage> for WindowEvent {
                 }
             }
             DispatchMessage::Ime(ime) => WindowEvent::Ime(ime.clone()),
-            DispatchMessage::HomeStateChanged { is_home } => {
-                WindowEvent::HomeStateChanged { is_home: *is_home }
-            }
             DispatchMessage::AdaptiveForeground { readings } => WindowEvent::AdaptiveForeground {
                 readings: readings.clone(),
             },

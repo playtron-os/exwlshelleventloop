@@ -109,9 +109,7 @@ where
         .with_blur_tint(settings.layer_settings.blur_tint)
         .with_blur_border(settings.layer_settings.blur_border)
         .with_shadow(settings.layer_settings.shadow)
-        .with_transition(settings.layer_settings.transition)
-        .with_home_only(settings.layer_settings.home_only)
-        .with_hide_on_home(settings.layer_settings.hide_on_home);
+        .with_transition(settings.layer_settings.transition);
 
     #[cfg(feature = "foreign-toplevel")]
     let ev = ev.with_foreign_toplevel(settings.layer_settings.foreign_toplevel);
@@ -1805,11 +1803,6 @@ where
                     "ShowWindow: calling show_surface (visibility protocol)"
                 );
                 ev.show_surface(&surface);
-            }
-            LayershellCustomAction::VisibilityModeChange(mode) => {
-                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
-                let surface = layer_shell_window.get_wlsurface().clone();
-                ev.set_visibility_mode_for_surface(&surface, mode);
             }
             #[cfg(feature = "foreign-toplevel")]
             LayershellCustomAction::ToplevelAction(action) => {

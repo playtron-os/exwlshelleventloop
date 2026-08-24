@@ -2,9 +2,6 @@ use crate::reexport::{Anchor, KeyboardInteractivity, Layer, WlRegion};
 use iced_core::window::Id as IcedId;
 use layershellev::{NewInputPanelSettings, NewLayerShellSettings, NewXdgWindowSettings};
 
-// Re-export VisibilityMode for consumers
-pub use layershellev::home_visibility::VisibilityMode;
-
 // Re-export ToplevelAction for consumers
 #[cfg(feature = "foreign-toplevel")]
 pub use layershellev::foreign_toplevel::ToplevelAction;
@@ -250,8 +247,6 @@ pub enum LayershellCustomAction {
     HideWindow,
     /// Show the window if it was previously hidden
     ShowWindow,
-    /// Change the home visibility mode for the surface
-    VisibilityModeChange(VisibilityMode),
     /// Execute a toplevel action (activate, close, minimize, etc.)
     ToplevelAction(ToplevelAction),
     /// Execute a screencopy action (capture a toplevel window screenshot)

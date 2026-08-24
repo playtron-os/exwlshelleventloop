@@ -126,7 +126,6 @@ pub mod dpi;
 mod events;
 #[cfg(feature = "foreign-toplevel")]
 pub mod foreign_toplevel;
-pub mod home_visibility;
 pub mod layer_auto_hide;
 pub mod layer_edge_resize;
 pub mod layer_surface_dismiss;
@@ -1185,18 +1184,6 @@ pub struct WindowState<T> {
     tooltip_surfaces:
         HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
 
-    /// Whether to use home visibility mode (home_only = only visible when at home)
-    home_only: bool,
-    /// Whether to hide when in home mode (inverse of home_only)
-    hide_on_home: bool,
-    /// Home visibility manager (bound lazily when home_only or hide_on_home is enabled)
-    home_visibility_manager:
-        Option<home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1>,
-    /// Home visibility controllers per surface (keyed by surface protocol ID)
-    home_visibility_controllers:
-        HashMap<u32, home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1>,
-    /// Current home state from compositor (true = at home, false = windows visible)
-    is_home: bool,
 
     /// Layer surface visibility manager (bound lazily when needed)
     layer_surface_visibility_manager: Option<
@@ -1357,9 +1344,6 @@ impl<T> WindowState<T> {
         if let Some(dismiss_obj) = self.layer_surface_dismiss_controllers.remove(&surface_id) {
             dismiss_obj.destroy();
         }
-        if let Some(home_obj) = self.home_visibility_controllers.remove(&surface_id) {
-            home_obj.destroy();
-        }
 
         self.units[index].shell.destroy();
         self.units[index].wl_surface.destroy();
@@ -1395,12 +1379,6 @@ impl<T> WindowState<T> {
     // return all windows
     pub fn windows(&self) -> &Vec<WindowStateUnit<T>> {
         &self.units
-    }
-
-    /// Get the current home state from compositor
-    /// Returns true if at home (no windows visible), false otherwise
-    pub fn is_home(&self) -> bool {
-        self.is_home
     }
 
     fn push_window(&mut self, window_state_unit: WindowStateUnit<T>) {
@@ -1679,7 +1657,7 @@ impl<T> WindowState<T> {
 }
 
 impl<T: 'static> WindowState<T> {
-    /// Apply the configured surface effects (blur, corner radius, shadow, home
+    /// Apply the configured surface effects (blur, corner radius, shadow, layer
     /// visibility) to a freshly created layer-shell surface.
     ///
     /// Shared by the initial `AllScreens` surface creation and the runtime
@@ -1718,29 +1696,6 @@ impl<T: 'static> WindowState<T> {
         // Apply shadow if enabled
         if self.shadow {
             apply_shadow_to_surface(&self.shadow_manager, wl_surface, qh);
-        }
-
-        // Apply home visibility mode if enabled
-        if self.home_only {
-            if let Some(controller) = apply_home_visibility_to_surface(
-                &self.home_visibility_manager,
-                wl_surface,
-                qh,
-                home_visibility::VisibilityMode::HomeOnly,
-            ) {
-                self.home_visibility_controllers
-                    .insert(surface_id, controller);
-            }
-        } else if self.hide_on_home
-            && let Some(controller) = apply_home_visibility_to_surface(
-                &self.home_visibility_manager,
-                wl_surface,
-                qh,
-                home_visibility::VisibilityMode::HideOnHome,
-            )
-        {
-            self.home_visibility_controllers
-                .insert(surface_id, controller);
         }
 
         // Register surface for compositor usable-area reporting.
@@ -2494,50 +2449,6 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
-    /// Set home visibility mode for a specific surface
-    /// This allows dynamically changing whether a surface is visible at home or not
-    pub fn set_visibility_mode_for_surface(
-        &mut self,
-        surface: &WlSurface,
-        mode: home_visibility::VisibilityMode,
-    ) {
-        let surface_id = surface.id().protocol_id();
-
-        // Check if we already have a controller for this surface
-        if let Some(controller) = self.home_visibility_controllers.get(&surface_id) {
-            controller.set_visibility_mode(mode);
-            log::info!(
-                "Updated visibility mode to {:?} for surface {}",
-                mode,
-                surface_id
-            );
-            return;
-        }
-
-        // Need to create a new controller
-        if let Some(manager) = &self.home_visibility_manager {
-            if let Some(unit) = self.units.first() {
-                let visibility_data = home_visibility::HomeVisibilityData {
-                    surface: surface.clone(),
-                };
-                let visibility_obj =
-                    manager.get_home_visibility(surface, &unit.qh, visibility_data);
-                visibility_obj.set_visibility_mode(mode);
-                self.home_visibility_controllers
-                    .insert(surface_id, visibility_obj);
-                log::info!(
-                    "Created and set visibility mode to {:?} for surface {}",
-                    mode,
-                    surface_id
-                );
-            }
-        } else {
-            log::warn!(
-                "Home visibility manager not available - ensure home_only or hide_on_home was set in settings"
-            );
-        }
-    }
-
     /// Read the clipboard selection as local file paths, for a paste.
     ///
     /// `None` when the clipboard holds no file list at all — nothing was ever
@@ -3229,30 +3140,6 @@ fn apply_transition_to_controller(
     );
 }
 
-/// Apply home visibility mode to a surface using the home visibility protocol
-/// Returns the visibility controller so it can be stored for later mode changes
-fn apply_home_visibility_to_surface<T: 'static>(
-    home_visibility_manager: &Option<
-        home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
-    >,
-    surface: &WlSurface,
-    qh: &QueueHandle<WindowState<T>>,
-    mode: home_visibility::VisibilityMode,
-) -> Option<home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1> {
-    if let Some(manager) = home_visibility_manager {
-        let visibility_data = home_visibility::HomeVisibilityData {
-            surface: surface.clone(),
-        };
-        let visibility_obj = manager.get_home_visibility(surface, qh, visibility_data);
-        // Set the requested visibility mode
-        visibility_obj.set_visibility_mode(mode);
-        log::info!("Applied {:?} visibility to layer shell surface", mode);
-        Some(visibility_obj)
-    } else {
-        None
-    }
-}
-
 impl<T> WindowState<T> {
     /// create a WindowState, you need to pass a namespace in
     pub fn new(namespace: &str) -> Self {
@@ -3352,22 +3239,6 @@ impl<T> WindowState<T> {
             .get(&surface_id)
             .copied()
             .or(self.transition)
-    }
-
-    /// Set home-only visibility mode for surfaces (requires compositor support for zcosmic_home_visibility_v1)
-    /// When enabled, the surface will only be visible when the compositor is in "home" mode
-    /// (no regular windows visible, like the iOS home screen).
-    pub fn with_home_only(mut self, home_only: bool) -> Self {
-        self.home_only = home_only;
-        self
-    }
-
-    /// Set hide-on-home visibility mode for surfaces (requires compositor support for zcosmic_home_visibility_v1)
-    /// When enabled, the surface will be hidden when the compositor is in "home" mode
-    /// (inverse of home_only - visible when windows are present, hidden at home screen).
-    pub fn with_hide_on_home(mut self, hide_on_home: bool) -> Self {
-        self.hide_on_home = hide_on_home;
-        self
     }
 
     /// Enable foreign toplevel tracking (requires compositor support for zwlr_foreign_toplevel_manager_v1)
@@ -3599,11 +3470,6 @@ impl<T> Default for WindowState<T> {
             usable_area_surfaces: HashMap::new(),
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
-            home_only: false,
-            hide_on_home: false,
-            home_visibility_manager: None,
-            home_visibility_controllers: HashMap::new(),
-            is_home: false,
 
             layer_surface_visibility_manager: None,
             layer_surface_visibility_controllers: HashMap::new(),
@@ -5510,53 +5376,6 @@ impl<T: 'static>
     }
 }
 
-// Home visibility protocol delegates
-// Manager has the home_state event, so we need a proper Dispatch impl
-impl<T: 'static>
-    Dispatch<
-        home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
-        home_visibility::HomeVisibilityManagerData,
-    > for WindowState<T>
-{
-    fn event(
-        state: &mut Self,
-        _proxy: &home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1,
-        event: <home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1 as Proxy>::Event,
-        _data: &home_visibility::HomeVisibilityManagerData,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        use home_visibility::zcosmic_home_visibility_manager_v1::Event;
-        let Event::HomeState { is_home } = event;
-        let is_home = is_home != 0;
-        log::debug!("Home state changed: is_home={}", is_home);
-        state.is_home = is_home;
-        // Add a message to propagate the event
-        state
-            .message
-            .push((None, DispatchMessageInner::HomeStateChanged(is_home)));
-    }
-}
-
-// Manual Dispatch impl for home visibility controller since it has custom user data
-impl<T: 'static>
-    Dispatch<
-        home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1,
-        home_visibility::HomeVisibilityData,
-    > for WindowState<T>
-{
-    fn event(
-        _state: &mut Self,
-        _proxy: &home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1,
-        _event: <home_visibility::zcosmic_home_visibility_v1::ZcosmicHomeVisibilityV1 as Proxy>::Event,
-        _data: &home_visibility::HomeVisibilityData,
-        _conn: &Connection,
-        _qhandle: &QueueHandle<Self>,
-    ) {
-        // No events for visibility controller objects
-    }
-}
-
 // Layer surface visibility protocol delegates
 impl<T: 'static>
     Dispatch<
@@ -6395,26 +6214,6 @@ impl<T: 'static> WindowState<T> {
             );
         }
 
-        // Bind home visibility manager if home_only or hide_on_home is enabled
-        if self.home_only || self.hide_on_home {
-            self.home_visibility_manager = globals
-                .bind::<home_visibility::zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1, _, _>(
-                    &qh,
-                    1..=1,
-                    home_visibility::HomeVisibilityManagerData::default(),
-                )
-                .ok();
-            if self.home_visibility_manager.is_none() {
-                log::warn!(
-                    "Home visibility mode requested but compositor does not support zcosmic_home_visibility_v1 protocol"
-                );
-            } else {
-                log::info!(
-                    "Successfully bound zcosmic_home_visibility_manager_v1 protocol for home visibility support"
-                );
-            }
-        }
-
         // Bind foreign toplevel protocols if enabled
         // We need zwlr_foreign_toplevel_manager for control operations (activate, close, etc.)
         // ext_foreign_toplevel_list + cosmic_toplevel_info provide better info but no control
@@ -6700,29 +6499,6 @@ impl<T: 'static> WindowState<T> {
                 apply_shadow_to_surface(&self.shadow_manager, &wl_surface, &qh);
             }
 
-            // Apply home visibility mode if enabled
-            if self.home_only {
-                if let Some(controller) = apply_home_visibility_to_surface(
-                    &self.home_visibility_manager,
-                    &wl_surface,
-                    &qh,
-                    home_visibility::VisibilityMode::HomeOnly,
-                ) {
-                    self.home_visibility_controllers
-                        .insert(surface_id, controller);
-                }
-            } else if self.hide_on_home
-                && let Some(controller) = apply_home_visibility_to_surface(
-                    &self.home_visibility_manager,
-                    &wl_surface,
-                    &qh,
-                    home_visibility::VisibilityMode::HideOnHome,
-                )
-            {
-                self.home_visibility_controllers
-                    .insert(surface_id, controller);
-            }
-
             // Register surface for compositor usable-area reporting.
             if let Some(obj) =
                 register_usable_area_for_surface(&self.usable_area_manager, &wl_surface, &qh)
@@ -6802,7 +6578,7 @@ impl<T: 'static> WindowState<T> {
                     region.destroy();
                 }
 
-                // Apply blur / corner radius / shadow / home visibility
+                // Apply blur / corner radius / shadow / layer visibility
                 // (shared with the runtime NewDisplay path).
                 self.apply_surface_effects(&wl_surface, &qh);
 
@@ -7172,7 +6948,7 @@ impl<T: 'static> WindowState<T> {
                                     region.destroy();
                                 }
 
-                                // Apply blur / corner radius / shadow / home
+                                // Apply blur / corner radius / shadow / layer
                                 // visibility. Without this a monitor enabled
                                 // after startup gets a panel with none of
                                 // these effects (e.g. no blur).
@@ -7400,25 +7176,6 @@ impl<T: 'static> WindowState<T> {
                                         log::debug!("NewLayerShell: shadow not requested for this surface");
                                     }
 
-                                    // Apply home visibility mode if enabled
-                                    if window_state.home_only {
-                                        if let Some(controller) = apply_home_visibility_to_surface(
-                                            &window_state.home_visibility_manager,
-                                            &wl_surface,
-                                            &qh,
-                                            home_visibility::VisibilityMode::HomeOnly,
-                                        ) {
-                                            window_state.home_visibility_controllers.insert(surface_id, controller);
-                                        }
-                                    } else if window_state.hide_on_home
-                                        && let Some(controller) = apply_home_visibility_to_surface(
-                                            &window_state.home_visibility_manager,
-                                            &wl_surface,
-                                            &qh,
-                                            home_visibility::VisibilityMode::HideOnHome,
-                                        ) {
-                                            window_state.home_visibility_controllers.insert(surface_id, controller);
-                                        }
 
                                     // Register surface for compositor usable-area reporting.
                                     if let Some(obj) = register_usable_area_for_surface(

@@ -499,8 +499,6 @@ pub(crate) enum DispatchMessageInner {
     AdaptiveForeground {
         readings: Vec<(u32, f32)>,
     },
-    /// Home state changed from compositor (true = at home, false = windows visible)
-    HomeStateChanged(bool),
     /// Auto-hide visibility changed from compositor (true = visible, false = hidden)
     AutoHideVisibilityChanged(bool),
     /// Layer-surface visibility changed via hide/show protocol (true = visible, false = hidden)
@@ -651,11 +649,6 @@ pub enum DispatchMessage {
     /// surface added the zone to its region. Only changed zones are reported.
     AdaptiveForeground {
         readings: Vec<(u32, f32)>,
-    },
-    /// Home state changed from compositor
-    /// is_home: true = at home (no windows visible), false = windows visible
-    HomeStateChanged {
-        is_home: bool,
     },
     /// Auto-hide visibility changed from compositor
     /// visible: true = surface is fully visible, false = surface is fully hidden
@@ -867,9 +860,6 @@ impl From<DispatchMessageInner> for DispatchMessage {
             },
             DispatchMessageInner::AdaptiveForeground { readings } => {
                 DispatchMessage::AdaptiveForeground { readings }
-            }
-            DispatchMessageInner::HomeStateChanged(is_home) => {
-                DispatchMessage::HomeStateChanged { is_home }
             }
             DispatchMessageInner::AutoHideVisibilityChanged(visible) => {
                 DispatchMessage::AutoHideVisibilityChanged { visible }

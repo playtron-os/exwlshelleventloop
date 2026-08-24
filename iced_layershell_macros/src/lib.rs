@@ -86,7 +86,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 HideWindow(iced_layershell::reexport::IcedId),
                 /// Show the window if it was previously hidden
                 ShowWindow(iced_layershell::reexport::IcedId),
-                VisibilityModeChange { id: iced::window::Id, mode: iced_layershell::actions::VisibilityMode },
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
             };
@@ -166,7 +165,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::HideWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::HideWindow)),
                             Self::ShowWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ShowWindow)),
-                            Self::VisibilityModeChange { id, mode } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             _ => Err(self)
@@ -220,7 +218,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 ShowWindow,
                 /// Forget which output the surface was last on so it follows the cursor
                 ForgetLastOutput,
-                VisibilityModeChange(iced_layershell::actions::VisibilityMode),
                 /// Arm click-outside dismiss: once armed, the compositor delivers an
                 /// `iced::Event::Dismiss` when the user clicks/taps outside this
                 /// surface's dismiss group.
@@ -272,7 +269,6 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::HideWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::HideWindow)),
                             Self::ShowWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ShowWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
-                            Self::VisibilityModeChange(mode) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VisibilityModeChange(mode))),
                             Self::ArmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ArmDismiss)),
                             Self::DisarmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DisarmDismiss)),
                             Self::SetDismissIgnoreLayerClicks => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetDismissIgnoreLayerClicks)),
