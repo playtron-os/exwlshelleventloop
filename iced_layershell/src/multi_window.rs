@@ -33,7 +33,10 @@ use iced_runtime::user_interface;
 use layershellev::{
     LayerShellEvent, NewPopUpSettings, RefreshRequest, ReturnData, WindowState, WindowWrapper,
     id::Id as LayerShellId,
-    reexport::{wayland_client::WlCompositor, zwp_virtual_keyboard_v1},
+    reexport::{
+        wayland_client::{WlCompositor, WlRegion},
+        zwp_virtual_keyboard_v1,
+    },
 };
 use std::{
     borrow::Cow,
@@ -321,8 +324,23 @@ where
     /// Deferred shadow/blur/corner_radius for auto_size windows (applied after resize completes)
     auto_size_deferred_effects: HashMap<IcedId, (bool, bool, Option<[u32; 4]>)>,
     clipboard: LayerShellClipboard,
-    /// Kept so every region request can have a `wl_region` of its own.
+    /// Kept so every window can be given a `wl_region` of its own.
     wl_compositor: Option<WlCompositor>,
+    /// One long-lived region per window, per purpose.
+    ///
+    /// They must outlive the request that sets them: `set_input_region` binds
+    /// the region to the surface's pending state, and the compositor resolves
+    /// it again on EVERY later commit — not just the one that applies it. A
+    /// region destroyed after its first commit therefore resolves to nothing on
+    /// the next frame, and the surface silently loses its input region a moment
+    /// after gaining it.
+    ///
+    /// Per window rather than per application, because a region is copied at
+    /// commit: one object shared between two surfaces gives whichever commits
+    /// later the other's rectangles.
+    wl_input_regions: HashMap<IcedId, WlRegion>,
+    wl_blur_regions: HashMap<IcedId, WlRegion>,
+    wl_adaptive_foreground_regions: HashMap<IcedId, WlRegion>,
     user_interfaces: UserInterfaces<P>,
     waiting_layer_shell_actions: Vec<(Option<IcedId>, LayershellCustomAction)>,
     iced_events: Vec<(IcedId, IcedEvent)>,
@@ -374,6 +392,9 @@ where
             auto_size_deferred_effects: HashMap::new(),
             clipboard: LayerShellClipboard::unconnected(),
             wl_compositor: Default::default(),
+            wl_input_regions: Default::default(),
+            wl_blur_regions: Default::default(),
+            wl_adaptive_foreground_regions: Default::default(),
             user_interfaces: UserInterfaces::new(application),
             waiting_layer_shell_actions: Default::default(),
             iced_events: Default::default(),
@@ -1348,6 +1369,27 @@ where
         }
     }
 
+    /// This window's region for `purpose`, cleared and ready to be filled.
+    ///
+    /// Created once per window and kept for its lifetime — see the note on
+    /// `wl_input_regions` for why it must not be destroyed after use. Cleared
+    /// by subtracting a rectangle far larger than any surface, since the only
+    /// way to empty a `wl_region` is to subtract from it, and subtracting just
+    /// the current window's bounds would leave behind anything set while it was
+    /// larger.
+    fn region_for<'a>(
+        regions: &'a mut HashMap<IcedId, WlRegion>,
+        compositor: &WlCompositor,
+        qh: &wayland_client::QueueHandle<layershellev::WindowState<IcedId>>,
+        iced_id: IcedId,
+    ) -> &'a WlRegion {
+        let region = regions
+            .entry(iced_id)
+            .or_insert_with(|| compositor.create_region(qh, ()));
+        region.subtract(i32::MIN / 2, i32::MIN / 2, i32::MAX, i32::MAX);
+        region
+    }
+
     fn handle_layer_shell_action(
         &mut self,
         ev: &mut WindowState<IcedId>,
@@ -1513,18 +1555,21 @@ where
                     return;
                 };
 
-                // This surface's own region, starting empty — see the note in
-                // `SetInputRegion`. Sharing one across surfaces made a region
-                // whatever the last caller left behind, and clearing it by
-                // subtracting the current window's rect missed anything a larger
-                // surface had added.
-                let region = compositor.create_region(layer_shell_window.qh(), ());
+                let Some(id) = iced_id else {
+                    return;
+                };
+                let compositor = compositor.clone();
+                let region = Self::region_for(
+                    &mut self.wl_blur_regions,
+                    &compositor,
+                    layer_shell_window.qh(),
+                    id,
+                );
 
                 let surface = layer_shell_window.get_wlsurface().clone();
-                ev.set_blur_region_for_surface(&surface, &region, &radii, &geometry, |r| {
+                ev.set_blur_region_for_surface(&surface, region, &radii, &geometry, |r| {
                     set_region(r)
                 });
-                region.destroy();
                 tracing::debug!(?iced_id, "SetBlurRegion: done");
             }
             LayershellCustomAction::SetAdaptiveForegroundRegion { callback } => {
@@ -1538,14 +1583,19 @@ where
                     return;
                 };
 
-                // Fresh and empty, so zone indices stay tied to this update's
-                // rectangles — and belong to this surface alone. See the note in
-                // `SetInputRegion`.
-                let region = compositor.create_region(layer_shell_window.qh(), ());
+                let Some(id) = iced_id else {
+                    return;
+                };
+                let compositor = compositor.clone();
+                let region = Self::region_for(
+                    &mut self.wl_adaptive_foreground_regions,
+                    &compositor,
+                    layer_shell_window.qh(),
+                    id,
+                );
 
                 let surface = layer_shell_window.get_wlsurface().clone();
-                ev.set_adaptive_foreground_region_for_surface(&surface, &region, |r| add_zones(r));
-                region.destroy();
+                ev.set_adaptive_foreground_region_for_surface(&surface, region, |r| add_zones(r));
                 tracing::debug!(?iced_id, "SetAdaptiveForegroundRegion: done");
             }
             LayershellCustomAction::ShadowChange(enabled) => {
@@ -1601,34 +1651,21 @@ where
                     return;
                 };
 
-                // A region of this surface's own, not one shared with every
-                // other surface in the application. The compositor copies a
-                // region when the surface commits, so a shared object handed to
-                // two surfaces gives whichever commits later the other's
-                // rectangles — silently, and depending only on ordering.
-                //
-                // Starting empty also removes the need to clear it first. The
-                // old code subtracted the CURRENT window's rect, which left
-                // anything belonging to a larger surface untouched.
-                let region = compositor.create_region(layer_shell_window.qh(), ());
-                set_region(&region);
-
-                // TEMPORARY: an empty region has been landing on the wrong
-                // surface. The window size distinguishes them where the
-                // namespace is not reachable from here.
-                tracing::info!(
-                    ?iced_id,
-                    window_size = ?layer_shell_window.get_size(),
-                    "SetInputRegion applied"
+                let Some(id) = iced_id else {
+                    return;
+                };
+                let compositor = compositor.clone();
+                let region = Self::region_for(
+                    &mut self.wl_input_regions,
+                    &compositor,
+                    layer_shell_window.qh(),
+                    id,
                 );
+                set_region(region);
 
                 let surface = layer_shell_window.get_wlsurface();
-                surface.set_input_region(Some(&region));
+                surface.set_input_region(Some(region));
                 surface.commit();
-                // The compositor took its copy at commit; this object has no
-                // further use, and leaking one per request would accumulate for
-                // the lifetime of the application.
-                region.destroy();
             }
             LayershellCustomAction::VirtualKeyboardPressed { time, key } => {
                 use layershellev::reexport::wayland_client::KeyState;
