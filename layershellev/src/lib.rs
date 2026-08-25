@@ -8045,6 +8045,28 @@ impl<T: 'static> WindowState<T> {
     }
 
     pub fn request_next_present(&mut self, id: id::Id) {
+        // A hidden surface must NOT be paced on a frame callback.
+        //
+        // The compositor sends callbacks only to surfaces it is rendering, and
+        // it is not rendering this one, so the callback we would wait for never
+        // comes: the surface can then never draw again for as long as it is
+        // away. What that costs is not the frames — nobody is looking — but the
+        // buffer left behind, because the compositor animates THAT back in on
+        // the next show. A surface hidden showing a chat input and summoned
+        // back to show a voice orb would reveal the input and only swap once a
+        // callback finally arrived, most of an animation later.
+        //
+        // Drawing unpaced while hidden is cheap: it happens only when the
+        // client actually has something new to draw.
+        let hidden = self
+            .get_unit_with_id(id)
+            .is_some_and(|unit| self.hidden_surfaces.contains(&unit.wl_surface.id().protocol_id()));
+        if hidden {
+            if let Some(unit) = self.get_mut_unit_with_id(id) {
+                unit.present_available_state = PresentAvailableState::Available;
+            }
+            return;
+        }
         self.get_mut_unit_with_id(id)
             .map(WindowStateUnit::request_next_present);
     }
