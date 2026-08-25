@@ -6316,7 +6316,7 @@ impl<T: 'static> WindowState<T> {
         self.layer_surface_visibility_manager = globals
             .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
                 &qh,
-                1..=3,
+                1..=4,
                 layer_surface_visibility::LayerSurfaceVisibilityManagerData,
             )
             .ok();
@@ -7214,6 +7214,7 @@ impl<T: 'static> WindowState<T> {
                                         transition,
                                         auto_size: _, // Auto-size is handled at the iced level
                                         start_hidden,
+                                        start_hidden_without_animating,
                                     },
                                     id,
                                     info,
@@ -7382,7 +7383,23 @@ impl<T: 'static> WindowState<T> {
                                             };
                                             let controller = manager.get_visibility_controller(&wl_surface, &qh, visibility_data);
                                             apply_transition_to_controller(&controller, transition);
-                                            controller.set_hidden();
+                                            // A surface that maps hidden and STAYS hidden has
+                                            // nothing on screen to animate away, and the
+                                            // compositor cannot tell that from an ordinary hide.
+                                            // Saying so costs it the hide animation, which is
+                                            // why it is opt-in: a surface shown a moment later
+                                            // wants that animation still in flight.
+                                            if start_hidden_without_animating && controller.version() >= 4 {
+                                                controller.set_hidden_immediately();
+                                            } else {
+                                                if start_hidden_without_animating {
+                                                    log::debug!(
+                                                        "start_hidden_without_animating asked for but compositor layer_surface_visibility is v{}; falling back to an animated hide",
+                                                        controller.version()
+                                                    );
+                                                }
+                                                controller.set_hidden();
+                                            }
                                             window_state.layer_surface_visibility_controllers.insert(surface_id, controller);
                                             if let Some(ref conn) = window_state.connection {
                                                 let _ = conn.flush();

@@ -171,6 +171,21 @@ pub struct NewLayerShellSettings {
     /// `ShowWindow` is sent.  Useful for daemon-mode GPU warm-up where the
     /// first frame should never be visible.
     pub start_hidden: bool,
+    /// Whether that initial hide should skip the hide ANIMATION.
+    ///
+    /// Only meaningful alongside `start_hidden`, and only honoured by a
+    /// compositor implementing `layer_surface_visibility` v4.
+    ///
+    /// A surface mapped hidden has nothing on screen to animate away, but the
+    /// compositor sees the same request either way and plays the transition —
+    /// so the surface appears for the length of it purely in order to disappear.
+    /// Set this for a surface that maps hidden and STAYS hidden.
+    ///
+    /// Leave it false for one that maps hidden and is shown a moment later: the
+    /// hide animation still in flight is what the show animates out of, and
+    /// skipping it loses that. A hover preview created per hover wants the
+    /// default; a chat input waiting to be summoned wants this.
+    pub start_hidden_without_animating: bool,
 }
 
 /// be used to create a new popup
@@ -293,6 +308,7 @@ impl Default for NewLayerShellSettings {
             transition: None,
             auto_size: false,
             start_hidden: false,
+            start_hidden_without_animating: false,
         }
     }
 }
