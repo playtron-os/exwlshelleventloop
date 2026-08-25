@@ -1858,24 +1858,8 @@ where
                 let surface = layer_shell_window.get_wlsurface().clone();
                 tracing::info!(
                     ?iced_id,
-                    "ShowWindow: drawing, then calling show_surface (visibility protocol)"
+                    "ShowWindow: calling show_surface (visibility protocol)"
                 );
-                // Draw BEFORE revealing.
-                //
-                // The compositor animates the surface's committed buffer in, and
-                // while the surface was away that buffer stopped being updated —
-                // so revealing first means playing whatever was on screen when it
-                // was hidden, and the client's real content only lands once a
-                // frame finds its way through, most of an animation later. What
-                // that looked like: hold the key, watch the chat input slide up,
-                // and only then have it hand over to the voice orb.
-                //
-                // One synchronous pass through the ordinary draw path, so the
-                // buffer the compositor picks up is already the right one. It
-                // rebuilds the view if the app's state moved on, which is exactly
-                // the case that matters — the state changed while the surface was
-                // hidden, which is why it is being shown at all.
-                self.handle_refresh_event(ev, layer_shell_id);
                 ev.show_surface(&surface);
             }
             #[cfg(feature = "foreign-toplevel")]
