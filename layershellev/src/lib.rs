@@ -912,6 +912,46 @@ struct DndCurrent {
     surface_id: Option<id::Id>,
     /// Whether the offer advertises [`URI_LIST_MIME`] (i.e. is droppable here).
     has_uri_list: bool,
+    /// The action the compositor has settled on for this drag, from
+    /// `wl_data_offer.action`. Empty until one is negotiated — and it stays
+    /// empty if none ever is, because that event is only sent when the action
+    /// CHANGES and it starts out empty. See [`DndCurrent::finish`].
+    action: DndAction,
+}
+
+impl DndCurrent {
+    /// Tell the source we took the data — if we are allowed to say so.
+    ///
+    /// `wl_data_offer.finish` is not merely ignored when it is out of turn: the
+    /// compositor answers it with the `invalid_finish` protocol error, which
+    /// KILLS this process. Two things have to hold, and neither is ours to
+    /// assume:
+    ///
+    /// * **version ≥ 3.** `finish` does not exist below it.
+    /// * **an action was negotiated.** We ask for `Copy` only, and the
+    ///   compositor intersects that with what the source offers — so a source
+    ///   advertising `Move` alone leaves the intersection empty, and smithay
+    ///   posts `invalid_finish` on any `finish` in that state ("Cannot finish a
+    ///   data offer with no valid action"). A source that dies mid-drag lands in
+    ///   the same place.
+    ///
+    /// Declining to finish is safe: the `destroy` that follows is what tells the
+    /// source the drop was not taken.
+    fn finish(&self) {
+        if may_finish(self.offer.version(), self.action) {
+            self.offer.finish();
+        }
+    }
+}
+
+/// Whether `wl_data_offer.finish` is legal on an offer at this version with this
+/// negotiated action.
+///
+/// Split out from [`DndCurrent::finish`] because the answer cannot be tested
+/// through it — that needs a live `WlDataOffer`, and getting it wrong does not
+/// misbehave, it kills the process.
+fn may_finish(version: u32, action: DndAction) -> bool {
+    version >= 3 && !action.is_empty()
 }
 
 /// Pre-serialized payload attached to a `wl_data_source` we start, so the
@@ -4404,9 +4444,18 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                 y,
                 id,
             } => {
+                // A drag already hovering us when a new one enters. A compositor
+                // is meant to leave a surface before it enters another, so this
+                // is defence against one that does not — but taking `dnd_current`
+                // is exactly what ends a drag as far as a destination can tell,
+                // so it says so rather than dropping the previous drag on the
+                // floor the way the missing leave on a non-file drop used to.
                 if let Some(prev) = state.dnd_current.take() {
                     state.dnd_offer_mimes.remove(&prev.offer.id());
                     prev.offer.destroy();
+                    state
+                        .message
+                        .push((prev.surface_id, DispatchMessageInner::DndLeft));
                 }
                 if let Some(offer) = id {
                     let surface_id = state.get_id_from_surface(&surface);
@@ -4443,6 +4492,10 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                         offer,
                         surface_id,
                         has_uri_list,
+                        // Nothing negotiated yet. The compositor answers the
+                        // `set_actions` above with an `action` event of its own,
+                        // which the `WlDataOffer` dispatch records here.
+                        action: DndAction::empty(),
                     });
                 }
             }
@@ -4484,12 +4537,7 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                     // position comes from DndDrop + the last DndMotion.
                     let is_self_drop = state.dnd_source_origin.is_some();
                     if dnd.has_uri_list && is_self_drop {
-                        if dnd.offer.version() >= 3 {
-                            dnd.offer.finish();
-                        }
-                        state
-                            .message
-                            .push((surface_id, DispatchMessageInner::DndLeft));
+                        dnd.finish();
                     } else if dnd.has_uri_list {
                         // External drag: read the uri-list off a socketpair and emit
                         // FileDropped. A cooperating source writes immediately; the
@@ -4502,20 +4550,52 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
                             use std::io::Read;
                             let mut buf = Vec::new();
                             let _ = reader.read_to_end(&mut buf);
-                            if dnd.offer.version() >= 3 {
-                                dnd.offer.finish();
-                            }
+                            dnd.finish();
                             for path in parse_uri_list(&buf) {
                                 state
                                     .message
                                     .push((surface_id, DispatchMessageInner::FileDropped(path)));
                             }
                         }
-                        state
-                            .message
-                            .push((surface_id, DispatchMessageInner::DndLeft));
                     }
+                    // A drop ends the gesture, whatever the offer turned out to
+                    // hold — so this is emitted for EVERY drop, not just the ones
+                    // that produced files.
+                    //
+                    // It used to sit inside both branches above, which left a drop
+                    // carrying anything but a `text/uri-list` — dragged text, a
+                    // colour, an image off a web page — emitting `DndDrop` and
+                    // then nothing, ever. No leave means no end: any state a
+                    // destination holds for the length of a drag is stranded with
+                    // nothing left to release it, which in humainos-home pinned
+                    // the chat input over the user's window for the session.
+                    //
+                    // After the uri-list read, so the order a destination sees is
+                    // still `DndDrop` → `FileDropped`×N → `DndLeft`, and the paths
+                    // arrive before the event that says the gesture is over.
+                    state
+                        .message
+                        .push((surface_id, DispatchMessageInner::DndLeft));
                     state.dnd_offer_mimes.remove(&dnd.offer.id());
+                    // Destroying a dropped-but-unfinished offer is how the source
+                    // learns the drop was declined: smithay answers it with
+                    // `wl_data_source.cancelled` (its `wl_data_offer` `Destroy`
+                    // handler, `dropped && !finished` → `source.cancel()`), so a
+                    // source is not left waiting on a `dnd_finished` that is not
+                    // coming.
+                    //
+                    // Which is also why nothing is finished on the no-uri-list
+                    // path. `finish` means the transfer SUCCEEDED, and under a
+                    // `move` action that is the source's cue to delete what it
+                    // handed over — a lie we must not tell about data we never
+                    // read.
+                    //
+                    // The honest caveat: that `cancelled` is smithay being
+                    // forgiving rather than the spec promising anything. We
+                    // accepted a mime on enter, so a strict compositor need not
+                    // treat this as a declined drop at all. The real fix is to
+                    // stop accepting mimes we will never read — see the `Enter`
+                    // arm's `mimes.first()` fallback — not to finish here.
                     dnd.offer.destroy();
                 }
             }
@@ -4554,6 +4634,8 @@ impl<T: 'static> Dispatch<WlDataDevice, ()> for WindowState<T> {
 
 /// A data offer advertises its available MIME types (one `offer` event each)
 /// before the enter/selection that uses it; we accumulate them keyed by offer.
+/// It also reports the action the compositor settled on, which is what decides
+/// whether the drop may be finished — see [`DndCurrent::finish`].
 impl<T> Dispatch<WlDataOffer, ()> for WindowState<T> {
     fn event(
         state: &mut Self,
@@ -4563,11 +4645,29 @@ impl<T> Dispatch<WlDataOffer, ()> for WindowState<T> {
         _conn: &Connection,
         _qh: &wayland_client::QueueHandle<Self>,
     ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            log::info!(target: "kcopy_dnd", "Offer mime: {mime_type}");
-            if let Some(mimes) = state.dnd_offer_mimes.get_mut(&offer.id()) {
-                mimes.push(mime_type);
+        match event {
+            wl_data_offer::Event::Offer { mime_type } => {
+                log::info!(target: "kcopy_dnd", "Offer mime: {mime_type}");
+                if let Some(mimes) = state.dnd_offer_mimes.get_mut(&offer.id()) {
+                    mimes.push(mime_type);
+                }
             }
+            // The compositor's answer to our `set_actions`, re-sent whenever the
+            // negotiated action changes. Recorded rather than acted on: the only
+            // thing it decides here is whether `finish` is legal at drop time.
+            wl_data_offer::Event::Action { dnd_action } => {
+                let action = match dnd_action {
+                    WEnum::Value(action) => action,
+                    _ => DndAction::empty(),
+                };
+                log::info!(target: "kcopy_dnd", "Offer action: {action:?}");
+                if let Some(dnd) = state.dnd_current.as_mut()
+                    && dnd.offer.id() == offer.id()
+                {
+                    dnd.action = action;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -8137,5 +8237,38 @@ fn set_cursor_shape<T: 'static>(
             hotspot_y as i32,
         );
         cursor_surface.commit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DndAction, may_finish};
+
+    /// The ordinary incoming file drop: a v3 offer on which the compositor
+    /// settled on Copy. Finishing tells the source we took the data.
+    #[test]
+    fn a_negotiated_copy_may_be_finished() {
+        assert!(may_finish(3, DndAction::Copy));
+    }
+
+    /// The one that kills the process. We ask the compositor for `Copy` alone,
+    /// and it hands back the intersection with what the source offers — so a
+    /// source advertising only `Move` leaves nothing negotiated, and smithay
+    /// answers a `finish` in that state with the `invalid_finish` protocol
+    /// error rather than ignoring it. A source that dies mid-drag lands here
+    /// too, as does one that never triggered an `action` event at all (it is
+    /// only sent when the action CHANGES, and it starts empty).
+    #[test]
+    fn an_offer_with_no_negotiated_action_is_never_finished() {
+        assert!(!may_finish(3, DndAction::empty()));
+        assert!(!may_finish(3, DndAction::None));
+    }
+
+    /// `finish` does not exist below version 3, so asking for it is a request
+    /// the offer has no opcode for.
+    #[test]
+    fn finish_does_not_exist_before_version_3() {
+        assert!(!may_finish(1, DndAction::Copy));
+        assert!(!may_finish(2, DndAction::Copy));
     }
 }
