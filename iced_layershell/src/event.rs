@@ -395,6 +395,76 @@ pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent>
     })
 }
 
+/// A workspace switch, as reported by the compositor.
+pub use layershellev::workspace_transition::WorkspaceTransition;
+
+static WORKSPACE_TRANSITION_CHANNEL: std::sync::OnceLock<SharedChannel<WorkspaceTransition>> =
+    std::sync::OnceLock::new();
+
+fn get_workspace_transition_channel() -> &'static SharedChannel<WorkspaceTransition> {
+    WORKSPACE_TRANSITION_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send a workspace-transition event (called by the event loop).
+pub(crate) fn send_workspace_transition_event(event: WorkspaceTransition) {
+    let (tx, _) = get_workspace_transition_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for workspace-transition events.
+///
+/// Yields `Started` when a workspace switch begins animating — carrying the
+/// compositor's own animation length, so a client can fade its contents over
+/// the same window — and `Finished` when it lands. Requires compositor support
+/// for `workspace_transition_manager_v1`; elsewhere it never fires.
+///
+/// # Example
+/// ```ignore
+/// fn subscription(&self) -> Subscription<Message> {
+///     iced_layershell::event::workspace_transition_subscription()
+///         .map(Message::WorkspaceTransition)
+/// }
+/// ```
+pub fn workspace_transition_subscription() -> iced_futures::Subscription<WorkspaceTransition> {
+    #[derive(Hash)]
+    struct WorkspaceTransitionSubscription;
+
+    iced_futures::Subscription::run_with(WorkspaceTransitionSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<WorkspaceTransition>| async move {
+                use iced_futures::futures::SinkExt;
+
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<WorkspaceTransition>(100);
+
+                std::thread::Builder::new()
+                    .name("workspace-transition-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_workspace_transition_channel();
+                        let rx = rx.lock().expect("workspace transition rx lock");
+                        while let Ok(event) = rx.recv() {
+                            if async_tx.clone().try_send(event).is_err() {
+                                log::warn!("Workspace transition bridge: channel full");
+                            }
+                        }
+                    })
+                    .expect("spawn workspace transition bridge thread");
+
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
+                }
+            },
+        )
+    })
+}
+
 fn from_u32_to_icedmouse(code: u32) -> mouse::Button {
     match code {
         273 => mouse::Button::Right,
@@ -569,6 +639,8 @@ pub enum WindowEvent {
     /// The full logical layout of every output (startup + hotplug). Delivered to
     /// the app through [`output_layout_subscription`].
     OutputLayout(Vec<layershellev::OutputLayoutItem>),
+    /// A workspace switch began or finished animating.
+    WorkspaceTransition(WorkspaceTransition),
 }
 
 /// The logical size (logical px) of the output a layer surface is shown on.
@@ -630,6 +702,7 @@ pub enum IcedLayerShellEvent<Message> {
 impl From<&DispatchMessage> for WindowEvent {
     fn from(value: &DispatchMessage) -> Self {
         match value {
+            DispatchMessage::WorkspaceTransition(t) => WindowEvent::WorkspaceTransition(t.clone()),
             DispatchMessage::RequestRefresh { .. } => WindowEvent::Refresh,
             DispatchMessage::Closed => WindowEvent::Closed,
             DispatchMessage::MouseEnter {

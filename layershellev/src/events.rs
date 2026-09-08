@@ -511,6 +511,8 @@ pub(crate) enum DispatchMessageInner {
     /// The usable (non-exclusive) area of the surface's output changed, reported
     /// by the compositor via the `layer_usable_area_v1` protocol (output logical
     /// geometry minus panels/docks), in output-logical coordinates.
+    /// A workspace switch began or finished animating.
+    WorkspaceTransition(crate::workspace_transition::WorkspaceTransition),
     UsableAreaChanged {
         x: i32,
         y: i32,
@@ -746,6 +748,8 @@ pub enum DispatchMessage {
     /// output logical geometry minus every exclusive zone (panels/docks), in
     /// output-logical coordinates. Reported by the `layer_usable_area_v1`
     /// protocol; used to center overlays in the space free of panels.
+    /// A workspace switch began or finished animating.
+    WorkspaceTransition(crate::workspace_transition::WorkspaceTransition),
     UsableAreaChanged {
         x: i32,
         y: i32,
@@ -874,6 +878,7 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::OutputLayoutChanged(layout) => {
                 DispatchMessage::OutputLayoutChanged(layout)
             }
+            DispatchMessageInner::WorkspaceTransition(t) => DispatchMessage::WorkspaceTransition(t),
             DispatchMessageInner::UsableAreaChanged {
                 x,
                 y,

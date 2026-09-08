@@ -1175,6 +1175,11 @@ where
             return true;
         }
 
+        if let LayerShellWindowEvent::WorkspaceTransition(transition) = event {
+            crate::event::send_workspace_transition_event(transition);
+            return true;
+        }
+
         // The full output layout (every monitor's name + global geometry).
         if let LayerShellWindowEvent::OutputLayout(outputs) = event {
             crate::event::send_output_layout_event(crate::event::OutputLayoutEvent { outputs });

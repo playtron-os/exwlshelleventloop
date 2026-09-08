@@ -138,6 +138,7 @@ pub mod shadow;
 pub mod special_action;
 mod strtoshape;
 pub mod tooltip;
+pub mod workspace_transition;
 
 use events::DispatchMessageInner;
 
@@ -1225,6 +1226,11 @@ pub struct WindowState<T> {
     /// Usable-area objects per surface (keyed by surface protocol ID).
     usable_area_surfaces:
         HashMap<u32, layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1>,
+    /// Reports when a workspace switch is animating, so a surface can fade its
+    /// contents across it instead of swapping mid-animation.
+    workspace_transition_manager: Option<
+        workspace_transition::workspace_transition_manager_v1::WorkspaceTransitionManagerV1,
+    >,
 
     /// Tooltip manager (bound lazily when a popup with tooltip settings is created)
     tooltip_manager:
@@ -3576,6 +3582,7 @@ impl<T> Default for WindowState<T> {
             auto_hide_visible: true,
             usable_area_manager: None,
             usable_area_surfaces: HashMap::new(),
+            workspace_transition_manager: None,
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
             special_action: false,
@@ -5446,6 +5453,42 @@ impl<T: 'static>
     }
 }
 
+// The manager receives the transition events directly; there is no per-surface
+// object, so they are attributed to no window.
+impl<T: 'static>
+    Dispatch<
+        workspace_transition::workspace_transition_manager_v1::WorkspaceTransitionManagerV1,
+        (),
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &workspace_transition::workspace_transition_manager_v1::WorkspaceTransitionManagerV1,
+        event: <workspace_transition::workspace_transition_manager_v1::WorkspaceTransitionManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use workspace_transition::WorkspaceTransition;
+        use workspace_transition::workspace_transition_manager_v1::Event;
+        let transition = match event {
+            Event::Started {
+                from,
+                to,
+                duration_ms,
+            } => WorkspaceTransition::Started {
+                from,
+                to,
+                duration_ms,
+            },
+            Event::Finished { to } => WorkspaceTransition::Finished { to },
+        };
+        state
+            .message
+            .push((None, DispatchMessageInner::WorkspaceTransition(transition)));
+    }
+}
+
 // Manual Dispatch impl for the usable-area surface object to handle usable_area
 // events (the non-exclusive area of the surface's output).
 impl<T: 'static>
@@ -6409,6 +6452,18 @@ impl<T: 'static> WindowState<T> {
             log::info!(
                 "Successfully bound layer_usable_area_manager_v1 protocol for usable-area reporting"
             );
+        }
+
+        // Binding is the opt-in: a bound client receives every transition.
+        self.workspace_transition_manager = globals
+            .bind::<workspace_transition::workspace_transition_manager_v1::WorkspaceTransitionManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.workspace_transition_manager.is_some() {
+            log::info!("Successfully bound workspace_transition_manager_v1");
         }
 
         // Always try to bind layer surface visibility manager for hide/show support
