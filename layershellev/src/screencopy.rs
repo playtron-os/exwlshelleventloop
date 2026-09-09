@@ -21,6 +21,8 @@ use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
     ext_image_capture_source_v1::ExtImageCaptureSourceV1,
 };
+#[cfg(feature = "workspaces")]
+use cosmic_protocols::image_capture_source::v1::client::zcosmic_workspace_image_capture_source_manager_v1::ZcosmicWorkspaceImageCaptureSourceManagerV1;
 use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1},
     ext_image_copy_capture_manager_v1::{self, ExtImageCopyCaptureManagerV1},
@@ -54,6 +56,10 @@ pub enum ScreencopyEvent {
 pub enum ScreencopyAction {
     /// Capture a single frame from the toplevel with the given ext handle ID
     Capture(u32),
+    /// Capture a desktop by its `ext_workspace_handle_v1` id; the frame comes
+    /// back with that id in `toplevel_id`.
+    #[cfg(feature = "workspaces")]
+    CaptureWorkspace(u32),
     /// Start continuous capture for all active sessions.
     /// Frames auto-recapture at the wayland level without round-tripping through iced.
     /// The target dimensions are used for server-side downscaling so only small
@@ -140,6 +146,9 @@ impl BufferSwapchain {
 pub(crate) struct ScreencopyState {
     /// ext_foreign_toplevel_image_capture_source_manager_v1 global
     pub source_manager: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
+    /// zcosmic_workspace_image_capture_source_manager_v1 global, for desktops.
+    #[cfg(feature = "workspaces")]
+    pub workspace_source_manager: Option<ZcosmicWorkspaceImageCaptureSourceManagerV1>,
     /// ext_image_copy_capture_manager_v1 global
     pub capture_manager: Option<ExtImageCopyCaptureManagerV1>,
     /// Active capture sessions keyed by toplevel ID
@@ -160,6 +169,8 @@ impl ScreencopyState {
     pub fn new() -> Self {
         Self {
             source_manager: None,
+            #[cfg(feature = "workspaces")]
+            workspace_source_manager: None,
             capture_manager: None,
             sessions: HashMap::new(),
             constraints: HashMap::new(),
@@ -200,6 +211,58 @@ pub(crate) trait ScreencopyHandler {
     ) -> Option<
         &wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
     >;
+    #[cfg(feature = "workspaces")]
+    fn get_ext_workspace_handle(
+        &self,
+        id: u32,
+    ) -> Option<&wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::ExtWorkspaceHandleV1>;
+}
+
+/// What a capture is of; each kind has its own source manager and handle.
+#[derive(Debug, Clone, Copy)]
+enum SourceKind {
+    Toplevel,
+    #[cfg(feature = "workspaces")]
+    Workspace,
+}
+
+/// The capture source for `id`, or the reason there is none.
+fn create_source<D>(
+    state: &D,
+    id: u32,
+    kind: SourceKind,
+    qh: &QueueHandle<D>,
+) -> Result<ExtImageCaptureSourceV1, String>
+where
+    D: ScreencopyHandler + Dispatch<ExtImageCaptureSourceV1, ImageCaptureSourceData> + 'static,
+{
+    let sc = state.screencopy_state();
+    if sc.capture_manager.is_none() {
+        return Err("Screencopy protocols not available".to_string());
+    }
+    match kind {
+        SourceKind::Toplevel => {
+            let manager = sc
+                .source_manager
+                .as_ref()
+                .ok_or_else(|| "Screencopy protocols not available".to_string())?;
+            let handle = state
+                .get_ext_toplevel_handle(id)
+                .ok_or_else(|| format!("No ext toplevel handle for id {id}"))?;
+            Ok(manager.create_source(handle, qh, ImageCaptureSourceData))
+        }
+        #[cfg(feature = "workspaces")]
+        SourceKind::Workspace => {
+            let manager = sc
+                .workspace_source_manager
+                .as_ref()
+                .ok_or_else(|| "Workspace capture source not available".to_string())?;
+            let handle = state
+                .get_ext_workspace_handle(id)
+                .ok_or_else(|| format!("No ext workspace handle for id {id}"))?;
+            Ok(manager.create_source(handle, qh, ImageCaptureSourceData))
+        }
+    }
 }
 
 // ============================================================================
@@ -209,6 +272,34 @@ pub(crate) trait ScreencopyHandler {
 /// Start a capture for a toplevel.
 /// If a session already exists, reuses it and just requests a new frame.
 pub(crate) fn start_capture<D>(state: &mut D, toplevel_id: u32, qh: &QueueHandle<D>)
+where
+    D: ScreencopyHandler
+        + Dispatch<ExtImageCaptureSourceV1, ImageCaptureSourceData>
+        + Dispatch<ExtImageCopyCaptureSessionV1, CaptureSessionData>
+        + Dispatch<ExtImageCopyCaptureFrameV1, CaptureFrameData>
+        + Dispatch<WlBuffer, BufferData>
+        + Dispatch<WlShmPool, ShmPoolData>
+        + 'static,
+{
+    start_capture_of(state, toplevel_id, SourceKind::Toplevel, qh);
+}
+
+/// Start a capture of a desktop, by its workspace handle id.
+#[cfg(feature = "workspaces")]
+pub(crate) fn start_workspace_capture<D>(state: &mut D, id: u32, qh: &QueueHandle<D>)
+where
+    D: ScreencopyHandler
+        + Dispatch<ExtImageCaptureSourceV1, ImageCaptureSourceData>
+        + Dispatch<ExtImageCopyCaptureSessionV1, CaptureSessionData>
+        + Dispatch<ExtImageCopyCaptureFrameV1, CaptureFrameData>
+        + Dispatch<WlBuffer, BufferData>
+        + Dispatch<WlShmPool, ShmPoolData>
+        + 'static,
+{
+    start_capture_of(state, id, SourceKind::Workspace, qh);
+}
+
+fn start_capture_of<D>(state: &mut D, toplevel_id: u32, kind: SourceKind, qh: &QueueHandle<D>)
 where
     D: ScreencopyHandler
         + Dispatch<ExtImageCaptureSourceV1, ImageCaptureSourceData>
@@ -230,35 +321,20 @@ where
         return;
     }
     // Check availability
-    let (has_source_mgr, has_capture_mgr) = {
-        let sc = state.screencopy_state();
-        (sc.source_manager.is_some(), sc.capture_manager.is_some())
+    let source = match create_source(state, toplevel_id, kind, qh) {
+        Ok(source) => source,
+        Err(reason) => {
+            log::warn!("{reason}");
+            state.screencopy_event(ScreencopyEvent::Failed {
+                toplevel_id,
+                reason,
+            });
+            return;
+        }
     };
-    if !has_source_mgr || !has_capture_mgr {
-        log::warn!("Screencopy not available (missing protocol globals)");
-        state.screencopy_event(ScreencopyEvent::Failed {
-            toplevel_id,
-            reason: "Screencopy protocols not available".to_string(),
-        });
-        return;
-    }
-
-    let Some(ext_handle) = state.get_ext_toplevel_handle(toplevel_id) else {
-        log::warn!("No ext_foreign_toplevel_handle for id={}", toplevel_id);
-        state.screencopy_event(ScreencopyEvent::Failed {
-            toplevel_id,
-            reason: format!("No ext toplevel handle for id {toplevel_id}"),
-        });
-        return;
-    };
-    let ext_handle = ext_handle.clone();
 
     let sc = state.screencopy_state();
-    let source_manager = sc.source_manager.as_ref().unwrap();
     let capture_manager = sc.capture_manager.as_ref().unwrap();
-
-    // Create capture source from toplevel handle
-    let source = source_manager.create_source(&ext_handle, qh, ImageCaptureSourceData);
 
     // Create capture session (options = 0 = don't paint cursors)
     let session = capture_manager.create_session(

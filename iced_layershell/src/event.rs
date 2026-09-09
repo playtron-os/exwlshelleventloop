@@ -401,6 +401,74 @@ pub use layershellev::workspace_transition::WorkspaceTransition;
 /// An animated change to a surface's arranged size, as reported by the compositor.
 pub use layershellev::layer_size_transition::SizeTransition;
 
+/// The desktops of every workspace, as reported by the compositor.
+#[cfg(feature = "workspaces")]
+pub use layershellev::ext_workspace::{
+    WorkspaceEvent, WorkspaceGroupInfo, WorkspaceInfo, WorkspacesSnapshot,
+};
+
+#[cfg(feature = "workspaces")]
+static WORKSPACES_CHANNEL: std::sync::OnceLock<SharedChannel<WorkspaceEvent>> =
+    std::sync::OnceLock::new();
+
+#[cfg(feature = "workspaces")]
+fn get_workspaces_channel() -> &'static SharedChannel<WorkspaceEvent> {
+    WORKSPACES_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+#[cfg(feature = "workspaces")]
+pub(crate) fn send_workspaces_event(event: WorkspaceEvent) {
+    let (tx, _) = get_workspaces_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for the desktops of every workspace.
+///
+/// Yields a whole snapshot after every batch of changes: the groups (one per
+/// workspace and output, with the workspace registry id the compositor put on
+/// it) and the desktops in them. Requires compositor support for
+/// `ext_workspace_v1`; elsewhere it never fires.
+#[cfg(feature = "workspaces")]
+pub fn workspaces_subscription() -> iced_futures::Subscription<WorkspaceEvent> {
+    #[derive(Hash)]
+    struct WorkspacesSubscription;
+
+    iced_futures::Subscription::run_with(WorkspacesSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<WorkspaceEvent>| async move {
+                use iced_futures::futures::SinkExt;
+
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<WorkspaceEvent>(100);
+
+                std::thread::Builder::new()
+                    .name("workspaces-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_workspaces_channel();
+                        let rx = rx.lock().expect("workspaces rx lock");
+                        while let Ok(event) = rx.recv() {
+                            if async_tx.clone().try_send(event).is_err() {
+                                log::warn!("Workspaces bridge: channel full");
+                            }
+                        }
+                    })
+                    .expect("spawn workspaces bridge thread");
+
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
+                }
+            },
+        )
+    })
+}
+
 /// A size transition and the window it is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizeTransitionEvent {
@@ -712,6 +780,9 @@ pub enum WindowEvent {
     WorkspaceTransition(WorkspaceTransition),
     /// The compositor announced an animated change to this surface's size.
     SizeTransition(SizeTransition),
+    /// The desktops of every workspace changed.
+    #[cfg(feature = "workspaces")]
+    Workspaces(WorkspaceEvent),
 }
 
 /// The logical size (logical px) of the output a layer surface is shown on.
@@ -775,6 +846,8 @@ impl From<&DispatchMessage> for WindowEvent {
         match value {
             DispatchMessage::WorkspaceTransition(t) => WindowEvent::WorkspaceTransition(t.clone()),
             DispatchMessage::SizeTransition(t) => WindowEvent::SizeTransition(*t),
+            #[cfg(feature = "workspaces")]
+            DispatchMessage::Workspaces(e) => WindowEvent::Workspaces(e.clone()),
             DispatchMessage::RequestRefresh { .. } => WindowEvent::Refresh,
             DispatchMessage::Closed => WindowEvent::Closed,
             DispatchMessage::MouseEnter {

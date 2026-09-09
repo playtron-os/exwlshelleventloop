@@ -20,6 +20,7 @@ linux-theme-detection = ["dep:mundy"]
 foreign-toplevel = ["layershellev/foreign-toplevel"]
 cosmic-toplevel = ["foreign-toplevel", "layershellev/cosmic-toplevel"]
 screencopy = ["foreign-toplevel", "layershellev/screencopy"]
+workspaces = ["layershellev/workspaces"]
 
 [dependencies]
 iced_renderer.workspace = true

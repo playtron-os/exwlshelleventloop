@@ -14,6 +14,7 @@ default = []
 foreign-toplevel = []
 cosmic-toplevel = ["foreign-toplevel", "dep:cosmic-protocols"]
 screencopy = ["foreign-toplevel"]
+workspaces = ["dep:cosmic-protocols"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

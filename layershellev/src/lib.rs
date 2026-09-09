@@ -124,6 +124,8 @@ pub mod blur;
 pub mod corner_radius;
 pub mod dpi;
 mod events;
+#[cfg(feature = "workspaces")]
+pub mod ext_workspace;
 #[cfg(feature = "foreign-toplevel")]
 pub mod foreign_toplevel;
 pub mod layer_auto_hide;
@@ -1334,6 +1336,8 @@ pub struct WindowState<T> {
     ext_toplevel_handles: HashMap<u32, wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1>,
 
     /// Screencopy protocol state
+    #[cfg(feature = "workspaces")]
+    workspaces: ext_workspace::WorkspacesState,
     #[cfg(feature = "screencopy")]
     screencopy: screencopy::ScreencopyState,
     /// Cached QueueHandle for use after event_queue is taken by the event loop
@@ -1619,6 +1623,10 @@ impl<T> WindowState<T> {
             screencopy::ScreencopyAction::Capture(toplevel_id) => {
                 screencopy::start_capture(self, toplevel_id, qh);
             }
+            #[cfg(feature = "workspaces")]
+            screencopy::ScreencopyAction::CaptureWorkspace(id) => {
+                screencopy::start_workspace_capture(self, id, qh);
+            }
             screencopy::ScreencopyAction::StartContinuous {
                 target_width,
                 target_height,
@@ -1660,6 +1668,10 @@ impl<T> WindowState<T> {
         match action {
             screencopy::ScreencopyAction::Capture(toplevel_id) => {
                 screencopy::start_capture(self, toplevel_id, &qh);
+            }
+            #[cfg(feature = "workspaces")]
+            screencopy::ScreencopyAction::CaptureWorkspace(id) => {
+                screencopy::start_workspace_capture(self, id, &qh);
             }
             screencopy::ScreencopyAction::StartContinuous {
                 target_width,
@@ -3651,6 +3663,8 @@ impl<T> Default for WindowState<T> {
             foreign_toplevel_handles: HashMap::new(),
             #[cfg(feature = "foreign-toplevel")]
             ext_toplevel_handles: HashMap::new(),
+            #[cfg(feature = "workspaces")]
+            workspaces: ext_workspace::WorkspacesState::default(),
             #[cfg(feature = "screencopy")]
             screencopy: screencopy::ScreencopyState::new(),
             queue_handle: None,
@@ -5426,6 +5440,8 @@ impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
 delegate_noop!(@<T> WindowState<T>: ignore layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore layer_usable_area::layer_usable_area_manager_v1::LayerUsableAreaManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore layer_size_transition::layer_size_transition_manager_v1::LayerSizeTransitionManagerV1);
+#[cfg(all(feature = "screencopy", feature = "workspaces"))]
+delegate_noop!(@<T> WindowState<T>: ignore cosmic_protocols::image_capture_source::v1::client::zcosmic_workspace_image_capture_source_manager_v1::ZcosmicWorkspaceImageCaptureSourceManagerV1);
 
 // Tooltip protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
@@ -5944,6 +5960,15 @@ impl<T: 'static> screencopy::ScreencopyHandler for WindowState<T> {
         &wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
     >{
         self.ext_toplevel_handles.get(&id)
+    }
+
+    #[cfg(feature = "workspaces")]
+    fn get_ext_workspace_handle(
+        &self,
+        id: u32,
+    ) -> Option<&wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::ExtWorkspaceHandleV1>
+    {
+        self.workspaces.handle(id)
     }
 }
 
@@ -6538,6 +6563,31 @@ impl<T: 'static> WindowState<T> {
             log::info!("Successfully bound layer_size_transition_manager_v1");
         }
 
+        // Every desktop of every Kora workspace, and which workspace each is.
+        #[cfg(feature = "workspaces")]
+        {
+            self.workspaces.manager = globals
+                .bind::<wayland_protocols::ext::workspace::v1::client::ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
+                    &qh,
+                    1..=1,
+                    ext_workspace::WorkspaceManagerData,
+                )
+                .ok();
+            self.workspaces.realm_manager = globals
+                .bind::<ext_workspace::kora_workspace_realm_manager_v1::KoraWorkspaceRealmManagerV1, _, _>(
+                    &qh,
+                    1..=1,
+                    ext_workspace::RealmData,
+                )
+                .ok();
+            if self.workspaces.manager.is_some() {
+                log::info!("Successfully bound ext_workspace_manager_v1");
+            }
+            if self.workspaces.realm_manager.is_some() {
+                log::info!("Successfully bound kora_workspace_realm_manager_v1");
+            }
+        }
+
         // Binding is the opt-in: a bound client receives every transition.
         self.workspace_transition_manager = globals
             .bind::<workspace_transition::workspace_transition_manager_v1::WorkspaceTransitionManagerV1, _, _>(
@@ -6725,6 +6775,21 @@ impl<T: 'static> WindowState<T> {
                 log::info!(
                     "Successfully bound ext_foreign_toplevel_image_capture_source_manager_v1 for screencopy"
                 );
+            }
+            #[cfg(feature = "workspaces")]
+            {
+                self.screencopy.workspace_source_manager = globals
+                    .bind::<cosmic_protocols::image_capture_source::v1::client::zcosmic_workspace_image_capture_source_manager_v1::ZcosmicWorkspaceImageCaptureSourceManagerV1, _, _>(
+                        &qh,
+                        1..=1,
+                        (),
+                    )
+                    .ok();
+                if self.screencopy.workspace_source_manager.is_some() {
+                    log::info!(
+                        "Successfully bound zcosmic_workspace_image_capture_source_manager_v1"
+                    );
+                }
             }
 
             if self.screencopy.is_available() {

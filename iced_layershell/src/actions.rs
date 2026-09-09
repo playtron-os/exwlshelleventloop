@@ -20,6 +20,15 @@ pub use layershellev::screencopy::ScreencopyAction;
 #[derive(Debug, Clone)]
 pub enum ScreencopyAction {}
 
+// Re-export WorkspaceAction for consumers
+#[cfg(feature = "workspaces")]
+pub use layershellev::ext_workspace::WorkspaceAction;
+
+// Stub type when feature is disabled (uninhabited — cannot be constructed)
+#[cfg(not(feature = "workspaces"))]
+#[derive(Debug, Clone)]
+pub enum WorkspaceAction {}
+
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -251,6 +260,8 @@ pub enum LayershellCustomAction {
     ToplevelAction(ToplevelAction),
     /// Execute a screencopy action (capture a toplevel window screenshot)
     ScreencopyAction(ScreencopyAction),
+    /// Show, add or remove a desktop.
+    WorkspaceAction(WorkspaceAction),
     /// Arm dismiss notifications for this window.
     /// Once armed, a DismissRequested event will be sent when the user
     /// clicks/touches outside the window's dismiss group.

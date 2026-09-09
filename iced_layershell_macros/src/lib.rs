@@ -88,6 +88,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 ShowWindow(iced_layershell::reexport::IcedId),
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
+                WorkspaceAction(iced_layershell::actions::WorkspaceAction),
             };
 
             let impl_quote = quote! {
@@ -167,6 +168,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::ShowWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ShowWindow)),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
+                            Self::WorkspaceAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::WorkspaceAction(action))),
                             _ => Err(self)
                         }
                     }
@@ -233,6 +235,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 KeyboardShortcutsInhibitChange(bool),
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
+                WorkspaceAction(iced_layershell::actions::WorkspaceAction),
             };
             let impl_quote = quote! {
                 impl #impl_gen TryInto<iced_layershell::actions::LayershellCustomActionWithId> for #ident #ty_gen #where_gen {
@@ -275,6 +278,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::KeyboardShortcutsInhibitChange(enabled) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardShortcutsInhibitChange(enabled))),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
+                            Self::WorkspaceAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::WorkspaceAction(action))),
                             _ => Err(self)
                         }
                     }

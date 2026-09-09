@@ -1155,6 +1155,12 @@ where
             return true;
         }
 
+        #[cfg(feature = "workspaces")]
+        if let LayerShellWindowEvent::Workspaces(ref workspaces_event) = event {
+            crate::event::send_workspaces_event(workspaces_event.clone());
+            return true;
+        }
+
         // Handle output-info events (the logical size of the output the surface is
         // shown on) - they go through a subscription channel.
         if let LayerShellWindowEvent::OutputLogicalSize {
@@ -1897,6 +1903,13 @@ where
             }
             #[cfg(not(feature = "screencopy"))]
             LayershellCustomAction::ScreencopyAction(action) => match action {},
+            #[cfg(feature = "workspaces")]
+            LayershellCustomAction::WorkspaceAction(action) => {
+                log::debug!("Processing WorkspaceAction: {:?}", action);
+                ev.execute_workspace_action(action);
+            }
+            #[cfg(not(feature = "workspaces"))]
+            LayershellCustomAction::WorkspaceAction(action) => match action {},
             LayershellCustomAction::ArmDismiss => {
                 // Resolve the surface with the single-window fallback (id == None →
                 // the first/only window), like every other action does. Without this

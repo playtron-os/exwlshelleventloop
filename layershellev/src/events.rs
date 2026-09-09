@@ -538,6 +538,9 @@ pub(crate) enum DispatchMessageInner {
     /// Screencopy event (captured frame or failure)
     #[cfg(feature = "screencopy")]
     Screencopy(ScreencopyEvent),
+    /// The desktops of every workspace changed.
+    #[cfg(feature = "workspaces")]
+    Workspaces(crate::ext_workspace::WorkspaceEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
     /// A drag-and-drop offer entered the surface — carries the surface-local
@@ -697,6 +700,9 @@ pub enum DispatchMessage {
     /// Screencopy event (captured frame ready or capture failed)
     #[cfg(feature = "screencopy")]
     Screencopy(ScreencopyEvent),
+    /// The desktops of every workspace changed.
+    #[cfg(feature = "workspaces")]
+    Workspaces(crate::ext_workspace::WorkspaceEvent),
     /// Dismiss requested - user clicked/touched outside an armed dismiss group
     DismissRequested,
     /// A drag-and-drop offer entered the surface — surface-local position + the
@@ -909,6 +915,8 @@ impl From<DispatchMessageInner> for DispatchMessage {
             DispatchMessageInner::ForeignToplevel(event) => DispatchMessage::ForeignToplevel(event),
             #[cfg(feature = "screencopy")]
             DispatchMessageInner::Screencopy(event) => DispatchMessage::Screencopy(event),
+            #[cfg(feature = "workspaces")]
+            DispatchMessageInner::Workspaces(event) => DispatchMessage::Workspaces(event),
             DispatchMessageInner::DismissRequested => DispatchMessage::DismissRequested,
             DispatchMessageInner::DndEntered { x, y, mime_types } => {
                 DispatchMessage::DndEntered { x, y, mime_types }
