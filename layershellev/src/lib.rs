@@ -128,6 +128,7 @@ mod events;
 pub mod foreign_toplevel;
 pub mod layer_auto_hide;
 pub mod layer_edge_resize;
+pub mod layer_size_transition;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
 pub mod layer_surface_visibility;
@@ -1226,6 +1227,12 @@ pub struct WindowState<T> {
     /// Usable-area objects per surface (keyed by surface protocol ID).
     usable_area_surfaces:
         HashMap<u32, layer_usable_area::layer_usable_area_v1::LayerUsableAreaV1>,
+    /// Announces animated size changes so a surface can move its own content.
+    size_transition_manager: Option<
+        layer_size_transition::layer_size_transition_manager_v1::LayerSizeTransitionManagerV1,
+    >,
+    size_transition_surfaces:
+        HashMap<u32, layer_size_transition::layer_size_transition_v1::LayerSizeTransitionV1>,
     /// Reports when a workspace switch is animating, so a surface can fade its
     /// contents across it instead of swapping mid-animation.
     workspace_transition_manager: Option<
@@ -1416,6 +1423,9 @@ impl<T> WindowState<T> {
         }
         if let Some(usable_area_obj) = self.usable_area_surfaces.remove(&surface_id) {
             usable_area_obj.destroy();
+        }
+        if let Some(obj) = self.size_transition_surfaces.remove(&surface_id) {
+            obj.destroy();
         }
         if let Some(tooltip_obj) = self.tooltip_surfaces.remove(&surface_id) {
             tooltip_obj.destroy();
@@ -1805,6 +1815,11 @@ impl<T: 'static> WindowState<T> {
             register_usable_area_for_surface(&self.usable_area_manager, wl_surface, qh)
         {
             self.usable_area_surfaces.insert(surface_id, obj);
+        }
+        if let Some(obj) =
+            register_size_transition_for_surface(&self.size_transition_manager, wl_surface, qh)
+        {
+            self.size_transition_surfaces.insert(surface_id, obj);
         }
     }
 
@@ -2381,11 +2396,12 @@ impl<T: 'static> WindowState<T> {
             // frosted-glass appearance went over the KDE path above.
             background_effect::apply(effect, Some(region));
         }
-        surface.commit();
-        log::info!(
-            "set_blur_region_for_surface: surface={}, done (surface committed)",
-            surface_id
-        );
+        // Applied with the next frame, so the region and the drawing that
+        // matches it land in one commit.
+        if let Some(id) = self.get_id_from_surface(surface) {
+            self.request_refresh(id, RefreshRequest::NextFrame);
+        }
+        log::info!("set_blur_region_for_surface: surface={}, done", surface_id);
     }
 
     /// Enable or disable shadow effect for a specific surface.
@@ -3213,6 +3229,21 @@ fn register_usable_area_for_surface<T: 'static>(
     Some(manager.get_usable_area(surface, qh, data))
 }
 
+/// Ask for size transitions on `surface`. No-op without the protocol.
+fn register_size_transition_for_surface<T: 'static>(
+    manager: &Option<
+        layer_size_transition::layer_size_transition_manager_v1::LayerSizeTransitionManagerV1,
+    >,
+    surface: &WlSurface,
+    qh: &QueueHandle<WindowState<T>>,
+) -> Option<layer_size_transition::layer_size_transition_v1::LayerSizeTransitionV1> {
+    let manager = manager.as_ref()?;
+    let data = layer_size_transition::LayerSizeTransitionData {
+        surface: surface.clone(),
+    };
+    Some(manager.get_size_transition(surface, qh, data))
+}
+
 /// Apply a show/hide transition preference to a freshly-created visibility
 /// controller.  `set_transition` was added in version 2 of the protocol, so
 /// this is a no-op (logged) when the compositor only supports version 1.
@@ -3582,6 +3613,8 @@ impl<T> Default for WindowState<T> {
             auto_hide_visible: true,
             usable_area_manager: None,
             usable_area_surfaces: HashMap::new(),
+            size_transition_manager: None,
+            size_transition_surfaces: HashMap::new(),
             workspace_transition_manager: None,
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
@@ -5392,6 +5425,7 @@ impl<T: 'static> Dispatch<shadow::layer_shadow_surface_v1::LayerShadowSurfaceV1,
 // Auto-hide protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore layer_usable_area::layer_usable_area_manager_v1::LayerUsableAreaManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore layer_size_transition::layer_size_transition_manager_v1::LayerSizeTransitionManagerV1);
 
 // Tooltip protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
@@ -5486,6 +5520,45 @@ impl<T: 'static>
         state
             .message
             .push((None, DispatchMessageInner::WorkspaceTransition(transition)));
+    }
+}
+
+impl<T: 'static>
+    Dispatch<
+        layer_size_transition::layer_size_transition_v1::LayerSizeTransitionV1,
+        layer_size_transition::LayerSizeTransitionData,
+    > for WindowState<T>
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &layer_size_transition::layer_size_transition_v1::LayerSizeTransitionV1,
+        event: <layer_size_transition::layer_size_transition_v1::LayerSizeTransitionV1 as Proxy>::Event,
+        data: &layer_size_transition::LayerSizeTransitionData,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        use layer_size_transition::SizeTransition;
+        use layer_size_transition::layer_size_transition_v1::Event;
+        let transition = match event {
+            Event::Started {
+                from_width,
+                from_height,
+                to_width,
+                to_height,
+                duration_ms,
+            } => SizeTransition::Started {
+                from: (from_width, from_height),
+                to: (to_width, to_height),
+                duration_ms,
+            },
+            Event::Finished { width, height } => SizeTransition::Finished {
+                size: (width, height),
+            },
+        };
+        let window_id = state.get_id_from_surface(&data.surface);
+        state
+            .message
+            .push((window_id, DispatchMessageInner::SizeTransition(transition)));
     }
 }
 
@@ -6452,6 +6525,17 @@ impl<T: 'static> WindowState<T> {
             log::info!(
                 "Successfully bound layer_usable_area_manager_v1 protocol for usable-area reporting"
             );
+        }
+
+        self.size_transition_manager = globals
+            .bind::<layer_size_transition::layer_size_transition_manager_v1::LayerSizeTransitionManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if self.size_transition_manager.is_some() {
+            log::info!("Successfully bound layer_size_transition_manager_v1");
         }
 
         // Binding is the opt-in: a bound client receives every transition.

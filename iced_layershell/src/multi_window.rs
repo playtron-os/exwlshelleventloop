@@ -1180,6 +1180,19 @@ where
             return true;
         }
 
+        // Size transitions are per surface, so they carry the window they are for.
+        if let LayerShellWindowEvent::SizeTransition(transition) = event {
+            let window =
+                layer_shell_id.and_then(|lid| self.window_manager.get_alias(lid).map(|(id, _)| id));
+            if let Some(window) = window {
+                crate::event::send_size_transition_event(crate::event::SizeTransitionEvent {
+                    window,
+                    transition,
+                });
+            }
+            return true;
+        }
+
         // The full output layout (every monitor's name + global geometry).
         if let LayerShellWindowEvent::OutputLayout(outputs) = event {
             crate::event::send_output_layout_event(crate::event::OutputLayoutEvent { outputs });
@@ -1681,7 +1694,9 @@ where
 
                 let surface = layer_shell_window.get_wlsurface();
                 surface.set_input_region(Some(region));
-                surface.commit();
+                // Applied with the next frame, in one commit with the drawing.
+                let window_id = layer_shell_window.id();
+                ev.request_refresh(window_id, RefreshRequest::NextFrame);
             }
             LayershellCustomAction::VirtualKeyboardPressed { time, key } => {
                 use layershellev::reexport::wayland_client::KeyState;

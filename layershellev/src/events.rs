@@ -513,6 +513,8 @@ pub(crate) enum DispatchMessageInner {
     /// geometry minus panels/docks), in output-logical coordinates.
     /// A workspace switch began or finished animating.
     WorkspaceTransition(crate::workspace_transition::WorkspaceTransition),
+    /// The compositor announced an animated change to the surface's size.
+    SizeTransition(crate::layer_size_transition::SizeTransition),
     UsableAreaChanged {
         x: i32,
         y: i32,
@@ -750,6 +752,8 @@ pub enum DispatchMessage {
     /// protocol; used to center overlays in the space free of panels.
     /// A workspace switch began or finished animating.
     WorkspaceTransition(crate::workspace_transition::WorkspaceTransition),
+    /// The compositor announced an animated change to the surface's size.
+    SizeTransition(crate::layer_size_transition::SizeTransition),
     UsableAreaChanged {
         x: i32,
         y: i32,
@@ -879,6 +883,7 @@ impl From<DispatchMessageInner> for DispatchMessage {
                 DispatchMessage::OutputLayoutChanged(layout)
             }
             DispatchMessageInner::WorkspaceTransition(t) => DispatchMessage::WorkspaceTransition(t),
+            DispatchMessageInner::SizeTransition(t) => DispatchMessage::SizeTransition(t),
             DispatchMessageInner::UsableAreaChanged {
                 x,
                 y,

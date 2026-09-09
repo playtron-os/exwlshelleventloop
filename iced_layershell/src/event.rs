@@ -398,6 +398,75 @@ pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent>
 /// A workspace switch, as reported by the compositor.
 pub use layershellev::workspace_transition::WorkspaceTransition;
 
+/// An animated change to a surface's arranged size, as reported by the compositor.
+pub use layershellev::layer_size_transition::SizeTransition;
+
+/// A size transition and the window it is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeTransitionEvent {
+    pub window: iced_core::window::Id,
+    pub transition: SizeTransition,
+}
+
+static SIZE_TRANSITION_CHANNEL: std::sync::OnceLock<SharedChannel<SizeTransitionEvent>> =
+    std::sync::OnceLock::new();
+
+fn get_size_transition_channel() -> &'static SharedChannel<SizeTransitionEvent> {
+    SIZE_TRANSITION_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+pub(crate) fn send_size_transition_event(event: SizeTransitionEvent) {
+    let (tx, _) = get_size_transition_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(event);
+    }
+}
+
+/// Subscription for size-transition events.
+///
+/// Yields `Started` when the compositor begins animating the space around one
+/// of the app's surfaces, with the size it is heading for and how long that
+/// takes, and `Finished` once the surface has been configured to it. Requires
+/// compositor support for `layer_size_transition_manager_v1`; elsewhere it
+/// never fires.
+pub fn size_transition_subscription() -> iced_futures::Subscription<SizeTransitionEvent> {
+    #[derive(Hash)]
+    struct SizeTransitionSubscription;
+
+    iced_futures::Subscription::run_with(SizeTransitionSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<SizeTransitionEvent>| async move {
+                use iced_futures::futures::SinkExt;
+
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<SizeTransitionEvent>(100);
+
+                std::thread::Builder::new()
+                    .name("size-transition-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_size_transition_channel();
+                        let rx = rx.lock().expect("size transition rx lock");
+                        while let Ok(event) = rx.recv() {
+                            if async_tx.clone().try_send(event).is_err() {
+                                log::warn!("Size transition bridge: channel full");
+                            }
+                        }
+                    })
+                    .expect("spawn size transition bridge thread");
+
+                use iced_futures::futures::StreamExt;
+                while let Some(event) = async_rx.next().await {
+                    let _ = output.send(event).await;
+                }
+            },
+        )
+    })
+}
+
 static WORKSPACE_TRANSITION_CHANNEL: std::sync::OnceLock<SharedChannel<WorkspaceTransition>> =
     std::sync::OnceLock::new();
 
@@ -641,6 +710,8 @@ pub enum WindowEvent {
     OutputLayout(Vec<layershellev::OutputLayoutItem>),
     /// A workspace switch began or finished animating.
     WorkspaceTransition(WorkspaceTransition),
+    /// The compositor announced an animated change to this surface's size.
+    SizeTransition(SizeTransition),
 }
 
 /// The logical size (logical px) of the output a layer surface is shown on.
@@ -703,6 +774,7 @@ impl From<&DispatchMessage> for WindowEvent {
     fn from(value: &DispatchMessage) -> Self {
         match value {
             DispatchMessage::WorkspaceTransition(t) => WindowEvent::WorkspaceTransition(t.clone()),
+            DispatchMessage::SizeTransition(t) => WindowEvent::SizeTransition(*t),
             DispatchMessage::RequestRefresh { .. } => WindowEvent::Refresh,
             DispatchMessage::Closed => WindowEvent::Closed,
             DispatchMessage::MouseEnter {
