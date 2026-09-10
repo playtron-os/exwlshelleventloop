@@ -2529,7 +2529,7 @@ impl<T: 'static> WindowState<T> {
     /// The compositor will animate hide/show transitions and handle hover detection.
     /// `edge`: which edge to slide off (0 = bottom)
     /// `edge_zone`: hover detection zone in pixels at the screen edge
-    /// `mode`: 0 = always hide when cursor leaves, 1 = only hide when maximized/fullscreen exists
+    /// `mode`: 0 = always, 1 = maximized/fullscreen, 2 = fullscreen only (protocol v2)
     pub fn set_auto_hide_for_surface(
         &mut self,
         surface: &WlSurface,
@@ -2542,6 +2542,19 @@ impl<T: 'static> WindowState<T> {
             .unwrap_or(layer_auto_hide::layer_auto_hide_v1::Edge::Bottom);
         let mode_enum = layer_auto_hide::layer_auto_hide_v1::Mode::try_from(mode)
             .unwrap_or(layer_auto_hide::layer_auto_hide_v1::Mode::Always);
+        let mode_enum = if mode_enum == layer_auto_hide::layer_auto_hide_v1::Mode::OnFullscreen
+            && self
+                .auto_hide_manager
+                .as_ref()
+                .is_some_and(|manager| manager.version() < 2)
+        {
+            log::warn!(
+                "Fullscreen-only auto-hide requires protocol v2; falling back to on-maximize"
+            );
+            layer_auto_hide::layer_auto_hide_v1::Mode::OnMaximize
+        } else {
+            mode_enum
+        };
 
         // Check if we already have an auto-hide object for this surface
         if let Some(auto_hide_obj) = self.auto_hide_surfaces.get(&surface_id) {
@@ -6527,7 +6540,7 @@ impl<T: 'static> WindowState<T> {
         self.auto_hide_manager = globals
             .bind::<layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _, _>(
                 &qh,
-                1..=1,
+                1..=2,
                 (),
             )
             .ok();

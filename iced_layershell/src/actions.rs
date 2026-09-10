@@ -177,7 +177,7 @@ pub enum LayershellCustomAction {
     /// animate hide/show transitions based on the specified mode.
     /// `edge`: which edge to slide off (0 = bottom)
     /// `edge_zone`: hover detection zone in pixels at the screen edge
-    /// `mode`: 0 = always hide when cursor leaves, 1 = only hide when maximized/fullscreen exists
+    /// `mode`: 0 = always, 1 = maximized/fullscreen, 2 = fullscreen only (protocol v2)
     AutoHideChange {
         edge: u32,
         edge_zone: u32,
