@@ -2779,6 +2779,33 @@ impl<T: 'static> WindowState<T> {
             })
     }
 
+    /// Put a layer surface in a Kora workspace: the compositor draws,
+    /// hit-tests and captures it only while that workspace is on screen, as
+    /// it does the workspace's own windows (`kora_workspace_realm_v1` v2).
+    /// Only a machine-plane client may; a client inside a workspace has its
+    /// surfaces there already. Returns whether the compositor offers it.
+    pub fn assign_realm(&mut self, surface: &WlSurface, workspace: &str) -> bool {
+        #[cfg(feature = "workspaces")]
+        if let Some(manager) = &self.workspaces.realm_manager {
+            if wayland_client::Proxy::version(manager) >= 2 {
+                manager.assign(surface, workspace.to_string());
+                if let Some(ref conn) = self.connection {
+                    let _ = conn.flush();
+                }
+                log::info!(
+                    "Assigned surface {} to workspace {workspace}",
+                    surface.id().protocol_id()
+                );
+                return true;
+            }
+            log::warn!("kora_workspace_realm_manager_v1 is v1 here: no surface assignment");
+            return false;
+        }
+        #[cfg(not(feature = "workspaces"))]
+        let _ = (surface, workspace);
+        false
+    }
+
     /// Hide a surface without destroying it (using layer_surface_visibility protocol)
     /// The surface will not be rendered and won't receive input events.
     /// Use show_surface to make it visible again.
@@ -6573,10 +6600,13 @@ impl<T: 'static> WindowState<T> {
                     ext_workspace::WorkspaceManagerData,
                 )
                 .ok();
+            // Up to 2: v2 lets a machine-plane client put a layer surface in
+            // a workspace (`assign_realm`); an older compositor still gives
+            // us the realm events at 1.
             self.workspaces.realm_manager = globals
                 .bind::<ext_workspace::kora_workspace_realm_manager_v1::KoraWorkspaceRealmManagerV1, _, _>(
                     &qh,
-                    1..=1,
+                    1..=2,
                     ext_workspace::RealmData,
                 )
                 .ok();

@@ -86,6 +86,10 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 HideWindow(iced_layershell::reexport::IcedId),
                 /// Show the window if it was previously hidden
                 ShowWindow(iced_layershell::reexport::IcedId),
+                /// Put this layer surface in a Kora workspace, shown only while that
+                /// workspace is on screen (`kora_workspace_realm_v1` v2; machine-plane
+                /// clients only).
+                AssignRealm{id: iced_layershell::reexport::IcedId, workspace: String},
                 ToplevelAction(iced_layershell::actions::ToplevelAction),
                 ScreencopyAction(iced_layershell::actions::ScreencopyAction),
                 WorkspaceAction(iced_layershell::actions::WorkspaceAction),
@@ -166,6 +170,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::HideWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::HideWindow)),
                             Self::ShowWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ShowWindow)),
+                            Self::AssignRealm{ id, workspace } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::AssignRealm { workspace })),
                             Self::ToplevelAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ToplevelAction(action))),
                             Self::ScreencopyAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ScreencopyAction(action))),
                             Self::WorkspaceAction(action) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::WorkspaceAction(action))),
@@ -218,6 +223,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 HideWindow,
                 /// Show the window if it was previously hidden
                 ShowWindow,
+                /// Put this layer surface in a Kora workspace (see the multi form).
+                AssignRealm{workspace: String},
                 /// Forget which output the surface was last on so it follows the cursor
                 ForgetLastOutput,
                 /// Arm click-outside dismiss: once armed, the compositor delivers an
@@ -271,6 +278,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             })),
                             Self::HideWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::HideWindow)),
                             Self::ShowWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ShowWindow)),
+                            Self::AssignRealm{ workspace } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::AssignRealm { workspace })),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
                             Self::ArmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ArmDismiss)),
                             Self::DisarmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DisarmDismiss)),

@@ -256,6 +256,13 @@ pub enum LayershellCustomAction {
     HideWindow,
     /// Show the window if it was previously hidden
     ShowWindow,
+    /// Put this layer surface in a Kora workspace: the compositor shows,
+    /// hit-tests and captures it only while that workspace is on screen
+    /// (`kora_workspace_realm_v1` v2). Machine-plane clients only — one inside
+    /// a workspace has its surfaces there already and is refused.
+    AssignRealm {
+        workspace: String,
+    },
     /// Execute a toplevel action (activate, close, minimize, etc.)
     ToplevelAction(ToplevelAction),
     /// Execute a screencopy action (capture a toplevel window screenshot)

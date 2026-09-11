@@ -1888,6 +1888,17 @@ where
                 );
                 ev.show_surface(&surface);
             }
+            LayershellCustomAction::AssignRealm { workspace } => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                let surface = layer_shell_window.get_wlsurface().clone();
+                if !ev.assign_realm(&surface, &workspace) {
+                    tracing::warn!(
+                        ?iced_id,
+                        workspace,
+                        "AssignRealm: not offered by the compositor; the surface stays machine-plane"
+                    );
+                }
+            }
             #[cfg(feature = "foreign-toplevel")]
             LayershellCustomAction::ToplevelAction(action) => {
                 log::info!("Processing ToplevelAction: {:?}", action);
