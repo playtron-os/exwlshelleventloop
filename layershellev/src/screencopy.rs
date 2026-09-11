@@ -7,7 +7,7 @@
 //! Requires the `screencopy` feature and the `foreign-toplevel` feature
 //! (for `ext_foreign_toplevel_handle_v1` handles).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::AsFd;
 use std::time::Instant;
@@ -23,6 +23,8 @@ use wayland_protocols::ext::image_capture_source::v1::client::{
 };
 #[cfg(feature = "workspaces")]
 use cosmic_protocols::image_capture_source::v1::client::zcosmic_workspace_image_capture_source_manager_v1::ZcosmicWorkspaceImageCaptureSourceManagerV1;
+#[cfg(feature = "workspaces")]
+use crate::kora_image_capture_size::kora_image_capture_size_manager_v1::KoraImageCaptureSizeManagerV1;
 use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1},
     ext_image_copy_capture_manager_v1::{self, ExtImageCopyCaptureManagerV1},
@@ -71,7 +73,25 @@ pub enum ScreencopyAction {
     },
     /// Stop continuous capture. No more auto-recapture after current in-flight frames.
     StopContinuous,
+    /// The size desktop previews are asked for from now on: the compositor
+    /// draws them to fit it, so a frame costs a preview's worth. Zero clears.
+    #[cfg(feature = "workspaces")]
+    SetWorkspacePreviewSize { width: u32, height: u32 },
+    /// Keep a desktop's preview live: each frame asks for the next as it
+    /// lands, and the compositor answers only once the desktop changed.
+    #[cfg(feature = "workspaces")]
+    WatchWorkspace(u32),
+    /// Let every desktop preview go, sessions included, so the compositor
+    /// stops attending to them.
+    #[cfg(feature = "workspaces")]
+    UnwatchWorkspaces,
 }
+
+/// Unchanged answers in a row before a live desktop is let go: a compositor
+/// that answers an unchanged desktop at once instead of holding the frame
+/// would otherwise be asked again without pause.
+#[cfg(feature = "workspaces")]
+const UNCHANGED_ANSWERS_TOLERATED: u8 = 3;
 
 /// Minimum interval between captures per toplevel (~30fps)
 const MIN_CAPTURE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
@@ -101,6 +121,9 @@ pub(crate) struct ShmBuffer {
     pub width: u32,
     pub height: u32,
     pub shm_format: wl_shm::Format,
+    /// Whether anything was ever captured into it: until then its whole area
+    /// is stale and told to the compositor as damage.
+    pub captured: bool,
 }
 
 impl std::fmt::Debug for ShmBuffer {
@@ -127,14 +150,12 @@ pub(crate) struct BufferSwapchain {
     pub back: usize,
     /// Protocol ID of the frame currently being captured into the back buffer.
     pub in_flight: Option<u32>,
+    /// Whether the frame in flight was told of any damage: none means the
+    /// compositor found nothing new to draw.
+    pub damaged: bool,
 }
 
 impl BufferSwapchain {
-    /// Get the back buffer (compositor writes here)
-    pub fn back_buffer(&self) -> &ShmBuffer {
-        &self.buffers[self.back]
-    }
-
     /// Swap: current back becomes front, current front becomes back
     pub fn swap(&mut self) {
         self.back = 1 - self.back;
@@ -163,6 +184,21 @@ pub(crate) struct ScreencopyState {
     pub target_size: Option<(u32, u32)>,
     /// Last capture timestamp per toplevel (for throttling)
     pub last_capture: HashMap<u32, Instant>,
+    /// kora_image_capture_size_manager_v1 global, for previews drawn small.
+    #[cfg(feature = "workspaces")]
+    pub size_manager: Option<KoraImageCaptureSizeManagerV1>,
+    /// The size desktop previews are asked for; sessions made after get it.
+    #[cfg(feature = "workspaces")]
+    pub workspace_preview_size: Option<(u32, u32)>,
+    /// Every desktop session, with the preview size it was made for.
+    #[cfg(feature = "workspaces")]
+    pub workspace_sizes: HashMap<u32, Option<(u32, u32)>>,
+    /// Desktops kept live: each frame asks for the next as it lands.
+    #[cfg(feature = "workspaces")]
+    pub live_workspaces: HashSet<u32>,
+    /// Unchanged answers in a row per live desktop.
+    #[cfg(feature = "workspaces")]
+    unchanged_answers: HashMap<u32, u8>,
 }
 
 impl ScreencopyState {
@@ -178,6 +214,29 @@ impl ScreencopyState {
             continuous: false,
             target_size: None,
             last_capture: HashMap::new(),
+            #[cfg(feature = "workspaces")]
+            size_manager: None,
+            #[cfg(feature = "workspaces")]
+            workspace_preview_size: None,
+            #[cfg(feature = "workspaces")]
+            workspace_sizes: HashMap::new(),
+            #[cfg(feature = "workspaces")]
+            live_workspaces: HashSet::new(),
+            #[cfg(feature = "workspaces")]
+            unchanged_answers: HashMap::new(),
+        }
+    }
+
+    /// Whether `id` is a desktop's session rather than a window's.
+    fn is_workspace(&self, id: u32) -> bool {
+        #[cfg(feature = "workspaces")]
+        {
+            self.workspace_sizes.contains_key(&id)
+        }
+        #[cfg(not(feature = "workspaces"))]
+        {
+            let _ = id;
+            false
         }
     }
 
@@ -196,6 +255,12 @@ impl ScreencopyState {
         self.constraints.remove(&toplevel_id);
         self.swapchains.remove(&toplevel_id);
         self.last_capture.remove(&toplevel_id);
+        #[cfg(feature = "workspaces")]
+        {
+            self.workspace_sizes.remove(&toplevel_id);
+            self.live_workspaces.remove(&toplevel_id);
+            self.unchanged_answers.remove(&toplevel_id);
+        }
     }
 }
 
@@ -299,6 +364,18 @@ where
     start_capture_of(state, id, SourceKind::Workspace, qh);
 }
 
+/// Let every desktop go: nothing is live, and no session is left for the
+/// compositor to keep a desktop's windows drawing for.
+#[cfg(feature = "workspaces")]
+pub(crate) fn stop_workspace_captures(state: &mut impl ScreencopyHandler) {
+    let sc = state.screencopy_state_mut();
+    sc.live_workspaces.clear();
+    let ids: Vec<u32> = sc.workspace_sizes.keys().copied().collect();
+    for id in ids {
+        sc.forget_toplevel(id);
+    }
+}
+
 fn start_capture_of<D>(state: &mut D, toplevel_id: u32, kind: SourceKind, qh: &QueueHandle<D>)
 where
     D: ScreencopyHandler
@@ -309,6 +386,23 @@ where
         + Dispatch<WlShmPool, ShmPoolData>
         + 'static,
 {
+    // A desktop session made for another preview size is made afresh.
+    #[cfg(feature = "workspaces")]
+    if matches!(kind, SourceKind::Workspace) {
+        let sc = state.screencopy_state();
+        if sc
+            .workspace_sizes
+            .get(&toplevel_id)
+            .is_some_and(|made_for| *made_for != sc.workspace_preview_size)
+        {
+            let live = sc.live_workspaces.contains(&toplevel_id);
+            let sc = state.screencopy_state_mut();
+            sc.forget_toplevel(toplevel_id);
+            if live {
+                sc.live_workspaces.insert(toplevel_id);
+            }
+        }
+    }
     // If we already have a session with constraints, just capture another frame
     if state.screencopy_state().sessions.contains_key(&toplevel_id)
         && state
@@ -336,6 +430,16 @@ where
     let sc = state.screencopy_state();
     let capture_manager = sc.capture_manager.as_ref().unwrap();
 
+    // A desktop preview is asked for at its own size, before the session
+    // learns its buffer size from the source.
+    #[cfg(feature = "workspaces")]
+    if matches!(kind, SourceKind::Workspace)
+        && let (Some(manager), Some((width, height))) =
+            (sc.size_manager.as_ref(), sc.workspace_preview_size)
+    {
+        manager.set_size(&source, width as i32, height as i32);
+    }
+
     // Create capture session (options = 0 = don't paint cursors)
     let session = capture_manager.create_session(
         &source,
@@ -349,6 +453,11 @@ where
 
     // Initialize constraints tracking
     let sc = state.screencopy_state_mut();
+    #[cfg(feature = "workspaces")]
+    if matches!(kind, SourceKind::Workspace) {
+        sc.workspace_sizes
+            .insert(toplevel_id, sc.workspace_preview_size);
+    }
     sc.sessions.insert(toplevel_id, session);
     sc.constraints.insert(
         toplevel_id,
@@ -449,6 +558,7 @@ where
             width,
             height,
             shm_format,
+            captured: false,
         })
     };
 
@@ -467,6 +577,7 @@ where
             buffers: [buf0, buf1],
             back: 0,
             in_flight: None,
+            damaged: false,
         },
     );
 }
@@ -508,23 +619,23 @@ where
 
     let frame = session.create_frame(qh, CaptureFrameData { toplevel_id });
 
-    // Attach back buffer
+    // Attach back buffer. Only a buffer never drawn into is all stale; after
+    // that the compositor knows what changed, and draws and copies just that.
     let swap = state
-        .screencopy_state()
-        .swapchains
-        .get(&toplevel_id)
-        .unwrap();
-    let back = swap.back_buffer();
-    frame.attach_buffer(&back.wl_buffer);
-    frame.damage_buffer(0, 0, back.width as i32, back.height as i32);
-    frame.capture();
-
-    state
         .screencopy_state_mut()
         .swapchains
         .get_mut(&toplevel_id)
-        .unwrap()
-        .in_flight = Some(frame.id().protocol_id());
+        .unwrap();
+    let back = &mut swap.buffers[swap.back];
+    frame.attach_buffer(&back.wl_buffer);
+    if !back.captured {
+        frame.damage_buffer(0, 0, back.width as i32, back.height as i32);
+        back.captured = true;
+    }
+    frame.capture();
+
+    swap.in_flight = Some(frame.id().protocol_id());
+    swap.damaged = false;
 }
 
 /// Read pixels from the back buffer (just captured), swap, and emit the event.
@@ -796,10 +907,37 @@ where
     ) {
         let tid = data.toplevel_id;
         match event {
+            ext_image_copy_capture_frame_v1::Event::Damage { .. } => {
+                if let Some(swap) = state.screencopy_state_mut().swapchains.get_mut(&tid) {
+                    swap.damaged = true;
+                }
+            }
             ext_image_copy_capture_frame_v1::Event::Ready => {
                 log::debug!("Screencopy frame ready toplevel={}", tid);
-                read_frame_pixels(state, tid);
+                let sc = state.screencopy_state_mut();
+                let changed = sc.swapchains.get(&tid).is_some_and(|swap| swap.damaged);
+                // A desktop answered unchanged has nothing new to read.
+                if changed || !sc.is_workspace(tid) {
+                    read_frame_pixels(state, tid);
+                } else if let Some(swap) = sc.swapchains.get_mut(&tid) {
+                    swap.in_flight = None;
+                }
                 proxy.destroy();
+                #[cfg(feature = "workspaces")]
+                if state.screencopy_state().live_workspaces.contains(&tid) {
+                    let sc = state.screencopy_state_mut();
+                    let unchanged = sc.unchanged_answers.entry(tid).or_default();
+                    *unchanged = if changed { 0 } else { *unchanged + 1 };
+                    if *unchanged >= UNCHANGED_ANSWERS_TOLERATED {
+                        log::warn!(
+                            "Desktop {tid} answered unchanged {unchanged} times: the compositor does not hold captures, preview left as is"
+                        );
+                        sc.live_workspaces.remove(&tid);
+                    } else {
+                        capture_frame(state, tid, qh);
+                    }
+                    return;
+                }
                 // Auto-recapture with throttling (~30fps per toplevel).
                 // Without throttling, continuous capture at max speed floods
                 // the event loop and blocks keyboard/render processing.

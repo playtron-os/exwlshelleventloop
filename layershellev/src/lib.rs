@@ -128,6 +128,8 @@ mod events;
 pub mod ext_workspace;
 #[cfg(feature = "foreign-toplevel")]
 pub mod foreign_toplevel;
+#[cfg(all(feature = "screencopy", feature = "workspaces"))]
+pub mod kora_image_capture_size;
 pub mod layer_auto_hide;
 pub mod layer_edge_resize;
 pub mod layer_size_transition;
@@ -1649,6 +1651,20 @@ impl<T> WindowState<T> {
                 self.screencopy.target_size = None;
                 self.screencopy.last_capture.clear();
             }
+            #[cfg(feature = "workspaces")]
+            screencopy::ScreencopyAction::SetWorkspacePreviewSize { width, height } => {
+                self.screencopy.workspace_preview_size =
+                    (width > 0 && height > 0).then_some((width, height));
+            }
+            #[cfg(feature = "workspaces")]
+            screencopy::ScreencopyAction::WatchWorkspace(id) => {
+                self.screencopy.live_workspaces.insert(id);
+                screencopy::start_workspace_capture(self, id, qh);
+            }
+            #[cfg(feature = "workspaces")]
+            screencopy::ScreencopyAction::UnwatchWorkspaces => {
+                screencopy::stop_workspace_captures(self);
+            }
         }
     }
 
@@ -1665,38 +1681,7 @@ impl<T> WindowState<T> {
                 return;
             }
         };
-        match action {
-            screencopy::ScreencopyAction::Capture(toplevel_id) => {
-                screencopy::start_capture(self, toplevel_id, &qh);
-            }
-            #[cfg(feature = "workspaces")]
-            screencopy::ScreencopyAction::CaptureWorkspace(id) => {
-                screencopy::start_workspace_capture(self, id, &qh);
-            }
-            screencopy::ScreencopyAction::StartContinuous {
-                target_width,
-                target_height,
-            } => {
-                log::debug!(
-                    "Starting continuous screencopy capture (target {}x{})",
-                    target_width,
-                    target_height
-                );
-                self.screencopy.continuous = true;
-                self.screencopy.target_size = Some((target_width, target_height));
-                // Kick off a capture for every active session
-                let ids: Vec<u32> = self.screencopy.sessions.keys().copied().collect();
-                for tid in ids {
-                    screencopy::start_capture(self, tid, &qh);
-                }
-            }
-            screencopy::ScreencopyAction::StopContinuous => {
-                log::debug!("Stopping continuous screencopy capture");
-                self.screencopy.continuous = false;
-                self.screencopy.target_size = None;
-                self.screencopy.last_capture.clear();
-            }
-        }
+        self.execute_screencopy_action(action, &qh);
     }
 
     pub fn ime_allowed(&self) -> bool {
@@ -5455,6 +5440,8 @@ delegate_noop!(@<T> WindowState<T>: ignore layer_usable_area::layer_usable_area_
 delegate_noop!(@<T> WindowState<T>: ignore layer_size_transition::layer_size_transition_manager_v1::LayerSizeTransitionManagerV1);
 #[cfg(all(feature = "screencopy", feature = "workspaces"))]
 delegate_noop!(@<T> WindowState<T>: ignore cosmic_protocols::image_capture_source::v1::client::zcosmic_workspace_image_capture_source_manager_v1::ZcosmicWorkspaceImageCaptureSourceManagerV1);
+#[cfg(all(feature = "screencopy", feature = "workspaces"))]
+delegate_noop!(@<T> WindowState<T>: ignore kora_image_capture_size::kora_image_capture_size_manager_v1::KoraImageCaptureSizeManagerV1);
 
 // Tooltip protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
@@ -6802,6 +6789,18 @@ impl<T: 'static> WindowState<T> {
                     log::info!(
                         "Successfully bound zcosmic_workspace_image_capture_source_manager_v1"
                     );
+                }
+                // Previews drawn small by the compositor; without it they come
+                // full size and are shrunk here.
+                self.screencopy.size_manager = globals
+                    .bind::<kora_image_capture_size::kora_image_capture_size_manager_v1::KoraImageCaptureSizeManagerV1, _, _>(
+                        &qh,
+                        1..=1,
+                        (),
+                    )
+                    .ok();
+                if self.screencopy.size_manager.is_some() {
+                    log::info!("Successfully bound kora_image_capture_size_manager_v1");
                 }
             }
 
