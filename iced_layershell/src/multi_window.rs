@@ -696,10 +696,14 @@ where
         // second, post-draw set_size from a re-measure would re-introduce the
         // buffer/geometry mismatch this is meant to eliminate).
         let mut auto_size_handled_predraw = false;
+        // Set wherever the interface is relaid out below, so the draw can put
+        // back what a relayout drops (see the empty update before `ui.draw`).
+        let mut relaid_out = false;
         let dynamic_resize_target: Option<(u32, u32)> = if self.auto_size_enabled.contains(&iced_id)
             && !self.auto_size_pending.contains(&iced_id)
         {
             auto_size_handled_predraw = true;
+            relaid_out = true;
             let window_size = window.state.window_size();
 
             // Get max bounds
@@ -797,6 +801,7 @@ where
         // Do this BEFORE draw so we can request resize before presenting
         let initial_auto_size_target: Option<(u32, u32)> =
             if self.auto_size_pending.remove(&iced_id) {
+                relaid_out = true;
                 let window_size = window.state.window_size_f32();
 
                 // Get max bounds from stored settings (original size acts as maximum)
@@ -959,6 +964,15 @@ where
 
         // Skip drawing widget content when waiting for auto-size resize.
         if !skip_present {
+            // `relayout` rebuilds the interface without the overlay layout that
+            // `update` derives, and `draw` paints an overlay only from that
+            // layout. So on an auto-sized surface a menu, dropdown or tooltip
+            // was built, sized and taking clicks — and never drawn. An update
+            // with no events derives the layout again without doing anything
+            // else.
+            if relaid_out {
+                let _ = ui.update(&[], cursor, &mut window.renderer, &mut self.messages);
+            }
             ui.draw(
                 &mut window.renderer,
                 window.state.theme(),
