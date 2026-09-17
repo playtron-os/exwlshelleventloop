@@ -1105,11 +1105,17 @@ pub struct WindowState<T> {
     enter_serial: Option<u32>,
 
     xdg_info_cache: Vec<(wl_output::WlOutput, ZxdgOutputInfo)>,
-    /// Logical layout of every output (global coords), gathered once at startup.
+    /// Every live output's xdg_output, bound for as long as the output exists.
+    /// `output_layout` and `output_handles` are derived from it, so both follow
+    /// monitors added or removed after startup.
+    output_watch: Vec<(wl_output::WlOutput, ZxdgOutputInfo)>,
+    /// Logical layout of every output (global coords), kept current on hotplug.
     /// Exposed via [`WindowState::output_layout`] for cross-monitor positioning.
     output_layout: Vec<OutputLayoutItem>,
     /// Maps each output's xdg name → its `WlOutput`, so a runtime `NewLayerShell`
-    /// with `OutputOption::OutputName` can be bound to that monitor.
+    /// with `OutputOption::OutputName` can be bound to that monitor. Rebuilt
+    /// with `output_layout`: a stale entry would hand the compositor a removed
+    /// output, and it places such a surface on the active output instead.
     output_handles: Vec<(String, wl_output::WlOutput)>,
 
     start_mode: StartMode,
@@ -3611,6 +3617,7 @@ impl<T> Default for WindowState<T> {
             // NOTE: if is some, means it is to be binded, but not now it
             // is not binded
             xdg_info_cache: Vec::new(),
+            output_watch: Vec::new(),
             output_layout: Vec::new(),
             output_handles: Vec::new(),
 
@@ -3845,6 +3852,14 @@ impl<T: 'static> Dispatch<wl_registry::WlRegistry, ()> for WindowState<T> {
             } if interface == wl_output::WlOutput::interface().name => {
                 let output = proxy.bind::<wl_output::WlOutput, _, _>(name, version, qh, ());
                 state.outputs.push((name, output.clone()));
+                // Unset until `build` has gathered the startup outputs, which it
+                // watches itself; from then on a new output is watched here.
+                if let Some(manager) = state.xdg_output_manager.as_ref() {
+                    let zxdgoutput = manager.get_xdg_output(&output, qh, ());
+                    state
+                        .output_watch
+                        .push((output.clone(), ZxdgOutputInfo::new(zxdgoutput)));
+                }
                 state
                     .message
                     .push((None, DispatchMessageInner::NewDisplay(output)));
@@ -3857,7 +3872,23 @@ impl<T: 'static> Dispatch<wl_registry::WlRegistry, ()> for WindowState<T> {
                 {
                     state.last_wloutput.take();
                 }
+                let removed: Vec<WlOutput> = state
+                    .outputs
+                    .iter()
+                    .filter(|x| x.0 == name)
+                    .map(|x| x.1.clone())
+                    .collect();
                 state.outputs.retain(|x| x.0 != name);
+                if !removed.is_empty() {
+                    state.output_watch.retain(|(output, info)| {
+                        let gone = removed.contains(output);
+                        if gone {
+                            info.zxdgoutput.destroy();
+                        }
+                        !gone
+                    });
+                    state.sync_output_layout(false);
+                }
                 let removed_states = state
                     .units
                     .extract_if(.., |unit| !unit.wl_surface.is_alive());
@@ -4949,6 +4980,49 @@ impl<T> Dispatch<xdg_popup::XdgPopup, ()> for WindowState<T> {
     }
 }
 
+impl<T> WindowState<T> {
+    /// Re-derive `output_layout` and `output_handles` from `output_watch`, and
+    /// queue `OutputLayoutChanged` when the layout moved (or when `force`d).
+    ///
+    /// An output counts once its name and logical size are known. A new
+    /// output's xdg_output reports those one event at a time, and until it has
+    /// a name nothing could target it by `OutputOption::OutputName` anyway.
+    fn sync_output_layout(&mut self, force: bool) {
+        let known: Vec<_> = self
+            .output_watch
+            .iter()
+            .filter(|(_, info)| {
+                !info.name.is_empty() && info.logical_size.0 > 0 && info.logical_size.1 > 0
+            })
+            .collect();
+        let layout: Vec<OutputLayoutItem> = known
+            .iter()
+            .map(|(_, info)| OutputLayoutItem {
+                name: info.name.clone(),
+                x: info.position.0,
+                y: info.position.1,
+                width: info.logical_size.0,
+                height: info.logical_size.1,
+            })
+            .collect();
+        self.output_handles = known
+            .iter()
+            .map(|(output, info)| (info.name.clone(), output.clone()))
+            .collect();
+        if !force && layout == self.output_layout {
+            return;
+        }
+        self.output_layout = layout;
+        // One snapshot per drain: a newer layout replaces one still queued.
+        self.message
+            .retain(|(_, m)| !matches!(m, DispatchMessageInner::OutputLayoutChanged(_)));
+        self.message.push((
+            None,
+            DispatchMessageInner::OutputLayoutChanged(self.output_layout.clone()),
+        ));
+    }
+}
+
 impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
     fn event(
         state: &mut Self,
@@ -4958,12 +5032,11 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        // Update a cached output entry if this proxy belongs to one. Both the
-        // one-shot layout gather and `StartMode::TargetScreen` populate
-        // `xdg_info_cache`; do this regardless of start mode / init state so the
-        // gather's dispatch actually records each output's size/position/name.
-        // (Post-gather the cache is cleared, so this falls through to the unit
-        // path below for the live per-surface output.)
+        // Update a cached output entry if this proxy belongs to one.
+        // `StartMode::TargetScreen` populates `xdg_info_cache`; do this
+        // regardless of start mode / init state so its dispatch actually records
+        // each output's size/position/name. (Afterwards the cache is cleared, so
+        // this falls through to the paths below.)
         if let Some((_, xdg_info)) = state
             .xdg_info_cache
             .iter_mut()
@@ -4984,6 +5057,31 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
                 }
                 _ => {}
             };
+            return;
+        }
+        // An output's own watch (see `output_watch`): fold the field in and
+        // re-derive the layout, which queues `OutputLayoutChanged` if it moved.
+        if let Some((_, xdg_info)) = state
+            .output_watch
+            .iter_mut()
+            .find(|(_, info)| info.zxdgoutput == *proxy)
+        {
+            match event {
+                zxdg_output_v1::Event::LogicalSize { width, height } => {
+                    xdg_info.logical_size = (width, height);
+                }
+                zxdg_output_v1::Event::LogicalPosition { x, y } => {
+                    xdg_info.position = (x, y);
+                }
+                zxdg_output_v1::Event::Name { name } => {
+                    xdg_info.name = name;
+                }
+                zxdg_output_v1::Event::Description { description } => {
+                    xdg_info.description = description;
+                }
+                _ => return,
+            };
+            state.sync_output_layout(false);
             return;
         }
         let Some(index) = state.units.iter().position(|info| {
@@ -6385,8 +6483,9 @@ impl<T: 'static> Dispatch<wayland_client::protocol::wl_shm_pool::WlShmPool, scre
 }
 
 impl<T: 'static> WindowState<T> {
-    /// The logical layout of every output (global coords), gathered at startup.
-    /// Used to position/move a layer surface across monitors.
+    /// The logical layout of every output (global coords), kept current as
+    /// outputs are added and removed. Used to position/move a layer surface
+    /// across monitors.
     pub fn output_layout(&self) -> &[OutputLayoutItem] {
         &self.output_layout
     }
@@ -6845,41 +6944,23 @@ impl<T: 'static> WindowState<T> {
 
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
 
-        // Gather the logical layout of every output once (name + global logical
-        // position + size), so consumers can place a surface across monitors. The
-        // proxies are dropped afterwards (snapshot); `xdg_info_cache` is otherwise
-        // only used transiently by `StartMode::TargetScreen`.
+        // Watch every output's xdg_output (name + global logical position +
+        // size), so consumers can place a surface across monitors. The watch
+        // lives as long as the output, and the registry handler adds and drops
+        // entries as monitors come and go, so the layout never freezes at this
+        // startup snapshot.
         for (_, output_display) in &self.outputs {
             let zxdgoutput = xdg_output_manager.get_xdg_output(output_display, &qh, ());
-            self.xdg_info_cache
+            self.output_watch
                 .push((output_display.clone(), ZxdgOutputInfo::new(zxdgoutput)));
         }
-        if !self.xdg_info_cache.is_empty() {
+        if !self.output_watch.is_empty() {
             event_queue.roundtrip(&mut self)?;
-            self.output_layout = self
-                .xdg_info_cache
-                .iter()
-                .map(|(_, info)| OutputLayoutItem {
-                    name: info.name.clone(),
-                    x: info.position.0,
-                    y: info.position.1,
-                    width: info.logical_size.0,
-                    height: info.logical_size.1,
-                })
-                .collect();
-            // Keep a name → WlOutput map so a later `NewLayerShell` can target a
-            // monitor by name. (`WlOutput`s live in `self.outputs`.)
-            self.output_handles = self
-                .xdg_info_cache
-                .iter()
-                .map(|(output, info)| (info.name.clone(), output.clone()))
-                .collect();
-            self.xdg_info_cache.clear();
-            self.message.push((
-                None,
-                DispatchMessageInner::OutputLayoutChanged(self.output_layout.clone()),
-            ));
+            self.sync_output_layout(true);
         }
+        // The startup outputs are watched; any output that appears from here on
+        // is watched by the registry handler, which needs the manager for it.
+        self.xdg_output_manager = Some(xdg_output_manager.clone());
 
         // do the step before, you get empty list
 
@@ -7117,7 +7198,11 @@ impl<T: 'static> WindowState<T> {
                     .build(),
                 );
             }
-            self.message.clear();
+            // Every startup `NewDisplay` is answered by a surface created above,
+            // so drop them — but keep the startup layout, or
+            // `output_layout_subscription` would stay silent until a hotplug.
+            self.message
+                .retain(|(_, m)| matches!(m, DispatchMessageInner::OutputLayoutChanged(_)));
         }
         self.init_finished = true;
         self.viewporter = viewporter;
