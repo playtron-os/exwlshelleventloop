@@ -107,6 +107,7 @@ pub enum LayershellCustomAction {
     MarginChange((i32, i32, i32, i32)),
     SizeChange((u32, u32)),
     CornerRadiusChange(Option<[u32; 4]>),
+    TransitionChange(layershellev::LayerTransition),
     /// Ask the compositor to give this surface keyboard focus.
     ///
     /// Widget-level focus (`operation::focus`) only moves iced's own caret; a

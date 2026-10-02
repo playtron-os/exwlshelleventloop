@@ -3426,6 +3426,15 @@ impl<T> WindowState<T> {
 
     /// Effective transition for a surface: its per-surface override if set,
     /// otherwise the global transition.
+    /// Use `transition` for the surface's hides and shows from now on.
+    pub fn set_surface_transition(&mut self, surface: &WlSurface, transition: LayerTransition) {
+        let surface_id = surface.id().protocol_id();
+        self.transitions.insert(surface_id, transition);
+        if let Some(controller) = self.layer_surface_visibility_controllers.get(&surface_id) {
+            apply_transition_to_controller(controller, Some(transition));
+        }
+    }
+
     fn surface_transition(&self, surface_id: u32) -> Option<LayerTransition> {
         self.transitions
             .get(&surface_id)

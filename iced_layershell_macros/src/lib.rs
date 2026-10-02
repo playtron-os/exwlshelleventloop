@@ -48,6 +48,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SizeChange{id: iced_layershell::reexport::IcedId, size: (u32, u32)},
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange{id: iced_layershell::reexport::IcedId, radii: Option<[u32; 4]>},
+                TransitionChange{id: iced_layershell::reexport::IcedId, transition: iced_layershell::reexport::LayerTransition},
                 /// Ask the compositor for keyboard focus on this surface. One-shot
                 /// and advisory; a layer surface otherwise only gets focus on a click.
                 RequestFocus{id: iced_layershell::reexport::IcedId},
@@ -147,6 +148,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::MarginChange { id, margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange { id, size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange { id, radii } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::CornerRadiusChange(radii))),
+                            Self::TransitionChange { id, transition } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::TransitionChange(transition))),
                             Self::RequestFocus { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RequestFocus)),
                             Self::SetVerticalPlacement { id, fraction, offset, min_margin } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetVerticalPlacement { fraction, offset, min_margin })),
                             Self::UnsetVerticalPlacement { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetVerticalPlacement)),
@@ -195,6 +197,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 SizeChange((u32, u32)),
                 /// Corner radius: [top_left, top_right, bottom_right, bottom_left] or None to unset
                 CornerRadiusChange(Option<[u32; 4]>),
+                TransitionChange(iced_layershell::reexport::LayerTransition),
                 /// Ask the compositor for keyboard focus on this surface. One-shot
                 /// and advisory; a layer surface otherwise only gets focus on a click.
                 RequestFocus,
@@ -263,6 +266,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::MarginChange(margin) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::MarginChange(margin))),
                             Self::SizeChange(size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SizeChange(size))),
                             Self::CornerRadiusChange(radii) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::CornerRadiusChange(radii))),
+                            Self::TransitionChange(transition) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::TransitionChange(transition))),
                             Self::RequestFocus => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::RequestFocus)),
                             Self::SetVerticalPlacement { fraction, offset, min_margin } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetVerticalPlacement { fraction, offset, min_margin })),
                             Self::UnsetVerticalPlacement => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetVerticalPlacement)),
