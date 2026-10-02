@@ -11,7 +11,7 @@ description = "layershell binding for iced"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["linux-theme-detection"]
+default = ["linux-theme-detection", "automation"]
 
 debug = ["iced_debug/enable"]
 time-travel = ["iced_exdevtools/time-travel", "debug"]
@@ -21,8 +21,14 @@ foreign-toplevel = ["layershellev/foreign-toplevel"]
 cosmic-toplevel = ["foreign-toplevel", "layershellev/cosmic-toplevel"]
 screencopy = ["foreign-toplevel", "layershellev/screencopy"]
 workspaces = ["layershellev/workspaces"]
+# Lets a test driver on the device read and press widgets, once an admin
+# switches it on (see `iced_automation`); without the switch it does nothing.
+# On by default, so every layer-shell app gets it with its next bump, as apps
+# on iced_winit get it through icetron. Linux only.
+automation = ["dep:iced_automation"]
 
 [dependencies]
+iced_automation = { workspace = true, optional = true }
 iced_renderer.workspace = true
 iced_runtime.workspace = true
 iced_core.workspace = true

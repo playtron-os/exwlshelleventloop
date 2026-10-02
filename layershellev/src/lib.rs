@@ -825,6 +825,11 @@ impl<T> WindowStateUnit<T> {
         }
     }
 
+    /// The redraw this surface is waiting for, if any.
+    pub fn refresh_request(&self) -> RefreshRequest {
+        self.request_flag.refresh
+    }
+
     fn should_refresh(&self) -> bool {
         match self.request_flag.refresh {
             RefreshRequest::NextFrame => true,
