@@ -114,24 +114,14 @@ pub enum LayerTransition {
     /// it. A client animating its own pixels cannot move the blur — that belongs
     /// to the surface, and stays behind as a rectangle.
     FluidReveal,
-    /// A popover: the compositor plays its theme's popover motion, or [`Self::Fade`].
-    ///
-    /// This and the variants after it say what the surface is, not how it moves, so the
-    /// theme decides. A compositor older than version 5 of the protocol gets [`Self::Fade`].
+    /// From here on, what the surface is: the compositor's theme picks its motion.
     Popover,
-    /// A panel opened from the dock, like the start menu.
     Panel,
-    /// The control panel.
     ControlPanel,
-    /// The app launcher.
     Launcher,
-    /// Spotlight search.
     Spotlight,
-    /// A notification toast.
     Notification,
-    /// A context menu.
     ContextMenu,
-    /// A modal dialog.
     Modal,
 }
 

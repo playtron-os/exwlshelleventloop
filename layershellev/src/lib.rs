@@ -3305,7 +3305,6 @@ fn apply_transition_to_controller(
         );
         return;
     }
-    // The roles arrived in version 5; an older compositor fades them.
     let role = |proto| {
         if controller.version() >= 5 {
             proto
