@@ -3305,10 +3305,26 @@ fn apply_transition_to_controller(
         );
         return;
     }
+    // The roles arrived in version 5; an older compositor fades them.
+    let role = |proto| {
+        if controller.version() >= 5 {
+            proto
+        } else {
+            ProtoTransition::Fade
+        }
+    };
     let proto = match transition {
         LayerTransition::Slide => ProtoTransition::Slide,
         LayerTransition::Fade => ProtoTransition::Fade,
         LayerTransition::FluidReveal => ProtoTransition::FluidReveal,
+        LayerTransition::Popover => role(ProtoTransition::Popover),
+        LayerTransition::Panel => role(ProtoTransition::Panel),
+        LayerTransition::ControlPanel => role(ProtoTransition::ControlPanel),
+        LayerTransition::Launcher => role(ProtoTransition::Launcher),
+        LayerTransition::Spotlight => role(ProtoTransition::Spotlight),
+        LayerTransition::Notification => role(ProtoTransition::Notification),
+        LayerTransition::ContextMenu => role(ProtoTransition::ContextMenu),
+        LayerTransition::Modal => role(ProtoTransition::Modal),
     };
     controller.set_transition(proto);
     log::debug!(
@@ -6734,7 +6750,7 @@ impl<T: 'static> WindowState<T> {
         self.layer_surface_visibility_manager = globals
             .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
                 &qh,
-                1..=4,
+                1..=5,
                 layer_surface_visibility::LayerSurfaceVisibilityManagerData,
             )
             .ok();
