@@ -1192,6 +1192,10 @@ where
         };
         self.cached_layer_dimensions.remove(&iced_id);
 
+        // Events still queued for it would never be handed out, and the
+        // automation door would wait on them for ever.
+        self.iced_events.retain(|(id, _)| *id != iced_id);
+
         #[cfg(all(feature = "automation", target_os = "linux"))]
         {
             let _ = self.door.awaiting_frame.remove(&iced_id);
@@ -1541,6 +1545,16 @@ where
             .collect();
         let is_popup = |id: layershellev::id::Id| popups.contains(&id);
 
+        // Surfaces hidden with `HideWindow` live on in `window_manager`, but
+        // nothing of them is drawn and a person can't reach them: the door
+        // doesn't list, read or press them either.
+        let hidden: std::collections::HashSet<layershellev::id::Id> = ev
+            .get_unit_iter()
+            .map(|unit| unit.id())
+            .filter(|id| ev.is_hidden(*id))
+            .collect();
+        let is_hidden = |id: layershellev::id::Id| hidden.contains(&id);
+
         let window_manager = &mut self.window_manager;
         let user_interfaces = &mut self.user_interfaces;
         let iced_events = &mut self.iced_events;
@@ -1551,6 +1565,7 @@ where
             Ask::Info => Answer::Info(
                 window_manager
                     .iter_mut()
+                    .filter(|(_, window)| !is_hidden(window.id))
                     .map(|(iced_id, window)| {
                         Surface::new(
                             iced_id,
@@ -1569,6 +1584,10 @@ where
                 let mut nodes = Vec::new();
 
                 for (iced_id, window) in window_manager.iter_mut() {
+                    if is_hidden(window.id) {
+                        continue;
+                    }
+
                     let logical_size = window.state.viewport().logical_size();
 
                     if let Some(mut ui) =
@@ -1602,7 +1621,10 @@ where
                     idle = false;
                 }
 
-                let Some(surface) = window_manager.get_mut(window) else {
+                let Some(surface) = window_manager
+                    .get_mut(window)
+                    .filter(|surface| !is_hidden(surface.id))
+                else {
                     return Answer::Injected(false);
                 };
 

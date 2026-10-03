@@ -2796,6 +2796,16 @@ impl<T: 'static> WindowState<T> {
         Some(surface_clone)
     }
 
+    /// Whether the surface `id` is hidden with the `layer_surface_visibility`
+    /// protocol (`hide_surface`): the compositor neither draws it nor gives it
+    /// input, though it lives on.
+    pub fn is_hidden(&self, id: id::Id) -> bool {
+        self.get_unit_with_id(id).is_some_and(|unit| {
+            self.hidden_surfaces
+                .contains(&unit.wl_surface.id().protocol_id())
+        })
+    }
+
     /// Returns `true` when every live surface unit is currently hidden via the
     /// `layer_surface_visibility` protocol.  When this returns `true` the
     /// compositor is not rendering us, so we can save CPU by throttling updates.
