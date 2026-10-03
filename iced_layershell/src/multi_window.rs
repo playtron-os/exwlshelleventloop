@@ -1873,6 +1873,13 @@ where
                 };
                 ev.unset_edge_resize_for_surface(&surface);
             }
+            LayershellCustomAction::TransitionChange(transition) => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_surface_transition(&surface, transition);
+            }
             LayershellCustomAction::BlurChange(enabled) => {
                 let surface = {
                     ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
