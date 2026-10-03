@@ -154,6 +154,12 @@ where
         self.mouse_position = Some(position);
     }
 
+    /// Forgets the cursor the automation door placed, as when a pointer leaves.
+    #[cfg(all(feature = "automation", target_os = "linux"))]
+    pub fn clear_cursor(&mut self) {
+        self.mouse_position = None;
+    }
+
     pub fn mouse_position(&self) -> Option<&Point> {
         self.mouse_position.as_ref()
     }

@@ -587,7 +587,8 @@ pub struct WindowStateUnit<T> {
 }
 
 impl<T> WindowStateUnit<T> {
-    fn is_popup(&self) -> bool {
+    /// Whether this surface is an xdg popup.
+    pub fn is_popup(&self) -> bool {
         self.shell.is_popup()
     }
 }
@@ -1398,6 +1399,18 @@ fn register_special_action_for_surface<T: 'static>(
 impl<T> WindowState<T> {
     pub fn append_return_data(&mut self, data: ReturnData<T>) {
         self.return_data.push(data);
+    }
+
+    /// The surfaces asked for with [`append_return_data`](Self::append_return_data)
+    /// that the loop hasn't made yet.
+    pub fn requested_surfaces(&self) -> impl Iterator<Item = id::Id> + '_ {
+        self.return_data.iter().filter_map(|data| match data {
+            ReturnData::NewLayerShell((_, id, _))
+            | ReturnData::NewPopUp((_, id, _))
+            | ReturnData::NewXdgBase((_, id, _))
+            | ReturnData::NewInputPanel((_, id, _)) => Some(*id),
+            _ => None,
+        })
     }
     /// remove a shell, destroy the surface
     fn remove_shell(&mut self, id: id::Id) -> Option<()> {

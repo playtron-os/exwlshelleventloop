@@ -149,6 +149,7 @@ pub struct Daemon<A: Program> {
     raw: A,
     settings: Settings,
     namespace: String,
+    automation: iced_core::automation::Config,
 }
 
 pub fn daemon<State, Message, Theme, Renderer>(
@@ -235,6 +236,7 @@ where
         },
         settings: Settings::default(),
         namespace: namespace.namespace(),
+        automation: iced_core::automation::Config::default(),
     }
 }
 
@@ -692,11 +694,23 @@ impl<P: Program> Daemon<P> {
                 || matches!(settings.layer_settings.start_mode, StartMode::Background),
             "Size must be specified unless start_mode is Background"
         );
-        crate::multi_window::run(program, &self.namespace, settings, renderer_settings)
+        crate::multi_window::run(
+            program,
+            &self.namespace,
+            settings,
+            renderer_settings,
+            self.automation,
+        )
     }
 
     pub fn settings(self, settings: Settings) -> Self {
         Self { settings, ..self }
+    }
+
+    /// How the app's automation door behaves, when the `automation` feature
+    /// builds one in and an administrator has switched it on.
+    pub fn automation(self, automation: iced_core::automation::Config) -> Self {
+        Self { automation, ..self }
     }
 
     /// Sets the [`Settings::antialiasing`] of the [`Daemon`].
@@ -761,6 +775,7 @@ impl<P: Program> Daemon<P> {
             raw: with_style(self.raw, move |state, theme| f(state, theme)),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
     /// Sets the subscription logic of the [`Daemon`].
@@ -772,6 +787,7 @@ impl<P: Program> Daemon<P> {
             raw: with_subscription(self.raw, move |state| f(state)),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 
@@ -784,6 +800,7 @@ impl<P: Program> Daemon<P> {
             raw: with_title(self.raw, move |state, id| f(state, id)),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 
@@ -796,6 +813,7 @@ impl<P: Program> Daemon<P> {
             raw: with_theme(self.raw, move |state, id| f.theme(state, id)),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 
@@ -808,6 +826,7 @@ impl<P: Program> Daemon<P> {
             raw: with_scale_factor(self.raw, move |state, id| f(state, id)),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
     /// Sets the executor of the [`Daemon`].
@@ -821,6 +840,7 @@ impl<P: Program> Daemon<P> {
             raw: with_executor::<P, E>(self.raw),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 }

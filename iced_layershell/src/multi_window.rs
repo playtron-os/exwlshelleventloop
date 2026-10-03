@@ -55,11 +55,19 @@ mod window_manager;
 type MultiRuntime<E, Message> = Runtime<E, IcedProxy<Action<Message>>, Action<Message>>;
 
 // a dispatch loop, another is listen loop
+/// Runs `program` on layer-shell surfaces. `automation` is the app's settings
+/// for its automation door (used when the `automation` feature builds one in
+/// and an administrator switches it on).
+#[cfg_attr(
+    not(all(feature = "automation", target_os = "linux")),
+    allow(unused_variables)
+)]
 pub fn run<P>(
     program: P,
     namespace: &str,
     settings: Settings,
     compositor_settings: iced_graphics::Settings,
+    automation: iced_core::automation::Config,
 ) -> Result<(), Error>
 where
     P: IcedProgram + 'static,
@@ -87,7 +95,7 @@ where
     let _door = {
         let proxy = proxy.clone();
 
-        iced_automation::start(Some(namespace), move || {
+        iced_automation::start_with(automation, Some(namespace), move || {
             proxy.send_action(Action::Tick);
         })
     };
@@ -380,9 +388,21 @@ struct DoorState {
     /// When each surface was first seen waiting for a frame that hasn't been
     /// drawn yet. Drawing it, or closing it, clears it.
     awaiting_frame: HashMap<IcedId, Instant>,
+    /// When each surface still on its way was first seen: one the compositor
+    /// has made that this loop hasn't taken in yet, or a popup asked for and
+    /// not made yet. Each keeps the app busy for a while, not for ever.
+    joining: HashMap<Joining, Instant>,
     /// The surface the door last placed iced's cursor on. Its frames are drawn
     /// with that cursor, so hovering shows, though the real pointer is elsewhere.
     pointer: Option<IcedId>,
+}
+
+/// A surface on its way, for [`DoorState::joining`].
+#[cfg(all(feature = "automation", target_os = "linux"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Joining {
+    Unit(layershellev::id::Id),
+    Popup(IcedId),
 }
 
 impl<P, E, C> Context<P, E, C>
@@ -520,14 +540,9 @@ where
                 self.handle_user_action(ev, user_action);
                 // Immediately dispatch any messages added by subscription output
                 // (e.g., keyboard events) to avoid waiting for the next timer-based
-                // NormalDispatch (~50ms delay). With the automation door open, its
-                // wake-up is a user action too, and is answered here.
-                #[cfg(all(feature = "automation", target_os = "linux"))]
-                let dispatch = !self.messages.is_empty() || iced_automation::is_open();
-                #[cfg(not(all(feature = "automation", target_os = "linux")))]
-                let dispatch = !self.messages.is_empty();
-
-                if dispatch {
+                // NormalDispatch (~50ms delay). (The automation door's wake-up
+                // is answered by the dispatch the channel's ping runs next.)
+                if !self.messages.is_empty() {
                     self.handle_normal_dispatch(ev);
                 }
             }
@@ -1486,12 +1501,45 @@ where
                 !iced_automation::frame_due(requested_at, redraw_at, now)
             });
 
+        // A click that opens a surface returns before the surface joins this
+        // loop: asked for (waiting for layershellev to make it), made but not
+        // yet refreshed into `window_manager`, or a popup not made yet, it is
+        // coming, so the app isn't idle. Timed like a frame, so one that never
+        // comes can't keep the app busy for ever.
+        let on_the_way: Vec<Joining> = ev
+            .requested_surfaces()
+            .chain(
+                ev.get_unit_iter()
+                    .map(|unit| unit.id())
+                    .filter(|id| self.window_manager.get_alias(*id).is_none()),
+            )
+            .map(Joining::Unit)
+            .chain(self.pending_popups.keys().map(|id| Joining::Popup(*id)))
+            .collect();
+
+        self.door
+            .joining
+            .retain(|surface, _| on_the_way.contains(surface));
+
+        for surface in on_the_way {
+            let since = *self.door.joining.entry(surface).or_insert(now);
+
+            idle = idle && !iced_automation::frame_due(Some(since), None, now);
+        }
+
         // The surface the compositor last gave input to. (The door itself sends
         // keys to the surface it last clicked, while this stays the same.)
         let focused = ev
             .current_surface_id()
             .and_then(|lid| self.window_manager.get_alias(lid))
             .map(|(iced_id, _)| iced_id);
+
+        let popups: std::collections::HashSet<layershellev::id::Id> = ev
+            .get_unit_iter()
+            .filter(|unit| unit.is_popup())
+            .map(|unit| unit.id())
+            .collect();
+        let is_popup = |id: layershellev::id::Id| popups.contains(&id);
 
         let window_manager = &mut self.window_manager;
         let user_interfaces = &mut self.user_interfaces;
@@ -1503,12 +1551,14 @@ where
             Ask::Info => Answer::Info(
                 window_manager
                     .iter_mut()
-                    .map(|(iced_id, window)| Surface {
-                        window: iced_id,
-                        popup: false,
-                        size: window.state.viewport().logical_size(),
-                        scale_factor: window.state.viewport().scale_factor(),
-                        focused: focused == Some(iced_id),
+                    .map(|(iced_id, window)| {
+                        Surface::new(
+                            iced_id,
+                            is_popup(window.id),
+                            window.state.viewport().logical_size(),
+                            window.state.viewport().scale_factor(),
+                            focused == Some(iced_id),
+                        )
                     })
                     .collect(),
             ),
@@ -1524,7 +1574,8 @@ where
                     if let Some(mut ui) =
                         user_interfaces.ui_mut(&iced_id, &mut window.renderer, logical_size)
                     {
-                        let mut collector = Collector::new(iced_id, false, logical_size);
+                        let mut collector =
+                            Collector::new(iced_id, is_popup(window.id), logical_size);
 
                         ui.operate(&window.renderer, &mut collector);
                         nodes.extend(collector.into_nodes());
@@ -1537,7 +1588,20 @@ where
                 window,
                 cursor,
                 events,
+                leave,
+                ..
             } => {
+                // The door's pointer leaves the surface it was on: forget the
+                // cursor placed there, and tell it, as a person's pointer would.
+                if let Some(left) = leave
+                    && let Some(surface) = window_manager.get_mut(left)
+                {
+                    surface.state.clear_cursor();
+                    door.pointer = door.pointer.filter(|id| *id != left);
+                    iced_events.push((left, IcedEvent::Mouse(mouse::Event::CursorLeft)));
+                    idle = false;
+                }
+
                 let Some(surface) = window_manager.get_mut(window) else {
                     return Answer::Injected(false);
                 };
@@ -1552,6 +1616,7 @@ where
 
                 Answer::Injected(true)
             }
+            _ => Answer::Unsupported,
         });
     }
 
@@ -2276,6 +2341,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_ui_state(
         ev: &mut WindowState<IcedId>,
         window: &mut Window<P, C>,
@@ -2321,7 +2387,7 @@ where
                 clipboard: mut clipboard_requests,
                 ..
             } => {
-                if let Some(c) = compositor.as_deref_mut() {
+                if let Some(c) = compositor {
                     resolve_dnd_icon_elements::<P, C>(
                         &mut clipboard_requests,
                         c,
