@@ -13,6 +13,7 @@ mod user_interface;
 pub mod settings;
 
 pub mod reexport {
+    pub use layershellev::LayerTransition;
     pub use layershellev::NewInputPanelSettings;
     pub use layershellev::NewLayerShellSettings;
     pub use layershellev::OutputOption;

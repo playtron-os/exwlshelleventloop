@@ -3305,10 +3305,25 @@ fn apply_transition_to_controller(
         );
         return;
     }
+    let role = |proto| {
+        if controller.version() >= 5 {
+            proto
+        } else {
+            ProtoTransition::Fade
+        }
+    };
     let proto = match transition {
         LayerTransition::Slide => ProtoTransition::Slide,
         LayerTransition::Fade => ProtoTransition::Fade,
         LayerTransition::FluidReveal => ProtoTransition::FluidReveal,
+        LayerTransition::Popover => role(ProtoTransition::Popover),
+        LayerTransition::Panel => role(ProtoTransition::Panel),
+        LayerTransition::ControlPanel => role(ProtoTransition::ControlPanel),
+        LayerTransition::Launcher => role(ProtoTransition::Launcher),
+        LayerTransition::Spotlight => role(ProtoTransition::Spotlight),
+        LayerTransition::Notification => role(ProtoTransition::Notification),
+        LayerTransition::ContextMenu => role(ProtoTransition::ContextMenu),
+        LayerTransition::Modal => role(ProtoTransition::Modal),
     };
     controller.set_transition(proto);
     log::debug!(
@@ -3411,6 +3426,15 @@ impl<T> WindowState<T> {
 
     /// Effective transition for a surface: its per-surface override if set,
     /// otherwise the global transition.
+    /// Use `transition` for the surface's hides and shows from now on.
+    pub fn set_surface_transition(&mut self, surface: &WlSurface, transition: LayerTransition) {
+        let surface_id = surface.id().protocol_id();
+        self.transitions.insert(surface_id, transition);
+        if let Some(controller) = self.layer_surface_visibility_controllers.get(&surface_id) {
+            apply_transition_to_controller(controller, Some(transition));
+        }
+    }
+
     fn surface_transition(&self, surface_id: u32) -> Option<LayerTransition> {
         self.transitions
             .get(&surface_id)
@@ -6734,7 +6758,7 @@ impl<T: 'static> WindowState<T> {
         self.layer_surface_visibility_manager = globals
             .bind::<layer_surface_visibility::zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1, _, _>(
                 &qh,
-                1..=4,
+                1..=5,
                 layer_surface_visibility::LayerSurfaceVisibilityManagerData,
             )
             .ok();

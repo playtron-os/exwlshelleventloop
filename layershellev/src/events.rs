@@ -114,6 +114,15 @@ pub enum LayerTransition {
     /// it. A client animating its own pixels cannot move the blur — that belongs
     /// to the surface, and stays behind as a rectangle.
     FluidReveal,
+    /// From here on, what the surface is: the compositor's theme picks its motion.
+    Popover,
+    Panel,
+    ControlPanel,
+    Launcher,
+    Spotlight,
+    Notification,
+    ContextMenu,
+    Modal,
 }
 
 /// layershell settings to create a new layershell surface
