@@ -395,6 +395,24 @@ struct DoorState {
     /// The surface the door last placed iced's cursor on. Its frames are drawn
     /// with that cursor, so hovering shows, though the real pointer is elsewhere.
     pointer: Option<IcedId>,
+    /// The surfaces hidden (`HideWindow`, or by the compositor) at the last
+    /// pass, to notice one being hidden or shown again.
+    hidden: std::collections::HashSet<layershellev::id::Id>,
+}
+
+/// Whether `event` only lets go of something an earlier event pressed (or
+/// moves the pointer off): the only input a hidden surface still takes.
+#[cfg(all(feature = "automation", target_os = "linux"))]
+fn lets_go(event: &IcedEvent) -> bool {
+    use iced_core::keyboard;
+
+    matches!(
+        event,
+        IcedEvent::Mouse(mouse::Event::ButtonReleased(_) | mouse::Event::CursorLeft)
+            | IcedEvent::Keyboard(
+                keyboard::Event::KeyReleased { .. } | keyboard::Event::ModifiersChanged(_)
+            )
+    )
 }
 
 /// A surface on its way, for [`DoorState::joining`].
@@ -1481,6 +1499,37 @@ where
         }
 
         let now = Instant::now();
+
+        // Surfaces hidden with `HideWindow` (or by the compositor) live on in
+        // `window_manager`, but nothing of them is drawn and a person can't
+        // reach them.
+        let hidden: std::collections::HashSet<layershellev::id::Id> = ev
+            .get_unit_iter()
+            .map(|unit| unit.id())
+            .filter(|id| ev.is_hidden(*id))
+            .collect();
+
+        for id in hidden.difference(&self.door.hidden) {
+            // Hidden: a person's pointer would have left it, so the door's
+            // does too, and a hover it showed isn't drawn with it when it
+            // comes back.
+            if let Some((iced_id, window)) = self.window_manager.get_mut_alias(*id) {
+                window.state.clear_cursor();
+                self.door.pointer = self.door.pointer.filter(|pointed| *pointed != iced_id);
+            }
+        }
+
+        for id in self.door.hidden.difference(&hidden) {
+            // Shown again: a frame asked for while hidden was never drawn, so
+            // the wait for one starts now, not when it was asked for.
+            if let Some((iced_id, _)) = self.window_manager.get_alias(*id) {
+                let _ = self.door.awaiting_frame.remove(&iced_id);
+            }
+        }
+
+        self.door.hidden.clone_from(&hidden);
+        let is_hidden = |id: layershellev::id::Id| hidden.contains(&id);
+
         let awaiting_frame = &mut self.door.awaiting_frame;
         let mut idle = self.iced_events.is_empty()
             && self.messages.is_empty()
@@ -1545,15 +1594,18 @@ where
             .collect();
         let is_popup = |id: layershellev::id::Id| popups.contains(&id);
 
-        // Surfaces hidden with `HideWindow` live on in `window_manager`, but
-        // nothing of them is drawn and a person can't reach them: the door
-        // doesn't list, read or press them either.
-        let hidden: std::collections::HashSet<layershellev::id::Id> = ev
-            .get_unit_iter()
-            .map(|unit| unit.id())
-            .filter(|id| ev.is_hidden(*id))
-            .collect();
-        let is_hidden = |id: layershellev::id::Id| hidden.contains(&id);
+        // The door doesn't list, read or press hidden surfaces either, nor
+        // send keys to one.
+        let focused = focused.filter(|iced_id| {
+            self.window_manager
+                .get(*iced_id)
+                .is_some_and(|window| !is_hidden(window.id))
+        });
+        let first_shown = self
+            .window_manager
+            .iter_mut()
+            .find(|(_, window)| !is_hidden(window.id))
+            .map(|(iced_id, _)| iced_id);
 
         let window_manager = &mut self.window_manager;
         let user_interfaces = &mut self.user_interfaces;
@@ -1577,9 +1629,7 @@ where
                     })
                     .collect(),
             ),
-            Ask::Focused => Answer::Focused(
-                focused.or_else(|| window_manager.first_window().map(|(iced_id, _)| *iced_id)),
-            ),
+            Ask::Focused => Answer::Focused(focused.or(first_shown)),
             Ask::Tree => {
                 let mut nodes = Vec::new();
 
@@ -1621,14 +1671,19 @@ where
                     idle = false;
                 }
 
-                let Some(surface) = window_manager
-                    .get_mut(window)
-                    .filter(|surface| !is_hidden(surface.id))
-                else {
+                let Some(surface) = window_manager.get_mut(window) else {
                     return Answer::Injected(false);
                 };
 
-                if let Some(cursor) = cursor {
+                // Nothing new goes into a hidden surface. What lets go of a
+                // press does: the key or click that hid it (Enter in a
+                // launcher's search, say) is still let go of, as a person's
+                // would be, so nothing stays held down when it comes back.
+                if is_hidden(surface.id) {
+                    if !events.iter().all(lets_go) {
+                        return Answer::Injected(false);
+                    }
+                } else if let Some(cursor) = cursor {
                     surface.state.place_cursor(cursor);
                     door.pointer = Some(window);
                 }
