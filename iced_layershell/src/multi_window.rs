@@ -2741,7 +2741,7 @@ fn resolve_dnd_icon_elements<P, C>(
             iced_core::Color::TRANSPARENT,
         );
         // RGBA -> pre-multiplied ARGB (Argb8888 byte order).
-        for pix in bytes.chunks_exact_mut(4) {
+        for pix in bytes.as_chunks_mut::<4>().0 {
             pix.swap(0, 2);
         }
         *icon = Some(iced_core::dnd::DndIcon::Pixels {

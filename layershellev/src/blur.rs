@@ -114,8 +114,10 @@ mod tests {
         assert_eq!(bytes.len(), 16);
 
         let round_trip: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|b| i32::from_ne_bytes([b[0], b[1], b[2], b[3]]) as f32 / 256.0)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&b| i32::from_ne_bytes(b) as f32 / 256.0)
             .collect();
 
         for (got, want) in round_trip.iter().zip([822.3, 19.54, 275.4, 46.92]) {
@@ -145,8 +147,10 @@ mod tests {
         // exactly 4 u32 per rect or every later rect's radii shift.
         assert_eq!(bytes.len(), 2 * 4 * 4);
         let round_trip: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&b| u32::from_ne_bytes(b))
             .collect();
         assert_eq!(round_trip, vec![16, 16, 16, 16, 1, 2, 3, 4]);
     }

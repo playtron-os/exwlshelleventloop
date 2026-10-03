@@ -211,6 +211,10 @@ use wayland_protocols::{
     },
 };
 
+// For `ScreencopyHandler::get_ext_workspace_handle`.
+#[cfg(all(feature = "screencopy", feature = "workspaces"))]
+use wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::ExtWorkspaceHandleV1;
+
 use wayland_protocols::wp::input_method::zv1::client::{
     zwp_input_panel_surface_v1::{Position as ZwpInputPanelPosition, ZwpInputPanelSurfaceV1},
     zwp_input_panel_v1::ZwpInputPanelV1,
@@ -4505,12 +4509,14 @@ fn decode_uri_text(buf: &[u8]) -> String {
 /// Transcode raw UTF-16 bytes (given endianness) to a UTF-8 string.
 fn decode_utf16(buf: &[u8], big_endian: bool) -> String {
     let units: Vec<u16> = buf
-        .chunks_exact(2)
-        .map(|c| {
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| {
             if big_endian {
-                u16::from_be_bytes([c[0], c[1]])
+                u16::from_be_bytes(c)
             } else {
-                u16::from_le_bytes([c[0], c[1]])
+                u16::from_le_bytes(c)
             }
         })
         .collect();
@@ -6106,11 +6112,7 @@ impl<T: 'static> screencopy::ScreencopyHandler for WindowState<T> {
     }
 
     #[cfg(feature = "workspaces")]
-    fn get_ext_workspace_handle(
-        &self,
-        id: u32,
-    ) -> Option<&wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::ExtWorkspaceHandleV1>
-    {
+    fn get_ext_workspace_handle(&self, id: u32) -> Option<&ExtWorkspaceHandleV1> {
         self.workspaces.handle(id)
     }
 }
