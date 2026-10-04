@@ -147,6 +147,19 @@ where
         self.theme_mode
     }
 
+    /// Puts iced's cursor for this surface at `position`, in logical pixels, for
+    /// input the automation door injects. The compositor's pointer doesn't move.
+    #[cfg(all(feature = "automation", target_os = "linux"))]
+    pub fn place_cursor(&mut self, position: Point) {
+        self.mouse_position = Some(position);
+    }
+
+    /// Forgets the cursor the automation door placed, as when a pointer leaves.
+    #[cfg(all(feature = "automation", target_os = "linux"))]
+    pub fn clear_cursor(&mut self) {
+        self.mouse_position = None;
+    }
+
     pub fn mouse_position(&self) -> Option<&Point> {
         self.mouse_position.as_ref()
     }

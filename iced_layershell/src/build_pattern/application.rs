@@ -153,6 +153,7 @@ pub struct SingleApplication<A: Program> {
     raw: A,
     settings: Settings,
     namespace: String,
+    automation: iced_core::automation::Config,
 }
 
 pub fn application<State, Message, Theme, Renderer>(
@@ -234,6 +235,7 @@ where
         },
         settings: Settings::default(),
         namespace: namespace.namespace(),
+        automation: iced_core::automation::Config::default(),
     }
 }
 
@@ -616,11 +618,23 @@ impl<P: Program> SingleApplication<P> {
             settings.layer_settings.start_mode,
             StartMode::AllScreens | StartMode::Background
         ));
-        crate::multi_window::run(program, &self.namespace, settings, renderer_settings)
+        crate::multi_window::run(
+            program,
+            &self.namespace,
+            settings,
+            renderer_settings,
+            self.automation,
+        )
     }
 
     pub fn settings(self, settings: Settings) -> Self {
         Self { settings, ..self }
+    }
+
+    /// How the app's automation door behaves, when the `automation` feature
+    /// builds one in and an administrator has switched it on.
+    pub fn automation(self, automation: iced_core::automation::Config) -> Self {
+        Self { automation, ..self }
     }
 
     /// Sets the [`Settings::antialiasing`] of the [`SingleApplication`].
@@ -685,6 +699,7 @@ impl<P: Program> SingleApplication<P> {
             raw: with_style(self.raw, move |state, theme| f(state, theme)),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
     /// Sets the subscription logic of the [`SingleApplication`].
@@ -697,6 +712,7 @@ impl<P: Program> SingleApplication<P> {
             raw: with_subscription(self.raw, move |state| debug::hot(|| f(state))),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 
@@ -710,6 +726,7 @@ impl<P: Program> SingleApplication<P> {
             raw: with_theme(self.raw, move |state| debug::hot(|| f.theme(state))),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 
@@ -723,6 +740,7 @@ impl<P: Program> SingleApplication<P> {
             raw: with_scale_factor(self.raw, move |state| debug::hot(|| f(state))),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
     /// Sets the executor of the [`SingleApplication`].
@@ -736,6 +754,7 @@ impl<P: Program> SingleApplication<P> {
             raw: with_executor::<P, E>(self.raw),
             settings: self.settings,
             namespace: self.namespace,
+            automation: self.automation,
         }
     }
 }

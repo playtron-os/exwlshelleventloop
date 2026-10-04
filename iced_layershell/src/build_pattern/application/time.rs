@@ -124,6 +124,7 @@ where
         },
         settings: crate::Settings::default(),
         namespace: namespace.namespace(),
+        automation: iced_core::automation::Config::default(),
     }
 }
 

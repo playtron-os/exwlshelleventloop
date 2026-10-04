@@ -21,8 +21,15 @@ foreign-toplevel = ["layershellev/foreign-toplevel"]
 cosmic-toplevel = ["foreign-toplevel", "layershellev/cosmic-toplevel"]
 screencopy = ["foreign-toplevel", "layershellev/screencopy"]
 workspaces = ["layershellev/workspaces"]
+# Lets a test driver on the device read and press widgets, once an admin
+# switches it on (see `iced_automation`); without the switch it does nothing.
+# Off by default: QA builds turn it on, e.g. with
+# `cargo build --features iced_layershell/automation` (or icetron's
+# `automation` feature, which forwards here). Linux only.
+automation = ["dep:iced_automation"]
 
 [dependencies]
+iced_automation = { workspace = true, optional = true }
 iced_renderer.workspace = true
 iced_runtime.workspace = true
 iced_core.workspace = true

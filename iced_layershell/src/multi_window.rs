@@ -55,11 +55,19 @@ mod window_manager;
 type MultiRuntime<E, Message> = Runtime<E, IcedProxy<Action<Message>>, Action<Message>>;
 
 // a dispatch loop, another is listen loop
+/// Runs `program` on layer-shell surfaces. `automation` is the app's settings
+/// for its automation door (used when the `automation` feature builds one in
+/// and an administrator switches it on).
+#[cfg_attr(
+    not(all(feature = "automation", target_os = "linux")),
+    allow(unused_variables)
+)]
 pub fn run<P>(
     program: P,
     namespace: &str,
     settings: Settings,
     compositor_settings: iced_graphics::Settings,
+    automation: iced_core::automation::Config,
 ) -> Result<(), Error>
 where
     P: IcedProgram + 'static,
@@ -81,6 +89,16 @@ where
             proxy.send_action(Action::Reload);
         });
     }
+
+    // Kept until the loop ends, when dropping it removes the door's socket.
+    #[cfg(all(feature = "automation", target_os = "linux"))]
+    let _door = {
+        let proxy = proxy.clone();
+
+        iced_automation::start_with(automation, Some(namespace), move || {
+            proxy.send_action(Action::Tick);
+        })
+    };
 
     let proxy_back = proxy.clone();
     let mut runtime: MultiRuntime<P::Executor, P::Message> = {
@@ -358,6 +376,51 @@ where
     /// Shadow is deferred to avoid a visible flash of shadow around an
     /// empty/transparent surface before the popup content is drawn.
     popup_pending_shadow: std::collections::HashSet<IcedId>,
+    /// What the automation door needs to remember between passes.
+    #[cfg(all(feature = "automation", target_os = "linux"))]
+    door: DoorState,
+}
+
+/// What the automation door needs to remember between passes.
+#[cfg(all(feature = "automation", target_os = "linux"))]
+#[derive(Debug, Default)]
+struct DoorState {
+    /// When each surface was first seen waiting for a frame that hasn't been
+    /// drawn yet. Drawing it, or closing it, clears it.
+    awaiting_frame: HashMap<IcedId, Instant>,
+    /// When each surface still on its way was first seen: one the compositor
+    /// has made that this loop hasn't taken in yet, or a popup asked for and
+    /// not made yet. Each keeps the app busy for a while, not for ever.
+    joining: HashMap<Joining, Instant>,
+    /// The surface the door last placed iced's cursor on. Its frames are drawn
+    /// with that cursor, so hovering shows, though the real pointer is elsewhere.
+    pointer: Option<IcedId>,
+    /// The surfaces hidden (`HideWindow`, or by the compositor) at the last
+    /// pass, to notice one being hidden or shown again.
+    hidden: std::collections::HashSet<layershellev::id::Id>,
+}
+
+/// Whether `event` only lets go of something an earlier event pressed (or
+/// moves the pointer off): the only input a hidden surface still takes.
+#[cfg(all(feature = "automation", target_os = "linux"))]
+fn lets_go(event: &IcedEvent) -> bool {
+    use iced_core::keyboard;
+
+    matches!(
+        event,
+        IcedEvent::Mouse(mouse::Event::ButtonReleased(_) | mouse::Event::CursorLeft)
+            | IcedEvent::Keyboard(
+                keyboard::Event::KeyReleased { .. } | keyboard::Event::ModifiersChanged(_)
+            )
+    )
+}
+
+/// A surface on its way, for [`DoorState::joining`].
+#[cfg(all(feature = "automation", target_os = "linux"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Joining {
+    Unit(layershellev::id::Id),
+    Popup(IcedId),
 }
 
 impl<P, E, C> Context<P, E, C>
@@ -403,6 +466,8 @@ where
             pending_popups: HashMap::new(),
             cancelled_popups: std::collections::HashSet::new(),
             popup_pending_shadow: std::collections::HashSet::new(),
+            #[cfg(all(feature = "automation", target_os = "linux"))]
+            door: DoorState::default(),
         }
     }
 
@@ -493,7 +558,8 @@ where
                 self.handle_user_action(ev, user_action);
                 // Immediately dispatch any messages added by subscription output
                 // (e.g., keyboard events) to avoid waiting for the next timer-based
-                // NormalDispatch (~50ms delay).
+                // NormalDispatch (~50ms delay). (The automation door's wake-up
+                // is answered by the dispatch the channel's ping runs next.)
                 if !self.messages.is_empty() {
                     self.handle_normal_dispatch(ev);
                 }
@@ -523,6 +589,14 @@ where
         else {
             return;
         };
+
+        #[cfg(all(feature = "automation", target_os = "linux"))]
+        if let Some((iced_id, _)) =
+            layer_shell_id.and_then(|lid| self.window_manager.get_alias(lid))
+        {
+            let _ = self.door.awaiting_frame.remove(&iced_id);
+        }
+
         let (width, height) = layer_shell_window.get_size();
         let scale_float = layer_shell_window.scale_float();
         // events may not be handled after RequestRefreshWithWrapper in the same
@@ -631,6 +705,13 @@ where
             window.state.cursor()
         } else {
             Cursor::Unavailable
+        };
+
+        #[cfg(all(feature = "automation", target_os = "linux"))]
+        let cursor = if self.door.pointer == Some(iced_id) {
+            window.state.cursor()
+        } else {
+            cursor
         };
 
         events.push(IcedEvent::Window(IcedWindowEvent::RedrawRequested(
@@ -1128,6 +1209,17 @@ where
             return;
         };
         self.cached_layer_dimensions.remove(&iced_id);
+
+        // Events still queued for it would never be handed out, and the
+        // automation door would wait on them for ever.
+        self.iced_events.retain(|(id, _)| *id != iced_id);
+
+        #[cfg(all(feature = "automation", target_os = "linux"))]
+        {
+            let _ = self.door.awaiting_frame.remove(&iced_id);
+            self.door.pointer = self.door.pointer.filter(|id| *id != iced_id);
+        }
+
         self.auto_size_pending.remove(&iced_id);
         self.auto_size_hidden.remove(&iced_id);
         self.auto_size_enabled.remove(&iced_id);
@@ -1392,6 +1484,217 @@ where
             self.iced_events.push((iced_id, event));
         }
         false
+    }
+
+    /// Answers the automation door's requests from this loop's surfaces and
+    /// pending events. Runs before the pending events are handed out, so
+    /// anything injected is processed in the same pass, exactly as if the
+    /// compositor had sent it.
+    #[cfg(all(feature = "automation", target_os = "linux"))]
+    fn serve_automation(&mut self, ev: &mut WindowState<IcedId>) {
+        use iced_automation::{Answer, Ask, Collector, Surface};
+
+        if !iced_automation::is_open() {
+            return;
+        }
+
+        let now = Instant::now();
+
+        // Surfaces hidden with `HideWindow` (or by the compositor) live on in
+        // `window_manager`, but nothing of them is drawn and a person can't
+        // reach them.
+        let hidden: std::collections::HashSet<layershellev::id::Id> = ev
+            .get_unit_iter()
+            .map(|unit| unit.id())
+            .filter(|id| ev.is_hidden(*id))
+            .collect();
+
+        for id in hidden.difference(&self.door.hidden) {
+            // Hidden: a person's pointer would have left it, so the door's
+            // does too, and a hover it showed isn't drawn with it when it
+            // comes back.
+            if let Some((iced_id, window)) = self.window_manager.get_mut_alias(*id) {
+                window.state.clear_cursor();
+                self.door.pointer = self.door.pointer.filter(|pointed| *pointed != iced_id);
+            }
+        }
+
+        for id in self.door.hidden.difference(&hidden) {
+            // Shown again: a frame asked for while hidden was never drawn, so
+            // the wait for one starts now, not when it was asked for.
+            if let Some((iced_id, _)) = self.window_manager.get_alias(*id) {
+                let _ = self.door.awaiting_frame.remove(&iced_id);
+            }
+        }
+
+        self.door.hidden.clone_from(&hidden);
+        let is_hidden = |id: layershellev::id::Id| hidden.contains(&id);
+
+        let awaiting_frame = &mut self.door.awaiting_frame;
+        let mut idle = self.iced_events.is_empty()
+            && self.messages.is_empty()
+            && self.window_manager.iter_mut().all(|(iced_id, window)| {
+                let refresh = ev
+                    .get_unit_with_id(window.id)
+                    .map_or(RefreshRequest::Wait, |unit| unit.refresh_request());
+
+                // A timed redraw that has come due is waiting for a frame like
+                // any other, so it stops counting once the surface isn't drawn.
+                let (requested_at, redraw_at) = match refresh {
+                    RefreshRequest::NextFrame => {
+                        (Some(*awaiting_frame.entry(iced_id).or_insert(now)), None)
+                    }
+                    RefreshRequest::At(at) if at <= now => {
+                        (Some(*awaiting_frame.entry(iced_id).or_insert(at)), None)
+                    }
+                    RefreshRequest::At(at) => (None, Some(at)),
+                    RefreshRequest::Wait => (None, None),
+                };
+
+                !iced_automation::frame_due(requested_at, redraw_at, now)
+            });
+
+        // A click that opens a surface returns before the surface joins this
+        // loop: asked for (waiting for layershellev to make it), made but not
+        // yet refreshed into `window_manager`, or a popup not made yet, it is
+        // coming, so the app isn't idle. Timed like a frame, so one that never
+        // comes can't keep the app busy for ever.
+        let on_the_way: Vec<Joining> = ev
+            .requested_surfaces()
+            .chain(
+                ev.get_unit_iter()
+                    .map(|unit| unit.id())
+                    .filter(|id| self.window_manager.get_alias(*id).is_none()),
+            )
+            .map(Joining::Unit)
+            .chain(self.pending_popups.keys().map(|id| Joining::Popup(*id)))
+            .collect();
+
+        self.door
+            .joining
+            .retain(|surface, _| on_the_way.contains(surface));
+
+        for surface in on_the_way {
+            let since = *self.door.joining.entry(surface).or_insert(now);
+
+            idle = idle && !iced_automation::frame_due(Some(since), None, now);
+        }
+
+        // The surface the compositor last gave input to. (The door itself sends
+        // keys to the surface it last clicked, while this stays the same.)
+        let focused = ev
+            .current_surface_id()
+            .and_then(|lid| self.window_manager.get_alias(lid))
+            .map(|(iced_id, _)| iced_id);
+
+        let popups: std::collections::HashSet<layershellev::id::Id> = ev
+            .get_unit_iter()
+            .filter(|unit| unit.is_popup())
+            .map(|unit| unit.id())
+            .collect();
+        let is_popup = |id: layershellev::id::Id| popups.contains(&id);
+
+        // The door doesn't list, read or press hidden surfaces either, nor
+        // send keys to one.
+        let focused = focused.filter(|iced_id| {
+            self.window_manager
+                .get(*iced_id)
+                .is_some_and(|window| !is_hidden(window.id))
+        });
+        let first_shown = self
+            .window_manager
+            .iter_mut()
+            .find(|(_, window)| !is_hidden(window.id))
+            .map(|(iced_id, _)| iced_id);
+
+        let window_manager = &mut self.window_manager;
+        let user_interfaces = &mut self.user_interfaces;
+        let iced_events = &mut self.iced_events;
+        let door = &mut self.door;
+
+        iced_automation::serve(|ask| match ask {
+            Ask::Idle => Answer::Idle(idle),
+            Ask::Info => Answer::Info(
+                window_manager
+                    .iter_mut()
+                    .filter(|(_, window)| !is_hidden(window.id))
+                    .map(|(iced_id, window)| {
+                        Surface::new(
+                            iced_id,
+                            is_popup(window.id),
+                            window.state.viewport().logical_size(),
+                            window.state.viewport().scale_factor(),
+                            focused == Some(iced_id),
+                        )
+                    })
+                    .collect(),
+            ),
+            Ask::Focused => Answer::Focused(focused.or(first_shown)),
+            Ask::Tree => {
+                let mut nodes = Vec::new();
+
+                for (iced_id, window) in window_manager.iter_mut() {
+                    if is_hidden(window.id) {
+                        continue;
+                    }
+
+                    let logical_size = window.state.viewport().logical_size();
+
+                    if let Some(mut ui) =
+                        user_interfaces.ui_mut(&iced_id, &mut window.renderer, logical_size)
+                    {
+                        let mut collector =
+                            Collector::new(iced_id, is_popup(window.id), logical_size);
+
+                        ui.operate(&window.renderer, &mut collector);
+                        nodes.extend(collector.into_nodes());
+                    }
+                }
+
+                Answer::Tree(nodes)
+            }
+            Ask::Inject {
+                window,
+                cursor,
+                events,
+                leave,
+                ..
+            } => {
+                // The door's pointer leaves the surface it was on: forget the
+                // cursor placed there, and tell it, as a person's pointer would.
+                if let Some(left) = leave
+                    && let Some(surface) = window_manager.get_mut(left)
+                {
+                    surface.state.clear_cursor();
+                    door.pointer = door.pointer.filter(|id| *id != left);
+                    iced_events.push((left, IcedEvent::Mouse(mouse::Event::CursorLeft)));
+                    idle = false;
+                }
+
+                let Some(surface) = window_manager.get_mut(window) else {
+                    return Answer::Injected(false);
+                };
+
+                // Nothing new goes into a hidden surface. What lets go of a
+                // press does: the key or click that hid it (Enter in a
+                // launcher's search, say) is still let go of, as a person's
+                // would be, so nothing stays held down when it comes back.
+                if is_hidden(surface.id) {
+                    if !events.iter().all(lets_go) {
+                        return Answer::Injected(false);
+                    }
+                } else if let Some(cursor) = cursor {
+                    surface.state.place_cursor(cursor);
+                    door.pointer = Some(window);
+                }
+
+                iced_events.extend(events.into_iter().map(|event| (window, event)));
+                idle = false;
+
+                Answer::Injected(true)
+            }
+            _ => Answer::Unsupported,
+        });
     }
 
     fn handle_user_action(&mut self, ev: &mut WindowState<IcedId>, action: Action<P::Message>) {
@@ -2007,6 +2310,9 @@ where
     }
 
     fn handle_normal_dispatch(&mut self, ev: &mut WindowState<IcedId>) {
+        #[cfg(all(feature = "automation", target_os = "linux"))]
+        self.serve_automation(ev);
+
         if self.iced_events.is_empty() && self.messages.is_empty() {
             return;
         }
@@ -2119,6 +2425,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_ui_state(
         ev: &mut WindowState<IcedId>,
         window: &mut Window<P, C>,
@@ -2164,7 +2471,7 @@ where
                 clipboard: mut clipboard_requests,
                 ..
             } => {
-                if let Some(c) = compositor.as_deref_mut() {
+                if let Some(c) = compositor {
                     resolve_dnd_icon_elements::<P, C>(
                         &mut clipboard_requests,
                         c,
@@ -2518,7 +2825,7 @@ fn resolve_dnd_icon_elements<P, C>(
             iced_core::Color::TRANSPARENT,
         );
         // RGBA -> pre-multiplied ARGB (Argb8888 byte order).
-        for pix in bytes.chunks_exact_mut(4) {
+        for pix in bytes.as_chunks_mut::<4>().0 {
             pix.swap(0, 2);
         }
         *icon = Some(iced_core::dnd::DndIcon::Pixels {
