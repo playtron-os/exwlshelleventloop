@@ -7893,6 +7893,19 @@ impl<T: 'static> WindowState<T> {
                                         } else {
                                             log::warn!("start_hidden: visibility manager not available");
                                         }
+                                    } else if let Some(t) = transition
+                                        && let Some(manager) = &window_state.layer_surface_visibility_manager
+                                    {
+                                        // The compositor animates the first buffer in, so it needs the role first.
+                                        let visibility_data = layer_surface_visibility::LayerSurfaceVisibilityData {
+                                            surface: wl_surface.clone(),
+                                            hidden: false,
+                                        };
+                                        let controller = manager.get_visibility_controller(&wl_surface, &qh, visibility_data);
+                                        apply_transition_to_controller(&controller, Some(t));
+                                        window_state
+                                            .layer_surface_visibility_controllers
+                                            .insert(wl_surface.id().protocol_id(), controller);
                                     }
 
                                     wl_surface.commit();
