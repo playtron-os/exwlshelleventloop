@@ -698,6 +698,19 @@ impl<T> WindowStateUnit<T> {
         &self.wl_surface
     }
 
+    /// Ask for this window to be fullscreen on its output, or no longer.
+    /// Only an xdg toplevel can be; any other surface ignores it.
+    pub fn set_fullscreen(&self, fullscreen: bool) {
+        let Some(toplevel) = self.shell.top_level() else {
+            return;
+        };
+        if fullscreen {
+            toplevel.set_fullscreen(None);
+        } else {
+            toplevel.unset_fullscreen();
+        }
+    }
+
     /// get the xdg_output info related to this unit
     pub fn get_xdgoutput_info(&self) -> Option<&ZxdgOutputInfo> {
         self.zxdgoutput.as_ref()

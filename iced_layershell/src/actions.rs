@@ -256,6 +256,9 @@ pub enum LayershellCustomAction {
     HideWindow,
     /// Show the window if it was previously hidden
     ShowWindow,
+    /// Make a base window fullscreen, or no longer. Send it once the window
+    /// exists (after its first resize): a window being created ignores it.
+    SetFullscreen(bool),
     /// Put this layer surface in a Kora workspace: the compositor shows,
     /// hit-tests and captures it only while that workspace is on screen
     /// (`kora_workspace_realm_v1` v2). Machine-plane clients only — one inside

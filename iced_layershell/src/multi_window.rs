@@ -1893,6 +1893,10 @@ where
                 );
                 ev.hide_surface(&surface);
             }
+            LayershellCustomAction::SetFullscreen(fullscreen) => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                layer_shell_window.set_fullscreen(fullscreen);
+            }
             LayershellCustomAction::ShowWindow => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let surface = layer_shell_window.get_wlsurface().clone();
