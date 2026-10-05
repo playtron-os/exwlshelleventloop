@@ -42,6 +42,8 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
 pub struct ToplevelInfo {
     /// Unique identifier for this toplevel (object ID)
     pub id: u32,
+    /// Compositor-provided identity; absent with the wlroots fallback.
+    pub identifier: Option<String>,
     /// Window title
     pub title: String,
     /// Application ID (app_id)
@@ -83,6 +85,7 @@ pub enum ForeignToplevelEvent {
 /// Internal state for a toplevel handle
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ToplevelHandleData {
+    pub identifier: Option<String>,
     pub title: String,
     pub app_id: String,
     pub is_activated: bool,
@@ -97,6 +100,7 @@ impl ToplevelHandleData {
     pub fn to_info(&self, id: u32) -> ToplevelInfo {
         ToplevelInfo {
             id,
+            identifier: self.identifier.clone(),
             title: self.title.clone(),
             app_id: self.app_id.clone(),
             is_activated: self.is_activated,
@@ -480,12 +484,12 @@ where
                 state.get_toplevel_data(id).app_id = app_id;
             }
             ext_foreign_toplevel_handle_v1::Event::Identifier { identifier } => {
-                // ext protocol uses identifier string instead of tracking state
                 log::trace!(
                     "ext_foreign_toplevel_handle {}: identifier={}",
                     id,
                     identifier
                 );
+                state.get_toplevel_data(id).identifier = Some(identifier);
             }
             ext_foreign_toplevel_handle_v1::Event::Done => {
                 let handle_data = state.get_toplevel_data(id);
