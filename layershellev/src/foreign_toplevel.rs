@@ -44,6 +44,10 @@ pub struct ToplevelInfo {
     pub id: u32,
     /// Compositor-provided identity; absent with the wlroots fallback.
     pub identifier: Option<String>,
+    /// Compositor-authenticated Kora workspace, matched to `identifier`.
+    /// `None` means unknown; `Some("")` is the machine plane. Requires
+    /// `cosmic-toplevel` and the Kora identity protocol on the compositor.
+    pub workspace: Option<String>,
     /// Window title
     pub title: String,
     /// Application ID (app_id)
@@ -86,6 +90,7 @@ pub enum ForeignToplevelEvent {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ToplevelHandleData {
     pub identifier: Option<String>,
+    pub workspace: Option<String>,
     pub title: String,
     pub app_id: String,
     pub is_activated: bool,
@@ -101,6 +106,7 @@ impl ToplevelHandleData {
         ToplevelInfo {
             id,
             identifier: self.identifier.clone(),
+            workspace: self.workspace.clone(),
             title: self.title.clone(),
             app_id: self.app_id.clone(),
             is_activated: self.is_activated,

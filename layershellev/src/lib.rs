@@ -143,6 +143,8 @@ pub mod shadow;
 pub mod special_action;
 mod strtoshape;
 pub mod tooltip;
+#[cfg(feature = "cosmic-toplevel")]
+mod toplevel_identity;
 pub mod workspace_transition;
 
 use events::DispatchMessageInner;
@@ -1333,6 +1335,9 @@ pub struct WindowState<T> {
     cosmic_toplevel_info: Option<
         cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
     >,
+
+    #[cfg(feature = "cosmic-toplevel")]
+    toplevel_identity: toplevel_identity::State,
 
     // zcosmic_toplevel_manager_v1 (COSMIC extension for control - activate, close, etc.)
     #[cfg(feature = "cosmic-toplevel")]
@@ -3751,6 +3756,8 @@ impl<T> Default for WindowState<T> {
             #[cfg(feature = "cosmic-toplevel")]
             cosmic_toplevel_info: None,
             #[cfg(feature = "cosmic-toplevel")]
+            toplevel_identity: toplevel_identity::State::default(),
+            #[cfg(feature = "cosmic-toplevel")]
             cosmic_toplevel_manager: None,
             #[cfg(feature = "cosmic-toplevel")]
             cosmic_to_ext_handle_map: HashMap::new(),
@@ -6089,6 +6096,15 @@ impl<T: 'static> foreign_toplevel::ForeignToplevelHandler for WindowState<T> {
 
     fn remove_ext_toplevel_handle(&mut self, id: u32) {
         self.ext_toplevel_handles.remove(&id);
+        #[cfg(feature = "cosmic-toplevel")]
+        {
+            self.toplevel_identity.remove(id);
+            if let Some(handle) = self.cosmic_toplevel_handles.remove(&id) {
+                handle.destroy();
+            }
+            self.cosmic_to_ext_handle_map
+                .retain(|_, ext_id| *ext_id != id);
+        }
         #[cfg(feature = "screencopy")]
         self.screencopy.forget_toplevel(id);
     }
@@ -6256,11 +6272,20 @@ impl<T: 'static>
         conn: &Connection,
         qhandle: &QueueHandle<Self>,
     ) {
+        #[cfg(feature = "cosmic-toplevel")]
+        let new_toplevel = match &event {
+            wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => Some(toplevel.clone()),
+            _ => None,
+        };
         <() as Dispatch<
             wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
             foreign_toplevel::ExtForeignToplevelListData,
             Self,
-        >>::event(state, proxy, event, data, conn, qhandle)
+        >>::event(state, proxy, event, data, conn, qhandle);
+        #[cfg(feature = "cosmic-toplevel")]
+        if let Some(toplevel) = new_toplevel {
+            state.toplevel_identity.request(toplevel, qhandle);
+        }
     }
 
     fn event_created_child(
@@ -6292,32 +6317,26 @@ impl<T: 'static>
         qhandle: &QueueHandle<Self>,
     ) {
         use foreign_toplevel::ForeignToplevelHandler;
+        #[cfg(feature = "cosmic-toplevel")]
         use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::Event;
 
-        // Check if this is a Done event for a new (uninitialized) handle
-        // If so, request the COSMIC extension for state info
-        #[cfg(feature = "cosmic-toplevel")]
-        if let Event::Done = &event {
-            let ext_id = proxy.id().protocol_id();
-            let handle_data = state.get_toplevel_data(ext_id);
-            if !handle_data.initialized {
-                // First Done event - request cosmic extension if available
-                if let Some(cosmic_info) = state.cosmic_toplevel_info.as_ref() {
-                    log::trace!("Requesting cosmic toplevel handle for ext handle {}", ext_id);
-                    let cosmic_handle_data = foreign_toplevel::CosmicToplevelHandleData {
-                        ext_handle_id: ext_id,
-                    };
-                    cosmic_info.get_cosmic_toplevel(proxy, qhandle, cosmic_handle_data);
-                }
-            }
+        let id = proxy.id().protocol_id();
+        if state.get_ext_toplevel_handle(id) != Some(proxy) {
+            return;
         }
+        #[cfg(feature = "cosmic-toplevel")]
+        let identifier_changed = matches!(&event, Event::Identifier { .. });
 
         // Forward to blanket impl
         <() as Dispatch<
             wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
             foreign_toplevel::ExtToplevelHandleData,
             Self,
-        >>::event(state, proxy, event, data, conn, qhandle)
+        >>::event(state, proxy, event, data, conn, qhandle);
+        #[cfg(feature = "cosmic-toplevel")]
+        if identifier_changed {
+            state.refresh_toplevel_identity(id, false);
+        }
     }
 }
 
@@ -6361,11 +6380,19 @@ impl<T: 'static>
         conn: &Connection,
         qhandle: &QueueHandle<Self>,
     ) {
+        if state.cosmic_toplevel_handles.get(&data.ext_handle_id) != Some(proxy) {
+            return;
+        }
+        let closed = matches!(event, cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::Event::Closed);
         <() as Dispatch<
             cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
             foreign_toplevel::CosmicToplevelHandleData,
             Self,
-        >>::event(state, proxy, event, data, conn, qhandle)
+        >>::event(state, proxy, event, data, conn, qhandle);
+        if closed {
+            state.cosmic_toplevel_handles.remove(&data.ext_handle_id);
+            state.cosmic_to_ext_handle_map.remove(&proxy.id().protocol_id());
+        }
     }
 }
 
@@ -6865,6 +6892,8 @@ impl<T: 'static> WindowState<T> {
             // Try to bind COSMIC protocols for state info and control
             #[cfg(feature = "cosmic-toplevel")]
             {
+                self.toplevel_identity.manager = globals.bind(&qh, 1..=1, ()).ok();
+
                 // COSMIC toplevel info (for state info like minimized/maximized)
                 self.cosmic_toplevel_info = globals
                     .bind::<cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
