@@ -8623,6 +8623,10 @@ fn set_cursor_shape<T: 'static>(
     pointer: WlPointer,
     serial: u32,
 ) {
+    if shape_name == "none" {
+        pointer.set_cursor(serial, None, 0, 0);
+        return;
+    }
     if let Some(cursor_manager) = &context.cursor_manager {
         let Some(shape) = str_to_shape(&shape_name) else {
             log::error!("Not supported shape");
@@ -8650,6 +8654,9 @@ fn set_cursor_shape<T: 'static>(
         cursor_surface.commit();
     }
 }
+
+#[cfg(test)]
+mod cursor_tests;
 
 #[cfg(test)]
 mod tests {

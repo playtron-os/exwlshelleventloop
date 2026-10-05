@@ -219,6 +219,7 @@ pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
     use layershellev::reexport::wp_cursor_shape_device_v1::{Shape, ShapeName};
     use mouse::Interaction;
     match interaction {
+        Interaction::Hidden => "none".to_owned(),
         Interaction::None => Shape::Default.name().to_owned(),
         Interaction::Idle => Shape::Default.name().to_owned(),
         Interaction::Wait => Shape::Wait.name().to_owned(),
@@ -244,4 +245,17 @@ pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
 
 fn is_private_use(c: char) -> bool {
     ('\u{E000}'..='\u{F8FF}').contains(&c)
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::mouse_interaction;
+    use iced_core::mouse::Interaction;
+
+    #[test]
+    fn hidden_is_not_a_default_arrow_and_mouse_interactions_restore_a_shape() {
+        assert_eq!(mouse_interaction(Interaction::Hidden), "none");
+        assert_eq!(mouse_interaction(Interaction::Idle), "default");
+        assert_eq!(mouse_interaction(Interaction::Pointer), "pointer");
+    }
 }
