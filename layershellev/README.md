@@ -1,5 +1,13 @@
 # Layershellev
 
+With `cosmic-toplevel`, `ToplevelInfo.workspace` exposes the compositor's
+authenticated Kora process workspace when `kora_toplevel_identity_v1` is
+available. It is `None` until a complete identity pair matches the foreign
+handle's `identifier`; `Some("")` explicitly means the machine plane. This is
+independent of virtual desktops and the active workspace. Identity revocation
+emits `Changed` with `workspace: None`. A closed foreign handle is removed;
+re-advertising the same mapped window requires a new identity lookup.
+
 Layershelleventloop, take lot reference from winit, amin to make a easy way to create layershell window.
 
 you can take `./examples/simplelayer.rs` for example
