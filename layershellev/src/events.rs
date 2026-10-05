@@ -347,6 +347,7 @@ pub enum ReturnData<INFO> {
     RequestCompositor,
     RedrawAllRequest,
     RedrawIndexRequest(Id),
+    /// A cursor-shape name, or `"none"` to hide the pointer until a shape is requested.
     RequestSetCursorShape((String, WlPointer)),
     NewLayerShell((NewLayerShellSettings, id::Id, Option<INFO>)),
     NewPopUp((NewPopUpSettings, id::Id, Option<INFO>)),
