@@ -1,3 +1,4 @@
+use iced_core::widget::operation::{Outcome, auto_focusable};
 use iced_core::{Event, Size, event::Status, mouse::Cursor, window::Id};
 use iced_core::{renderer::Style, widget::Operation};
 use iced_program::{Instance, Program};
@@ -6,6 +7,9 @@ use iced_runtime::{
     user_interface::{Cache, State},
 };
 use std::{collections::HashMap, mem};
+
+#[cfg(all(test, debug_assertions))]
+mod tests;
 
 pub(crate) trait UserInterfaceReclaim<Message, Theme, Renderer> {
     fn reclaim(&mut self, ui: IcedUserInterface<'static, Message, Theme, Renderer>);
@@ -73,6 +77,18 @@ where
     ) -> (State, Vec<Status>) {
         let mut ui = self.take();
         let res = ui.update(events, cursor, renderer, messages);
+        if res.0.is_auto_focus_pending() {
+            // Service this tree before another operation or rebuild can consume
+            // the newly mounted widget's one-shot autofocus marker.
+            let mut pending: Option<Box<dyn Operation>> =
+                Some(Box::new(auto_focusable::focus_auto::<()>()));
+            while let Some(mut operation) = pending.take() {
+                ui.operate(renderer, operation.as_mut());
+                if let Outcome::Chain(next) = operation.finish() {
+                    pending = Some(next);
+                }
+            }
+        }
         self.ui = Some(ui);
         res
     }
