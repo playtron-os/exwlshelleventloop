@@ -89,7 +89,7 @@ pub fn window_event(
                     text,
                     modified_key,
                     physical_key,
-                    repeat: false,
+                    repeat: event.repeat,
                 },
                 ElementState::Released => keyboard::Event::KeyReleased {
                     key,
@@ -245,6 +245,64 @@ pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
 
 fn is_private_use(c: char) -> bool {
     ('\u{E000}'..='\u{F8FF}').contains(&c)
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use layershellev::xkb_keyboard::Context;
+    use std::io::Write;
+
+    #[test]
+    fn keyboard_conversion_preserves_repeat_and_release() {
+        // A self-contained keymap avoids depending on the session's layout.
+        let keymap = concat!(
+            "xkb_keymap {",
+            "xkb_keycodes \"test\" { minimum = 8; maximum = 255; <DOWN> = 116; };",
+            "xkb_types \"test\" { type \"ONE_LEVEL\" { modifiers = None; map[None] = Level1; }; };",
+            "xkb_compatibility \"test\" {};",
+            "xkb_symbols \"test\" { key <DOWN> { type = \"ONE_LEVEL\", [ Down ] }; };",
+            "};\0",
+        );
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(keymap.as_bytes()).unwrap();
+        let mut context = Context::new().unwrap();
+        context.set_keymap_from_fd(file.into(), keymap.len());
+
+        for (state, repeat) in [
+            (ElementState::Pressed, false),
+            (ElementState::Pressed, true),
+            (ElementState::Released, false),
+        ] {
+            let event = LayerShellEvent::KeyBoardInput {
+                event: context
+                    .key_context()
+                    .unwrap()
+                    .process_key_event(116, state, repeat),
+                is_synthetic: false,
+            };
+            let converted = window_event(&event, 1.0, ModifiersState::empty());
+            match converted {
+                Some(IcedEvent::Keyboard(keyboard::Event::KeyPressed {
+                    key,
+                    repeat: actual,
+                    ..
+                })) => {
+                    assert_eq!(state, ElementState::Pressed);
+                    assert_eq!(key, keyboard::Key::Named(keyboard::key::Named::ArrowDown));
+                    assert_eq!(
+                        actual, repeat,
+                        "repeated presses must not become fresh presses"
+                    );
+                }
+                Some(IcedEvent::Keyboard(keyboard::Event::KeyReleased { key, .. })) => {
+                    assert_eq!(state, ElementState::Released);
+                    assert_eq!(key, keyboard::Key::Named(keyboard::key::Named::ArrowDown));
+                }
+                other => panic!("expected a keyboard event, got {other:?}"),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
