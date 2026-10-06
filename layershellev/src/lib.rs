@@ -4008,6 +4008,15 @@ impl<T> Dispatch<wl_keyboard::WlKeyboard, ()> for WindowState<T> {
             },
             wl_keyboard::Event::Enter { surface, .. } => {
                 log::info!("wl_keyboard::Enter event - keyboard focus entered surface");
+                // Creation may select a surface before its consumer registers it.
+                // A real keyboard Enter must still report focus after that selection.
+                if state.current_surface.as_ref() == Some(&surface)
+                    && let Some(id) = state.get_id_from_surface(&surface)
+                {
+                    state
+                        .message
+                        .push((Some(id), DispatchMessageInner::Focused(id)));
+                }
                 state.update_current_surface(Some(surface));
                 let keyboard_state = state.keyboard_state.as_mut().unwrap();
                 if let Some(token) = keyboard_state.repeat_token.take() {
@@ -8590,6 +8599,9 @@ fn set_cursor_shape<T: 'static>(
 
 #[cfg(test)]
 mod cursor_tests;
+
+#[cfg(test)]
+mod keyboard_focus_tests;
 
 #[cfg(test)]
 mod tests {
