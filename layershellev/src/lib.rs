@@ -7606,13 +7606,16 @@ impl<T: 'static> WindowState<T> {
                                 if !window_state.is_allscreens() && !recreate_lost_active {
                                     continue;
                                 }
+                                // Active surfaces must remain output-agnostic after
+                                // recovery so the compositor can move them on show.
+                                let bound_output = (!recreate_lost_active).then_some(output_display);
                                 let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
                                 let layer_shell = globals
                                     .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=4, ())
                                     .unwrap();
                                 let layer = layer_shell.get_layer_surface(
                                     &wl_surface,
-                                    Some(output_display),
+                                    bound_output,
                                     window_state.layer,
                                     window_state.namespace.clone(),
                                     &qh,
@@ -7647,8 +7650,11 @@ impl<T: 'static> WindowState<T> {
 
                                 wl_surface.commit();
 
-                                let zxdgoutput =
-                                    xdg_output_manager.get_xdg_output(output_display, &qh, ());
+                                let zxdgoutput = bound_output.map(|output| {
+                                    ZxdgOutputInfo::new(
+                                        xdg_output_manager.get_xdg_output(output, &qh, ()),
+                                    )
+                                });
                                 let mut fractional_scale = None;
                                 if let Some(ref fractional_scale_manager) = fractional_scale_manager
                                 {
@@ -7676,9 +7682,9 @@ impl<T: 'static> WindowState<T> {
                                         Shell::LayerShell(layer),
                                     )
                                     .viewport(viewport)
-                                    .zxdgoutput(Some(ZxdgOutputInfo::new(zxdgoutput)))
+                                    .zxdgoutput(zxdgoutput)
                                     .fractional_scale(fractional_scale)
-                                    .wl_output(Some(output_display.clone()))
+                                    .wl_output(bound_output.cloned())
                                     // Mark as created so remove_shell() tears the
                                     // panel down when the compositor sends `Closed`
                                     // (monitor disabled); otherwise re-enabling the
