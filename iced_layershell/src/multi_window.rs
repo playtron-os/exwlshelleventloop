@@ -49,6 +49,7 @@ use std::{
 };
 use window_manager::Window;
 
+mod event_queue;
 mod state;
 mod window_manager;
 
@@ -2015,30 +2016,14 @@ where
         );
 
         let mut rebuilds = Vec::new();
-        for (iced_id, window) in self.window_manager.iter_mut() {
-            let mut window_events = vec![];
-
-            self.iced_events.retain(|(window_id, event)| {
-                if *window_id == iced_id {
-                    window_events.push(event.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-
-            // Nothing to dispatch: `UserInterface::update` with an empty event
-            // slice never reaches a widget, so it can only re-walk the tree for an
-            // overlay and a cursor icon it has no new input to change. Pending
-            // messages are no reason to pay that on every window — they are
-            // applied below, and every window is refreshed then anyway.
-            //
-            // Bail before opening the span: `Span::finish` consumes it and there is
-            // no `Drop`, so a span opened above this would log a start with no end
-            // every time a window sits out a dispatch.
-            if window_events.is_empty() {
+        let mut deferred_events = Vec::new();
+        // Group only adjacent events: a release in a departing window must reach
+        // its widgets and subscriptions before a later press in another window.
+        for (iced_id, window_events) in event_queue::batches(mem::take(&mut self.iced_events)) {
+            let Some(window) = self.window_manager.get_mut(iced_id) else {
+                deferred_events.extend(window_events.into_iter().map(|event| (iced_id, event)));
                 continue;
-            }
+            };
 
             let interact_span = iced_debug::interact(iced_id);
             let logical_size = window.state.viewport().logical_size();
@@ -2070,7 +2055,7 @@ where
                 rebuilds.push(iced_id);
             }
 
-            for (event, status) in window_events.drain(..).zip(statuses) {
+            for (event, status) in window_events.into_iter().zip(statuses) {
                 self.runtime
                     .broadcast(iced_futures::subscription::Event::Interaction {
                         window: iced_id,
@@ -2079,6 +2064,11 @@ where
                     });
             }
             interact_span.finish();
+        }
+
+        if !deferred_events.is_empty() {
+            deferred_events.append(&mut self.iced_events);
+            self.iced_events = deferred_events;
         }
 
         if !self.messages.is_empty() {
