@@ -1278,12 +1278,15 @@ where
             output_y,
         } = event
         {
+            let window =
+                layer_shell_id.and_then(|lid| self.window_manager.get_alias(lid).map(|(id, _)| id));
             crate::event::send_output_info_event(crate::event::OutputInfoEvent {
                 width: width.max(0) as u32,
                 height: height.max(0) as u32,
                 name: output_name,
                 x: output_x,
                 y: output_y,
+                window,
             });
             return true;
         }
