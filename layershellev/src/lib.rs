@@ -5068,6 +5068,15 @@ impl<T> Dispatch<xdg_popup::XdgPopup, ()> for WindowState<T> {
 }
 
 impl<T> WindowState<T> {
+    /// `output`'s `xdg_output` name, once the compositor has sent it.
+    #[cfg(feature = "workspaces")]
+    pub(crate) fn output_name(&self, output: &wl_output::WlOutput) -> Option<String> {
+        self.output_watch
+            .iter()
+            .find(|(watched, info)| watched == output && !info.name.is_empty())
+            .map(|(_, info)| info.name.clone())
+    }
+
     /// Re-derive `output_layout` and `output_handles` from `output_watch`, and
     /// queue `OutputLayoutChanged` when the layout moved (or when `force`d).
     ///
@@ -5100,6 +5109,11 @@ impl<T> WindowState<T> {
             return;
         }
         self.output_layout = layout;
+        // A workspace group names its outputs, which may have just been named.
+        #[cfg(feature = "workspaces")]
+        if self.workspaces.manager.is_some() {
+            self.emit_workspaces();
+        }
         // One snapshot per drain: a newer layout replaces one still queued.
         self.message
             .retain(|(_, m)| !matches!(m, DispatchMessageInner::OutputLayoutChanged(_)));

@@ -799,6 +799,8 @@ pub struct OutputInfoEvent {
     /// The output's top-left in the compositor's global logical space.
     pub x: i32,
     pub y: i32,
+    /// The surface shown on that output, when the event came from one.
+    pub window: Option<iced_core::window::Id>,
 }
 
 /// The full logical layout of every output (global coords), delivered via
