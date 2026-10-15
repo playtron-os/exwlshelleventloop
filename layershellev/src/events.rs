@@ -281,6 +281,10 @@ pub struct NewXdgWindowSettings {
     /// xdg-shell app_id — used by compositors for the SSD titlebar icon, taskbar
     /// grouping, and `.desktop` matching. `None` leaves it unset.
     pub app_id: Option<String>,
+    /// The largest size the window asks for (`xdg_toplevel.set_max_size`), in logical px.
+    /// Some compositors size a new window from it: cosmic-comp shrinks one larger than
+    /// two thirds of the screen unless its maximum allows it.
+    pub max_size: Option<(u32, u32)>,
 }
 
 /// input panel settings to create a new input panel surface
