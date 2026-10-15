@@ -6921,7 +6921,7 @@ impl<T: 'static> WindowState<T> {
                 self.cosmic_toplevel_info = globals
                     .bind::<cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
                         &qh,
-                        2..=2,  // Version 2+ has get_cosmic_toplevel
+                        2..=3, // 2 has get_cosmic_toplevel, 3 ext_workspace_enter
                         foreign_toplevel::CosmicToplevelInfoData::default(),
                     )
                     .ok();
