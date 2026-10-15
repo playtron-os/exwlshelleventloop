@@ -48,6 +48,10 @@ pub struct ToplevelInfo {
     /// `None` means unknown; `Some("")` is the machine plane. Requires
     /// `cosmic-toplevel` and the Kora identity protocol on the compositor.
     pub workspace: Option<String>,
+    /// The desktops the window is on, by `ext_workspace_handle_v1` protocol id
+    /// (`WorkspaceInfo::id`). Empty unless COSMIC toplevel info v3 and the
+    /// `workspaces` feature are both available.
+    pub desktops: Vec<u32>,
     /// Window title
     pub title: String,
     /// Application ID (app_id)
@@ -91,6 +95,7 @@ pub enum ForeignToplevelEvent {
 pub(crate) struct ToplevelHandleData {
     pub identifier: Option<String>,
     pub workspace: Option<String>,
+    pub desktops: Vec<u32>,
     pub title: String,
     pub app_id: String,
     pub is_activated: bool,
@@ -107,6 +112,7 @@ impl ToplevelHandleData {
             id,
             identifier: self.identifier.clone(),
             workspace: self.workspace.clone(),
+            desktops: self.desktops.clone(),
             title: self.title.clone(),
             app_id: self.app_id.clone(),
             is_activated: self.is_activated,
@@ -634,11 +640,19 @@ where
             zcosmic_toplevel_handle_v1::Event::OutputLeave { .. } => {
                 // Could track which outputs the toplevel is on
             }
-            zcosmic_toplevel_handle_v1::Event::WorkspaceEnter { .. } => {
-                // Could track workspace membership
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceEnter { workspace } => {
+                let id = workspace.id().protocol_id();
+                let desktops = &mut state.get_toplevel_data(ext_id).desktops;
+                if !desktops.contains(&id) {
+                    desktops.push(id);
+                }
             }
-            zcosmic_toplevel_handle_v1::Event::WorkspaceLeave { .. } => {
-                // Could track workspace membership
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceLeave { workspace } => {
+                let id = workspace.id().protocol_id();
+                state
+                    .get_toplevel_data(ext_id)
+                    .desktops
+                    .retain(|d| *d != id);
             }
             zcosmic_toplevel_handle_v1::Event::Closed => {
                 // COSMIC handle closed, destroy it
