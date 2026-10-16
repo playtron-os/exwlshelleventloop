@@ -38,6 +38,8 @@ pub struct IcedXdgWindowSettings {
     /// xdg-shell app_id — used by compositors for the SSD titlebar icon, taskbar
     /// grouping, and `.desktop` matching. `None` leaves it unset.
     pub app_id: Option<String>,
+    /// The largest size the window asks for, in logical px; see `NewXdgWindowSettings`.
+    pub max_size: Option<(u32, u32)>,
 }
 
 impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
@@ -47,6 +49,7 @@ impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
             title: None,
             size: val.size,
             app_id: val.app_id,
+            max_size: val.max_size,
         }
     }
 }
