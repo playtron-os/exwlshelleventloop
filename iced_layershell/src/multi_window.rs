@@ -270,7 +270,11 @@ where
                                 need_continue = true;
                                 ContextState::Context(context)
                             }
-                            Poll::Pending => ContextState::Future(future),
+                            Poll::Pending => {
+                                // Nothing wakes the loop for it; come back to poll again.
+                                ev.wake_soon();
+                                ContextState::Future(future)
+                            }
                         }
                     }
                     other => other,
@@ -2385,6 +2389,8 @@ where
         if !deferred_events.is_empty() {
             deferred_events.append(&mut self.iced_events);
             self.iced_events = deferred_events;
+            // They wait for a window still joining; come back for them.
+            ev.wake_soon();
         }
 
         if !self.messages.is_empty() {
