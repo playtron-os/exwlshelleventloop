@@ -313,6 +313,8 @@ pub struct WindowStateUnit<T> {
     size: (u32, u32),
     buffer: Option<WlBuffer>,
     session_shell: ExtSessionLockSurfaceV1,
+    /// The output this surface locks.
+    output: WlOutput,
     fractional_scale: Option<WpFractionalScaleV1>,
     viewport: Option<WpViewport>,
     binding: Option<T>,
@@ -802,12 +804,34 @@ impl<T: 'static> Dispatch<wl_registry::WlRegistry, ()> for WindowState<T> {
                     .push((None, DispatchMessageInner::NewDisplay(output)));
             }
             wl_registry::Event::GlobalRemove { name } => {
+                let gone = state
+                    .outputs
+                    .iter()
+                    .find(|x| x.0 == name)
+                    .map(|x| x.1.clone());
                 state.outputs.retain(|x| x.0 != name);
-                let removed_states = state
-                    .units
-                    .extract_if(.., |unit| !unit.wl_surface.is_alive());
-                for deleled in removed_states.into_iter() {
-                    state.closed_ids.push(deleled.id);
+                // A lock surface outlives its output's global. Destroy it, or the output
+                // coming back gets a second one, which is a protocol error.
+                let removed_states = state.units.extract_if(.., |unit| {
+                    !unit.wl_surface.is_alive() || gone.as_ref() == Some(&unit.output)
+                });
+                for deleted in removed_states.into_iter() {
+                    if deleted.wl_surface.is_alive() {
+                        if let Some(viewport) = &deleted.viewport {
+                            viewport.destroy();
+                        }
+                        if let Some(fractional_scale) = &deleted.fractional_scale {
+                            fractional_scale.destroy();
+                        }
+                        deleted.session_shell.destroy();
+                        deleted.wl_surface.destroy();
+                    }
+                    state.closed_ids.push(deleted.id);
+                }
+                if let Some(output) = gone
+                    && output.version() >= 3
+                {
+                    output.release();
                 }
             }
 
@@ -1500,6 +1524,7 @@ impl<T: 'static> WindowState<T> {
                 size: (0, 0),
                 buffer: None,
                 session_shell: session_lock_surface,
+                output: display.clone(),
                 viewport,
                 fractional_scale,
                 binding: None,
@@ -1670,6 +1695,7 @@ impl<T: 'static> WindowState<T> {
                             size: (0, 0),
                             buffer: None,
                             session_shell: session_lock_surface,
+                            output: display.clone(),
                             viewport,
                             fractional_scale,
                             binding: None,
