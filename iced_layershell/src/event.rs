@@ -50,11 +50,17 @@ pub(crate) fn send_foreign_toplevel_event(event: ForeignToplevelEvent) {
 /// This function is only available when the `foreign-toplevel` feature is enabled.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced::Subscription;
+/// # use iced_layershell::reexport::ForeignToplevelEvent;
+/// # enum Message { ForeignToplevel(ForeignToplevelEvent) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::foreign_toplevel_subscription()
 ///         .map(Message::ForeignToplevel)
 /// }
+/// # }
 /// ```
 #[cfg(feature = "foreign-toplevel")]
 pub fn foreign_toplevel_subscription() -> iced_futures::Subscription<ForeignToplevelEvent> {
@@ -219,10 +225,16 @@ pub(crate) fn send_output_info_event(event: OutputInfoEvent) {
 /// display they appear on.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced::Subscription;
+/// # use iced_layershell::event::OutputInfoEvent;
+/// # enum Message { OutputInfo(OutputInfoEvent) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::output_info_subscription().map(Message::OutputInfo)
 /// }
+/// # }
 /// ```
 pub fn output_info_subscription() -> iced_futures::Subscription<OutputInfoEvent> {
     #[derive(Hash)]
@@ -351,10 +363,16 @@ pub(crate) fn send_usable_area_event(event: UsableAreaEvent) {
 /// consumers should fall back to the full output size.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced::Subscription;
+/// # use iced_layershell::event::UsableAreaEvent;
+/// # enum Message { UsableArea(UsableAreaEvent) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::usable_area_subscription().map(Message::UsableArea)
 /// }
+/// # }
 /// ```
 pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent> {
     #[derive(Hash)]
@@ -561,11 +579,17 @@ pub(crate) fn send_workspace_transition_event(event: WorkspaceTransition) {
 /// for `workspace_transition_manager_v1`; elsewhere it never fires.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced::Subscription;
+/// # use iced_layershell::event::WorkspaceTransition;
+/// # enum Message { WorkspaceTransition(WorkspaceTransition) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::workspace_transition_subscription()
 ///         .map(Message::WorkspaceTransition)
 /// }
+/// # }
 /// ```
 pub fn workspace_transition_subscription() -> iced_futures::Subscription<WorkspaceTransition> {
     #[derive(Hash)]
