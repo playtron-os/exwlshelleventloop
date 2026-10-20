@@ -415,7 +415,7 @@ impl PartialEq<XdgPopup> for Shell {
 impl PartialEq<XdgSurface> for Shell {
     fn eq(&self, other: &XdgSurface) -> bool {
         match self {
-            Self::PopUp((_, surface)) => surface == other,
+            Self::PopUp((_, surface)) | Self::XdgTopLevel((_, surface, _)) => surface == other,
             _ => false,
         }
     }
@@ -8957,6 +8957,9 @@ mod cursor_tests;
 
 #[cfg(test)]
 mod keyboard_focus_tests;
+
+#[cfg(test)]
+mod toplevel_configure_tests;
 
 #[cfg(test)]
 mod tests {
