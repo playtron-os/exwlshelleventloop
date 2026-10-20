@@ -2753,9 +2753,39 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
-    /// Build the drag-icon `wl_surface` from pre-multiplied ARGB pixels, keeping
-    /// its buffer/pool/file alive in `self.dnd_icon` for the drag's duration.
-    fn build_dnd_icon(&mut self, icon: DndIconPixels) -> Option<WlSurface>
+    /// Redraw the icon of the drag in flight, keeping where it sits under the
+    /// pointer. Does nothing when no drag with an icon is in flight.
+    pub fn update_drag_icon(&mut self, icon: DndIconPixels)
+    where
+        T: 'static,
+    {
+        let Some((file, pool, buffer)) = self.dnd_icon_buffer(&icon) else {
+            return;
+        };
+        let Some(res) = self.dnd_icon.as_mut() else {
+            buffer.destroy();
+            pool.destroy();
+            return;
+        };
+        if icon.scale > 1 {
+            res.surface.set_buffer_scale(icon.scale);
+        }
+        // A zero offset leaves the icon where it is: the compositor adds it to the current one.
+        res.surface.attach(Some(&buffer), 0, 0);
+        res.surface
+            .damage_buffer(0, 0, icon.width as i32, icon.height as i32);
+        res.surface.commit();
+        let old_buffer = std::mem::replace(&mut res.buffer, buffer);
+        let old_pool = std::mem::replace(&mut res.pool, pool);
+        res._file = file;
+        res.width = icon.width as i32;
+        res.height = icon.height as i32;
+        old_buffer.destroy();
+        old_pool.destroy();
+    }
+
+    /// An SHM buffer holding `icon`'s pre-multiplied ARGB pixels.
+    fn dnd_icon_buffer(&self, icon: &DndIconPixels) -> Option<(std::fs::File, WlShmPool, WlBuffer)>
     where
         T: 'static,
     {
@@ -2764,29 +2794,47 @@ impl<T: 'static> WindowState<T> {
         let DndIconPixels {
             width,
             height,
-            scale,
             argb,
+            ..
         } = icon;
+        let (width, height) = (*width, *height);
         let expected = (width * height * 4) as usize;
         if width == 0 || height == 0 || argb.len() < expected {
             return None;
         }
-        let qh = self.queue_handle.as_ref()?.clone();
-        let compositor = self.cached_compositor.clone()?;
-        let shm = self.cached_shm.clone()?;
+        let qh = self.queue_handle.as_ref()?;
+        let shm = self.cached_shm.as_ref()?;
 
         let mut file = tempfile::tempfile().ok()?;
         file.write_all(&argb[..expected]).ok()?;
-        let pool = shm.create_pool(file.as_fd(), expected as i32, &qh, ());
+        let pool = shm.create_pool(file.as_fd(), expected as i32, qh, ());
         let buffer = pool.create_buffer(
             0,
             width as i32,
             height as i32,
             (width * 4) as i32,
             wayland_client::protocol::wl_shm::Format::Argb8888,
-            &qh,
+            qh,
             (),
         );
+        Some((file, pool, buffer))
+    }
+
+    /// Build the drag-icon `wl_surface` from pre-multiplied ARGB pixels, keeping
+    /// its buffer/pool/file alive in `self.dnd_icon` for the drag's duration.
+    fn build_dnd_icon(&mut self, icon: DndIconPixels) -> Option<WlSurface>
+    where
+        T: 'static,
+    {
+        let (file, pool, buffer) = self.dnd_icon_buffer(&icon)?;
+        let DndIconPixels {
+            width,
+            height,
+            scale,
+            ..
+        } = icon;
+        let qh = self.queue_handle.as_ref()?.clone();
+        let compositor = self.cached_compositor.clone()?;
         let surface = compositor.create_surface(&qh, ());
         if scale > 1 {
             surface.set_buffer_scale(scale);

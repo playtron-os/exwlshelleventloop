@@ -2198,6 +2198,14 @@ where
             LayershellCustomAction::ForgetLastOutput => {
                 ev.forget_last_output();
             }
+            LayershellCustomAction::DragIconChange(icon) => {
+                ev.update_drag_icon(layershellev::DndIconPixels {
+                    width: icon.width,
+                    height: icon.height,
+                    scale: icon.scale,
+                    argb: icon.pixels,
+                });
+            }
             LayershellCustomAction::HideWindow => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let surface = layer_shell_window.get_wlsurface().clone();
