@@ -219,10 +219,16 @@ pub(crate) fn send_output_info_event(event: OutputInfoEvent) {
 /// display they appear on.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced_futures::Subscription;
+/// # use iced_layershell::event::OutputInfoEvent;
+/// # enum Message { OutputInfo(OutputInfoEvent) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::output_info_subscription().map(Message::OutputInfo)
 /// }
+/// # }
 /// ```
 pub fn output_info_subscription() -> iced_futures::Subscription<OutputInfoEvent> {
     #[derive(Hash)]
@@ -351,10 +357,16 @@ pub(crate) fn send_usable_area_event(event: UsableAreaEvent) {
 /// consumers should fall back to the full output size.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced_futures::Subscription;
+/// # use iced_layershell::event::UsableAreaEvent;
+/// # enum Message { UsableArea(UsableAreaEvent) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::usable_area_subscription().map(Message::UsableArea)
 /// }
+/// # }
 /// ```
 pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent> {
     #[derive(Hash)]
@@ -561,11 +573,17 @@ pub(crate) fn send_workspace_transition_event(event: WorkspaceTransition) {
 /// for `workspace_transition_manager_v1`; elsewhere it never fires.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced_futures::Subscription;
+/// # use iced_layershell::event::WorkspaceTransition;
+/// # enum Message { WorkspaceTransition(WorkspaceTransition) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::workspace_transition_subscription()
 ///         .map(Message::WorkspaceTransition)
 /// }
+/// # }
 /// ```
 pub fn workspace_transition_subscription() -> iced_futures::Subscription<WorkspaceTransition> {
     #[derive(Hash)]

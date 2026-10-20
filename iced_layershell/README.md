@@ -171,11 +171,17 @@ fn style(_counter: &Counter, theme: &iced::Theme) -> iced::theme::Style {
 
 # Input Regions
 You can define which regions of your window receive input events and which parts are transparent to these events by using WlRegion in SetInputRegion message call.
-```rust, ignore
+```rust, no_run
+# use iced_layershell::{actions::ActionCallback, to_layer_message};
+# #[to_layer_message]
+# #[derive(Debug, Clone)]
+# enum Message {}
+# let _ =
 Message::SetInputRegion(ActionCallback::new(|region| {
     region.add(0, 0, 400, 400);
     region.subtract(0, 0, 400, 60);
 }))
+# ;
 ```
 view the full example [here](https://github.com/waycrate/exwlshelleventloop/tree/master/iced_layershell/examples/input_regions.rs)
 
