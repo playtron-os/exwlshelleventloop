@@ -2982,6 +2982,13 @@ impl<T: 'static> WindowState<T> {
         self.presentable_units().any(|unit| unit.should_refresh())
     }
 
+    /// Whether the next pass must run now. A surface or exit asked for by a user
+    /// event waits in `return_data`, and only a pass makes it.
+    fn pass_due_now(&self, woke_by_events: bool) -> bool {
+        let queued = !self.message.is_empty() && self.retry_timer.is_none();
+        woke_by_events || queued || !self.return_data.is_empty() || self.has_due_frame()
+    }
+
     /// The earliest timed redraw still to come.
     fn next_timed_refresh(&self) -> Option<Instant> {
         let now = Instant::now();
@@ -8750,8 +8757,7 @@ impl<T: 'static> WindowState<T> {
             }
             window_state.retry_requested = false;
 
-            let queued = !window_state.message.is_empty() && window_state.retry_timer.is_none();
-            if (woke_by_events || queued || window_state.has_due_frame())
+            if window_state.pass_due_now(woke_by_events)
                 && let Some(tick) = &window_state.tick_sender
             {
                 tick.ping();
@@ -8960,6 +8966,9 @@ mod keyboard_focus_tests;
 
 #[cfg(test)]
 mod toplevel_configure_tests;
+
+#[cfg(test)]
+mod requested_surface_tests;
 
 #[cfg(test)]
 mod tests {
