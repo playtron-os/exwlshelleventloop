@@ -215,6 +215,16 @@ pub fn ime_purpose(purpose: input_method::Purpose) -> layershellev::ImePurpose {
     }
 }
 
+pub fn ime_surrounding_text(
+    surrounding: &input_method::Surrounding,
+) -> layershellev::ImeSurroundingText {
+    layershellev::ImeSurroundingText {
+        text: surrounding.text.clone(),
+        cursor: surrounding.cursor,
+        anchor: surrounding.anchor,
+    }
+}
+
 pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
     use layershellev::reexport::wp_cursor_shape_device_v1::{Shape, ShapeName};
     use mouse::Interaction;

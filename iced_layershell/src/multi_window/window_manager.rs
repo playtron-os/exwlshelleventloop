@@ -29,6 +29,8 @@ where
     pub mouse_interaction: mouse::Interaction,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(iced_core::Rectangle, input_method::Purpose)>,
+    /// The text around the caret, as last given to the input method.
+    pub ime_surrounding: Option<input_method::Surrounding>,
 }
 
 pub struct WindowManager<P: Program, C: Compositor>
@@ -113,6 +115,7 @@ where
                 mouse_interaction: mouse::Interaction::Idle,
                 preedit: None,
                 ime_state: None,
+                ime_surrounding: None,
             },
         );
         self.entries
@@ -169,6 +172,7 @@ where
                 purpose,
                 preedit,
                 cursor,
+                surrounding,
             } => {
                 let mut flags = ImeState::empty();
                 if self.ime_state.is_none() {
@@ -178,6 +182,12 @@ where
                     flags.insert(ImeState::Update);
                 }
                 self.update_ime(cursor, purpose);
+
+                let surrounding = surrounding.filter(|_| purpose != input_method::Purpose::Secure);
+                if self.ime_surrounding != surrounding {
+                    flags.insert(ImeState::Surrounding);
+                    self.ime_surrounding = surrounding;
+                }
 
                 if let Some(preedit) = preedit {
                     if preedit.content.is_empty() {
@@ -232,6 +242,7 @@ where
             self.ime_state = None;
         }
 
+        self.ime_surrounding = None;
         self.preedit = None;
         flags
     }

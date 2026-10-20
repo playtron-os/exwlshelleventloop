@@ -132,6 +132,9 @@ pub mod foreign_toplevel;
 pub mod kora_image_capture_size;
 pub mod layer_auto_hide;
 pub mod layer_edge_resize;
+mod surrounding_text;
+pub use surrounding_text::ImeSurroundingText;
+use surrounding_text::{SurroundingChange, SurroundingText};
 pub mod layer_size_transition;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
@@ -1391,6 +1394,10 @@ pub struct WindowState<T> {
 
     ime_purpose: ImePurpose,
     ime_allowed: bool,
+    /// The focused field's surrounding text, as last sent to the text inputs.
+    ime_surrounding: Option<SurroundingText>,
+    /// Whether an input method commit is what last changed the focused field.
+    ime_committed: bool,
 
     /// Ping sender for waking the event loop immediately after a channel
     /// message is processed.  Populated once in `running_with_proxy_option`.
@@ -1736,14 +1743,25 @@ impl<T> WindowState<T> {
 
     pub fn set_ime_allowed(&mut self, ime_allowed: bool) {
         self.ime_allowed = ime_allowed;
+        if !ime_allowed {
+            self.ime_surrounding = None;
+        }
         for text_input in &self.text_inputs {
             if ime_allowed {
-                text_input.enable();
-                text_input.set_content_type_by_purpose(self.ime_purpose);
+                self.enable_text_input(text_input);
             } else {
                 text_input.disable();
             }
             text_input.commit();
+        }
+    }
+
+    /// Enable `text_input` with the IME state held here; the caller commits.
+    fn enable_text_input(&self, text_input: &ZwpTextInputV3) {
+        text_input.enable();
+        text_input.set_content_type_by_purpose(self.ime_purpose);
+        if let Some(surrounding) = &self.ime_surrounding {
+            text_input.set_surrounding(surrounding);
         }
     }
 
@@ -1774,10 +1792,51 @@ impl<T> WindowState<T> {
 
     pub fn set_ime_purpose(&mut self, purpose: ImePurpose) {
         self.ime_purpose = purpose;
+        // A password field's text is never shared, nor the text of the field before it.
+        let forget = purpose == ImePurpose::Password
+            && self.ime_surrounding.take().is_some()
+            && self.ime_allowed;
         self.text_input.iter().for_each(|text_input| {
-            text_input.set_content_type_by_purpose(purpose);
+            if forget {
+                self.enable_text_input(text_input);
+            } else {
+                text_input.set_content_type_by_purpose(purpose);
+            }
             text_input.commit();
         });
+    }
+
+    /// Tell input methods the text around the caret of the focused field, so what they
+    /// insert, such as dictated words, can be spaced and cased to fit. `None` for a field
+    /// that keeps its text to itself: the text input is then enabled again, which makes
+    /// input methods forget it. Nothing is sent while the purpose is
+    /// [`ImePurpose::Password`], and text past the protocol's 4000-byte limit is cut to a
+    /// window around the caret and selection.
+    pub fn set_ime_surrounding_text(&mut self, surrounding: Option<&ImeSurroundingText>) {
+        let next = SurroundingText::for_purpose(self.ime_purpose, surrounding);
+        let change = SurroundingChange::between(
+            self.ime_surrounding.as_ref(),
+            next.as_ref(),
+            self.ime_committed,
+        );
+        if change == SurroundingChange::Unchanged {
+            return;
+        }
+        self.ime_surrounding = next;
+        self.ime_committed = false;
+        if !self.ime_allowed {
+            return;
+        }
+        for text_input in &self.text_inputs {
+            match (change, &self.ime_surrounding) {
+                (SurroundingChange::Send(cause), Some(surrounding)) => {
+                    text_input.set_surrounding(surrounding);
+                    text_input.set_text_change_cause(cause);
+                }
+                _ => self.enable_text_input(text_input),
+            }
+            text_input.commit();
+        }
     }
 
     #[inline]
@@ -1792,10 +1851,6 @@ impl<T> WindowState<T> {
         if let Some(position) = self.text_inputs.iter().position(|t| t == text_input) {
             self.text_inputs.remove(position);
         }
-    }
-
-    fn ime_purpose(&self) -> ImePurpose {
-        self.ime_purpose
     }
 }
 
@@ -3110,6 +3165,8 @@ impl<T: 'static> WindowState<T> {
 
 pub trait ZwpTextInputV3Ext {
     fn set_content_type_by_purpose(&self, purpose: ImePurpose);
+
+    fn set_surrounding(&self, surrounding: &SurroundingText);
 }
 
 impl ZwpTextInputV3Ext for ZwpTextInputV3 {
@@ -3120,6 +3177,14 @@ impl ZwpTextInputV3Ext for ZwpTextInputV3 {
             ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
         };
         self.set_content_type(hint, purpose);
+    }
+
+    fn set_surrounding(&self, surrounding: &SurroundingText) {
+        self.set_surrounding_text(
+            surrounding.text.clone(),
+            surrounding.cursor as i32,
+            surrounding.anchor as i32,
+        );
     }
 }
 
@@ -3784,6 +3849,8 @@ impl<T> Default for WindowState<T> {
             text_inputs: Vec::new(),
             ime_purpose: ImePurpose::Normal,
             ime_allowed: false,
+            ime_surrounding: None,
+            ime_committed: false,
 
             xdg_decoration_manager: None,
 
@@ -5319,8 +5386,7 @@ impl<T> Dispatch<zwp_text_input_v3::ZwpTextInputV3, TextInputData> for WindowSta
                 text_input_data.surface = Some(surface);
 
                 if state.ime_allowed() {
-                    text_input.enable();
-                    text_input.set_content_type_by_purpose(state.ime_purpose());
+                    state.enable_text_input(text_input);
                     text_input.commit();
                     state
                         .message
@@ -5366,6 +5432,7 @@ impl<T> Dispatch<zwp_text_input_v3::ZwpTextInputV3, TextInputData> for WindowSta
 
                 // Send `Commit`.
                 if let Some(text) = text_input_data.pending_commit.take() {
+                    state.ime_committed = true;
                     state
                         .message
                         .push((Some(id), DispatchMessageInner::Ime(Ime::Commit(text))));
