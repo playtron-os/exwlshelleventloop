@@ -2515,9 +2515,7 @@ where
                             }
                         }
                         iced_core::InputMethod::Enabled {
-                            purpose,
-                            preedit: _,
-                            cursor,
+                            purpose, cursor, ..
                         } => {
                             if ime_flags.contains(ImeState::Allowed) {
                                 ev.set_ime_allowed(true);
@@ -2532,6 +2530,16 @@ where
                                         height: cursor.height,
                                     },
                                     window.id,
+                                );
+                            }
+
+                            if ime_flags.contains(ImeState::Surrounding) {
+                                ev.set_ime_surrounding_text(
+                                    window
+                                        .ime_surrounding
+                                        .as_ref()
+                                        .map(conversion::ime_surrounding_text)
+                                        .as_ref(),
                                 );
                             }
                         }

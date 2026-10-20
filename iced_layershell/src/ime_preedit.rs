@@ -20,6 +20,7 @@ pub enum ImeState {
     Disabled = 1,
     Allowed = 2,
     Update = 4,
+    Surrounding = 8,
 }
 
 impl<Renderer> Preedit<Renderer>
