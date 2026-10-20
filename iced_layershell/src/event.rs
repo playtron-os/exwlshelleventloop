@@ -50,11 +50,17 @@ pub(crate) fn send_foreign_toplevel_event(event: ForeignToplevelEvent) {
 /// This function is only available when the `foreign-toplevel` feature is enabled.
 ///
 /// # Example
-/// ```ignore
+/// ```no_run
+/// # use iced::Subscription;
+/// # use iced_layershell::reexport::ForeignToplevelEvent;
+/// # enum Message { ForeignToplevel(ForeignToplevelEvent) }
+/// # struct App;
+/// # impl App {
 /// fn subscription(&self) -> Subscription<Message> {
 ///     iced_layershell::event::foreign_toplevel_subscription()
 ///         .map(Message::ForeignToplevel)
 /// }
+/// # }
 /// ```
 #[cfg(feature = "foreign-toplevel")]
 pub fn foreign_toplevel_subscription() -> iced_futures::Subscription<ForeignToplevelEvent> {
@@ -220,7 +226,7 @@ pub(crate) fn send_output_info_event(event: OutputInfoEvent) {
 ///
 /// # Example
 /// ```no_run
-/// # use iced_futures::Subscription;
+/// # use iced::Subscription;
 /// # use iced_layershell::event::OutputInfoEvent;
 /// # enum Message { OutputInfo(OutputInfoEvent) }
 /// # struct App;
@@ -358,7 +364,7 @@ pub(crate) fn send_usable_area_event(event: UsableAreaEvent) {
 ///
 /// # Example
 /// ```no_run
-/// # use iced_futures::Subscription;
+/// # use iced::Subscription;
 /// # use iced_layershell::event::UsableAreaEvent;
 /// # enum Message { UsableArea(UsableAreaEvent) }
 /// # struct App;
@@ -574,7 +580,7 @@ pub(crate) fn send_workspace_transition_event(event: WorkspaceTransition) {
 ///
 /// # Example
 /// ```no_run
-/// # use iced_futures::Subscription;
+/// # use iced::Subscription;
 /// # use iced_layershell::event::WorkspaceTransition;
 /// # enum Message { WorkspaceTransition(WorkspaceTransition) }
 /// # struct App;

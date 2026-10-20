@@ -172,7 +172,11 @@ where
                             need_continue = true;
                             ContextState::Context(context)
                         }
-                        Poll::Pending => ContextState::Future(future),
+                        Poll::Pending => {
+                            // Nothing wakes the loop for it; come back to poll again.
+                            ev.wake_soon();
+                            ContextState::Future(future)
+                        }
                     }
                 }
                 ContextState::Context(context) => {
@@ -672,6 +676,10 @@ where
                     });
             }
             interact_span.finish();
+        }
+        if !self.iced_events.is_empty() {
+            // Events left for a window still joining; come back for them.
+            ev.wake_soon();
         }
 
         if !self.messages.is_empty() {

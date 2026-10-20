@@ -313,6 +313,8 @@ pub struct WindowStateUnit<T> {
     size: (u32, u32),
     buffer: Option<WlBuffer>,
     session_shell: ExtSessionLockSurfaceV1,
+    /// The output this surface locks.
+    output: WlOutput,
     fractional_scale: Option<WpFractionalScaleV1>,
     viewport: Option<WpViewport>,
     binding: Option<T>,
@@ -507,6 +509,12 @@ pub struct WindowState<T> {
     repeat_delay: Option<KeyboardTokenState>,
     closed_ids: Vec<id::Id>,
 
+    /// Another pass was asked for after [`RETRY_DELAY`] (see [`WindowState::wake_soon`]).
+    retry_requested: bool,
+    retry_timer: Option<RegistrationToken>,
+    /// The one-shot timer for the earliest timed redraw.
+    refresh_timer: Option<(Instant, RegistrationToken)>,
+
     // keyboard
     use_display_handle: bool,
 
@@ -630,6 +638,9 @@ impl<T> Default for WindowState<T> {
             to_remove_tokens: Vec::new(),
             repeat_delay: None,
             closed_ids: Vec::new(),
+            retry_requested: false,
+            retry_timer: None,
+            refresh_timer: None,
 
             use_display_handle: false,
 
@@ -734,7 +745,43 @@ impl<T: 'static> WindowState<T> {
             unit.request_refresh(request);
         }
     }
+
+    /// Run another pass shortly, for work that can't finish yet (a compositor still
+    /// being made). The loop only wakes for events, so without this nothing would
+    /// come back to it.
+    pub fn wake_soon(&mut self) {
+        self.retry_requested = true;
+    }
+
+    /// The surfaces a pass would present.
+    fn presentable_units(&self) -> impl Iterator<Item = &WindowStateUnit<T>> {
+        self.units.iter().filter(|unit| {
+            unit.size.0 != 0
+                && unit.size.1 != 0
+                && unit.present_available_state == PresentAvailableState::Available
+        })
+    }
+
+    /// Whether a surface can present now.
+    fn has_due_frame(&self) -> bool {
+        self.presentable_units().any(|unit| unit.should_refresh())
+    }
+
+    /// The earliest timed redraw still to come.
+    fn next_timed_refresh(&self) -> Option<Instant> {
+        let now = Instant::now();
+        self.presentable_units()
+            .filter_map(|unit| match unit.refresh {
+                RefreshRequest::At(at) if at > now => Some(at),
+                _ => None,
+            })
+            .min()
+    }
 }
+
+/// How long a pass that can't finish yet waits before trying again.
+const RETRY_DELAY: Duration = Duration::from_millis(50);
+
 impl<T: 'static> Dispatch<wl_registry::WlRegistry, ()> for WindowState<T> {
     fn event(
         state: &mut Self,
@@ -757,12 +804,34 @@ impl<T: 'static> Dispatch<wl_registry::WlRegistry, ()> for WindowState<T> {
                     .push((None, DispatchMessageInner::NewDisplay(output)));
             }
             wl_registry::Event::GlobalRemove { name } => {
+                let gone = state
+                    .outputs
+                    .iter()
+                    .find(|x| x.0 == name)
+                    .map(|x| x.1.clone());
                 state.outputs.retain(|x| x.0 != name);
-                let removed_states = state
-                    .units
-                    .extract_if(.., |unit| !unit.wl_surface.is_alive());
-                for deleled in removed_states.into_iter() {
-                    state.closed_ids.push(deleled.id);
+                // A lock surface outlives its output's global. Destroy it, or the output
+                // coming back gets a second one, which is a protocol error.
+                let removed_states = state.units.extract_if(.., |unit| {
+                    !unit.wl_surface.is_alive() || gone.as_ref() == Some(&unit.output)
+                });
+                for deleted in removed_states.into_iter() {
+                    if deleted.wl_surface.is_alive() {
+                        if let Some(viewport) = &deleted.viewport {
+                            viewport.destroy();
+                        }
+                        if let Some(fractional_scale) = &deleted.fractional_scale {
+                            fractional_scale.destroy();
+                        }
+                        deleted.session_shell.destroy();
+                        deleted.wl_surface.destroy();
+                    }
+                    state.closed_ids.push(deleted.id);
+                }
+                if let Some(output) = gone
+                    && output.version() >= 3
+                {
+                    output.release();
                 }
             }
 
@@ -1455,6 +1524,7 @@ impl<T: 'static> WindowState<T> {
                 size: (0, 0),
                 buffer: None,
                 session_shell: session_lock_surface,
+                output: display.clone(),
                 viewport,
                 fractional_scale,
                 binding: None,
@@ -1625,6 +1695,7 @@ impl<T: 'static> WindowState<T> {
                             size: (0, 0),
                             buffer: None,
                             session_shell: session_lock_surface,
+                            output: display.clone(),
                             viewport,
                             fractional_scale,
                             binding: None,
@@ -1744,81 +1815,121 @@ impl<T: 'static> WindowState<T> {
 
             false
         };
+        /// Wake the next pass: now for queued messages or a due frame; later for a
+        /// retry or a timed redraw. Nothing else wakes the loop.
+        fn schedule_next_pass<T: 'static, F: 'static>(
+            window_state: &mut WindowState<T>,
+            looph: &LoopHandle<'static, EventWrapper<WindowState<T>, F>>,
+            waker: &calloop::LoopSignal,
+        ) {
+            if window_state.retry_requested && window_state.retry_timer.is_none() {
+                window_state.retry_timer = looph
+                    .insert_source(Timer::from_duration(RETRY_DELAY), |_, _, wrapper| {
+                        wrapper.raw.retry_timer = None;
+                        TimeoutAction::Drop
+                    })
+                    .ok();
+            }
+            window_state.retry_requested = false;
+
+            if !window_state.message.is_empty() || window_state.has_due_frame() {
+                waker.wakeup();
+            }
+
+            let next = window_state.next_timed_refresh();
+            if window_state.refresh_timer.map(|(at, _)| at) == next {
+                return;
+            }
+            if let Some((_, token)) = window_state.refresh_timer.take() {
+                looph.remove(token);
+            }
+            let Some(at) = next else {
+                return;
+            };
+            window_state.refresh_timer = looph
+                .insert_source(Timer::from_deadline(at), |_, _, wrapper| {
+                    wrapper.raw.refresh_timer = None;
+                    TimeoutAction::Drop
+                })
+                .ok()
+                .map(|token| (at, token));
+        }
+
+        // The first pass runs at once, for the lock surfaces asked for while
+        // setting up; after that the loop sleeps until something happens.
+        let waker = event_loop.get_signal();
+        waker.wakeup();
         event_loop
-            .run(
-                std::time::Duration::from_millis(20),
-                &mut state,
-                move |r_window_state| {
-                    let window_state = &mut r_window_state.raw;
-                    let _ = event_queue_origin.roundtrip(window_state);
-                    let event_handler = &mut r_window_state.fun;
-                    if process_window_state(window_state, event_handler) {
-                        return;
-                    }
-                    let looph = &r_window_state.loop_handle;
-                    for token in window_state.to_remove_tokens.iter() {
-                        looph.remove(*token);
-                    }
-                    window_state.to_remove_tokens.clear();
+            .run(None, &mut state, move |r_window_state| {
+                let window_state = &mut r_window_state.raw;
+                // The Wayland source reads the socket when it has data; this
+                // dispatches what it read for the queue every object lives on.
+                let _ = event_queue_origin.dispatch_pending(window_state);
+                let event_handler = &mut r_window_state.fun;
+                if process_window_state(window_state, event_handler) {
+                    return;
+                }
+                let looph = &r_window_state.loop_handle;
+                for token in window_state.to_remove_tokens.iter() {
+                    looph.remove(*token);
+                }
+                window_state.to_remove_tokens.clear();
+                schedule_next_pass(window_state, looph, &waker);
 
-                    if let Some(KeyboardTokenState {
-                        key,
-                        delay,
-                        surface_id,
-                        pressed_state,
-                    }) = window_state.repeat_delay.take()
-                    {
-                        let timer = Timer::from_duration(delay);
-                        let keyboard_state = window_state.keyboard_state.as_mut().unwrap();
-                        keyboard_state.repeat_token = looph
-                            .insert_source(timer, move |_, _, r_window_state| {
-                                let state = &mut r_window_state.raw;
-                                let event_handler = &mut r_window_state.fun;
-                                let keyboard_state = match state.keyboard_state.as_mut() {
-                                    Some(keyboard_state) => keyboard_state,
-                                    None => return TimeoutAction::Drop,
-                                };
-                                let repeat_keycode = match keyboard_state.current_repeat {
-                                    Some(repeat_keycode) => repeat_keycode,
-                                    None => return TimeoutAction::Drop,
-                                };
-                                // NOTE: not the same key
-                                if repeat_keycode != key {
-                                    return TimeoutAction::Drop;
-                                }
-                                if let Some(mut key_context) =
-                                    keyboard_state.xkb_context.key_context()
-                                {
-                                    let event = key_context.process_key_event(
-                                        repeat_keycode,
-                                        pressed_state,
-                                        false,
-                                    );
-                                    let event = DispatchMessageInner::KeyboardInput {
-                                        event,
-                                        is_synthetic: false,
-                                    };
-                                    state.message.push((surface_id, event));
-                                }
-                                let repeat_info = keyboard_state.repeat_info;
-
-                                let _ = keyboard_state;
-                                state.handle_event(
-                                    &mut *event_handler,
-                                    SessionLockEvent::NormalDispatch,
-                                    None,
+                if let Some(KeyboardTokenState {
+                    key,
+                    delay,
+                    surface_id,
+                    pressed_state,
+                }) = window_state.repeat_delay.take()
+                {
+                    let timer = Timer::from_duration(delay);
+                    let keyboard_state = window_state.keyboard_state.as_mut().unwrap();
+                    keyboard_state.repeat_token = looph
+                        .insert_source(timer, move |_, _, r_window_state| {
+                            let state = &mut r_window_state.raw;
+                            let event_handler = &mut r_window_state.fun;
+                            let keyboard_state = match state.keyboard_state.as_mut() {
+                                Some(keyboard_state) => keyboard_state,
+                                None => return TimeoutAction::Drop,
+                            };
+                            let repeat_keycode = match keyboard_state.current_repeat {
+                                Some(repeat_keycode) => repeat_keycode,
+                                None => return TimeoutAction::Drop,
+                            };
+                            // NOTE: not the same key
+                            if repeat_keycode != key {
+                                return TimeoutAction::Drop;
+                            }
+                            if let Some(mut key_context) = keyboard_state.xkb_context.key_context()
+                            {
+                                let event = key_context.process_key_event(
+                                    repeat_keycode,
+                                    pressed_state,
+                                    false,
                                 );
-                                match repeat_info {
-                                    RepeatInfo::Repeat { gap, .. } => {
-                                        TimeoutAction::ToDuration(gap)
-                                    }
-                                    RepeatInfo::Disable => TimeoutAction::Drop,
-                                }
-                            })
-                            .ok();
-                    }
-                },
-            )
+                                let event = DispatchMessageInner::KeyboardInput {
+                                    event,
+                                    is_synthetic: false,
+                                };
+                                state.message.push((surface_id, event));
+                            }
+                            let repeat_info = keyboard_state.repeat_info;
+
+                            let _ = keyboard_state;
+                            state.handle_event(
+                                &mut *event_handler,
+                                SessionLockEvent::NormalDispatch,
+                                None,
+                            );
+                            match repeat_info {
+                                RepeatInfo::Repeat { gap, .. } => TimeoutAction::ToDuration(gap),
+                                RepeatInfo::Disable => TimeoutAction::Drop,
+                            }
+                        })
+                        .ok();
+                }
+            })
             .expect("Error during event loop!");
         Ok(())
     }

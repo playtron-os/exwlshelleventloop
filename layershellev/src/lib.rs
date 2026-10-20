@@ -132,6 +132,9 @@ pub mod foreign_toplevel;
 pub mod kora_image_capture_size;
 pub mod layer_auto_hide;
 pub mod layer_edge_resize;
+mod surrounding_text;
+pub use surrounding_text::ImeSurroundingText;
+use surrounding_text::{SurroundingChange, SurroundingText};
 pub mod layer_size_transition;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
@@ -487,6 +490,8 @@ impl<T> WindowStateUnitBuilder<T> {
                 qh,
                 display,
                 wl_surface,
+                // An input panel surface gets no configure.
+                configured: matches!(shell, Shell::InputPanel(_)),
                 shell,
                 size: (0, 0),
                 buffer: Default::default(),
@@ -586,6 +591,9 @@ pub struct WindowStateUnit<T> {
     /// so the iced window_manager registers them (even when all
     /// surfaces are hidden and the normal refresh cycle is skipped).
     initial_refresh_sent: bool,
+    /// Whether the compositor has sent the first configure. A buffer committed before it is a
+    /// protocol error, so nothing presents until then.
+    configured: bool,
 
     scale: u32,
     request_flag: WindowStateUnitRequestFlag,
@@ -859,6 +867,9 @@ impl<T> WindowStateUnit<T> {
     }
 
     pub fn take_present_slot(&mut self) -> bool {
+        if !self.configured {
+            return false;
+        }
         if !self.should_refresh() {
             return false;
         }
@@ -1391,11 +1402,26 @@ pub struct WindowState<T> {
 
     ime_purpose: ImePurpose,
     ime_allowed: bool,
+    /// The focused field's surrounding text, as last sent to the text inputs.
+    ime_surrounding: Option<SurroundingText>,
+    /// Whether an input method commit is what last changed the focused field.
+    ime_committed: bool,
 
     /// Ping sender for waking the event loop immediately after a channel
     /// message is processed.  Populated once in `running_with_proxy_option`.
     ping_sender: Option<calloop::ping::Ping>,
+
+    /// Wakes the pass that handles queued messages and presents due frames.
+    tick_sender: Option<calloop::ping::Ping>,
+    /// Another pass was asked for after [`RETRY_DELAY`] (see [`WindowState::wake_soon`]).
+    retry_requested: bool,
+    retry_timer: Option<RegistrationToken>,
+    /// The one-shot timer for the earliest timed redraw.
+    refresh_timer: Option<(Instant, RegistrationToken)>,
 }
+
+/// How long a pass that can't finish yet waits before trying again.
+const RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Register a surface to receive the device's special key.
 fn register_special_action_for_surface<T: 'static>(
@@ -1736,14 +1762,25 @@ impl<T> WindowState<T> {
 
     pub fn set_ime_allowed(&mut self, ime_allowed: bool) {
         self.ime_allowed = ime_allowed;
+        if !ime_allowed {
+            self.ime_surrounding = None;
+        }
         for text_input in &self.text_inputs {
             if ime_allowed {
-                text_input.enable();
-                text_input.set_content_type_by_purpose(self.ime_purpose);
+                self.enable_text_input(text_input);
             } else {
                 text_input.disable();
             }
             text_input.commit();
+        }
+    }
+
+    /// Enable `text_input` with the IME state held here; the caller commits.
+    fn enable_text_input(&self, text_input: &ZwpTextInputV3) {
+        text_input.enable();
+        text_input.set_content_type_by_purpose(self.ime_purpose);
+        if let Some(surrounding) = &self.ime_surrounding {
+            text_input.set_surrounding(surrounding);
         }
     }
 
@@ -1774,10 +1811,51 @@ impl<T> WindowState<T> {
 
     pub fn set_ime_purpose(&mut self, purpose: ImePurpose) {
         self.ime_purpose = purpose;
+        // A password field's text is never shared, nor the text of the field before it.
+        let forget = purpose == ImePurpose::Password
+            && self.ime_surrounding.take().is_some()
+            && self.ime_allowed;
         self.text_input.iter().for_each(|text_input| {
-            text_input.set_content_type_by_purpose(purpose);
+            if forget {
+                self.enable_text_input(text_input);
+            } else {
+                text_input.set_content_type_by_purpose(purpose);
+            }
             text_input.commit();
         });
+    }
+
+    /// Tell input methods the text around the caret of the focused field, so what they
+    /// insert, such as dictated words, can be spaced and cased to fit. `None` for a field
+    /// that keeps its text to itself: the text input is then enabled again, which makes
+    /// input methods forget it. Nothing is sent while the purpose is
+    /// [`ImePurpose::Password`], and text past the protocol's 4000-byte limit is cut to a
+    /// window around the caret and selection.
+    pub fn set_ime_surrounding_text(&mut self, surrounding: Option<&ImeSurroundingText>) {
+        let next = SurroundingText::for_purpose(self.ime_purpose, surrounding);
+        let change = SurroundingChange::between(
+            self.ime_surrounding.as_ref(),
+            next.as_ref(),
+            self.ime_committed,
+        );
+        if change == SurroundingChange::Unchanged {
+            return;
+        }
+        self.ime_surrounding = next;
+        self.ime_committed = false;
+        if !self.ime_allowed {
+            return;
+        }
+        for text_input in &self.text_inputs {
+            match (change, &self.ime_surrounding) {
+                (SurroundingChange::Send(cause), Some(surrounding)) => {
+                    text_input.set_surrounding(surrounding);
+                    text_input.set_text_change_cause(cause);
+                }
+                _ => self.enable_text_input(text_input),
+            }
+            text_input.commit();
+        }
     }
 
     #[inline]
@@ -1792,10 +1870,6 @@ impl<T> WindowState<T> {
         if let Some(position) = self.text_inputs.iter().position(|t| t == text_input) {
             self.text_inputs.remove(position);
         }
-    }
-
-    fn ime_purpose(&self) -> ImePurpose {
-        self.ime_purpose
     }
 }
 
@@ -2883,6 +2957,42 @@ impl<T: 'static> WindowState<T> {
             })
     }
 
+    /// Run another pass shortly, for work that can't finish yet (a surface still
+    /// joining, a compositor still being made). The loop only wakes for events,
+    /// so without this nothing would come back to it.
+    pub fn wake_soon(&mut self) {
+        self.retry_requested = true;
+    }
+
+    /// The surfaces a pass would present, as its refresh loop picks them.
+    fn presentable_units(&self) -> impl Iterator<Item = &WindowStateUnit<T>> {
+        let all_hidden = self.all_surfaces_hidden();
+        self.units.iter().filter(move |unit| {
+            let (width, height) = unit.size;
+            width != 0
+                && height != 0
+                && unit.configured
+                && !(all_hidden && unit.initial_refresh_sent)
+                && unit.present_available_state == PresentAvailableState::Available
+        })
+    }
+
+    /// Whether a surface can present now.
+    fn has_due_frame(&self) -> bool {
+        self.presentable_units().any(|unit| unit.should_refresh())
+    }
+
+    /// The earliest timed redraw still to come.
+    fn next_timed_refresh(&self) -> Option<Instant> {
+        let now = Instant::now();
+        self.presentable_units()
+            .filter_map(|unit| match unit.refresh_request() {
+                RefreshRequest::At(at) if at > now => Some(at),
+                _ => None,
+            })
+            .min()
+    }
+
     /// Put a layer surface in a Kora workspace: the compositor draws,
     /// hit-tests and captures it only while that workspace is on screen, as
     /// it does the workspace's own windows (`kora_workspace_realm_v1` v2).
@@ -3158,6 +3268,8 @@ impl<T: 'static> WindowState<T> {
 
 pub trait ZwpTextInputV3Ext {
     fn set_content_type_by_purpose(&self, purpose: ImePurpose);
+
+    fn set_surrounding(&self, surrounding: &SurroundingText);
 }
 
 impl ZwpTextInputV3Ext for ZwpTextInputV3 {
@@ -3168,6 +3280,14 @@ impl ZwpTextInputV3Ext for ZwpTextInputV3 {
             ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
         };
         self.set_content_type(hint, purpose);
+    }
+
+    fn set_surrounding(&self, surrounding: &SurroundingText) {
+        self.set_surrounding_text(
+            surrounding.text.clone(),
+            surrounding.cursor as i32,
+            surrounding.anchor as i32,
+        );
     }
 }
 
@@ -3832,10 +3952,16 @@ impl<T> Default for WindowState<T> {
             text_inputs: Vec::new(),
             ime_purpose: ImePurpose::Normal,
             ime_allowed: false,
+            ime_surrounding: None,
+            ime_committed: false,
 
             xdg_decoration_manager: None,
 
             ping_sender: None,
+            tick_sender: None,
+            retry_requested: false,
+            retry_timer: None,
+            refresh_timer: None,
         }
     }
 }
@@ -4999,7 +5125,10 @@ impl<T> Dispatch<xdg_surface::XdgSurface, ()> for WindowState<T> {
                 .units
                 .iter_mut()
                 .filter(|unit| unit.shell == *surface)
-                .for_each(|unit| unit.request_refresh(RefreshRequest::NextFrame));
+                .for_each(|unit| {
+                    unit.configured = true;
+                    unit.request_refresh(RefreshRequest::NextFrame);
+                });
         }
     }
 }
@@ -5026,6 +5155,7 @@ impl<T> Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for WindowState<
                     return;
                 };
                 state.units[unit_index].size = (width, height);
+                state.units[unit_index].configured = true;
 
                 state.units[unit_index].request_refresh(RefreshRequest::NextFrame);
             }
@@ -5367,8 +5497,7 @@ impl<T> Dispatch<zwp_text_input_v3::ZwpTextInputV3, TextInputData> for WindowSta
                 text_input_data.surface = Some(surface);
 
                 if state.ime_allowed() {
-                    text_input.enable();
-                    text_input.set_content_type_by_purpose(state.ime_purpose());
+                    state.enable_text_input(text_input);
                     text_input.commit();
                     state
                         .message
@@ -5414,6 +5543,7 @@ impl<T> Dispatch<zwp_text_input_v3::ZwpTextInputV3, TextInputData> for WindowSta
 
                 // Send `Commit`.
                 if let Some(text) = text_input_data.pending_commit.take() {
+                    state.ime_committed = true;
                     state
                         .message
                         .push((Some(id), DispatchMessageInner::Ime(Ime::Commit(text))));
@@ -7506,11 +7636,16 @@ impl<T: 'static> WindowState<T> {
         // Create a ping source for immediate wake-up after channel messages.
         // When a message arrives via the channel, the channel callback pings
         // so the event loop re-dispatches immediately and the ping callback
-        // runs NormalDispatch + refresh — giving zero-latency response for
-        // animations while letting the idle timer stay at 50ms for battery.
+        // runs NormalDispatch + refresh.
         let (ping_sender, ping_source) =
             calloop::ping::make_ping().expect("Failed to create ping source");
         state.raw.ping_sender = Some(ping_sender);
+        // The pass that handles queued messages and presents due frames. Nothing
+        // runs it on a timer: the loop's idle callback pings it after Wayland
+        // events, queued messages or a frame coming due.
+        let (tick_sender, tick_source) =
+            calloop::ping::make_ping().expect("Failed to create tick source");
+        state.raw.tick_sender = Some(tick_sender);
 
         // Clone resources needed by the ping callback for the SHM buffer path.
         // For GPU-rendering apps (use_display_handle=true) these are unused.
@@ -7613,8 +7748,8 @@ impl<T: 'static> WindowState<T> {
         event_loop
             .handle()
             .insert_source(
-                Timer::from_duration(Duration::from_millis(50)),
-                move |_, _, r_window_state| {
+                tick_source,
+                move |(), _, r_window_state| {
                     let window_state = &mut r_window_state.raw;
                     let event_handler = &mut r_window_state.fun;
 
@@ -7784,7 +7919,7 @@ impl<T: 'static> WindowState<T> {
                             match data {
                                 ReturnData::RequestExit => {
                                     signal.stop();
-                                    return TimeoutAction::Drop;
+                                    return;
                                 }
                                 ReturnData::RequestSetCursorShape((shape_name, pointer)) => {
                                     let Some(serial) = window_state.enter_serial else {
@@ -8557,7 +8692,7 @@ impl<T: 'static> WindowState<T> {
                             if unit.buffer.is_none() && !window_state.use_display_handle {
                                 let Ok(mut file) = tempfile::tempfile() else {
                                     log::error!("Cannot create new file from tempfile");
-                                    return TimeoutAction::Drop;
+                                    return;
                                 };
                                 let ReturnData::WlBuffer(buffer) = event_handler(
                                     LayerShellEvent::RequestBuffer(&mut file, &shm, &qh, width, height),
@@ -8585,101 +8720,151 @@ impl<T: 'static> WindowState<T> {
                         }
                     }
 
-                    // Timer interval is kept at a battery-friendly 50ms.
-                    // Immediate wake-ups are handled by the Ping source:
-                    //  - Channel messages (iced subscriptions) → ping
-                    //  - Compositor frame callbacks (wl_callback::done) → ping
-                    // The timer is only a safety net for edge cases.
-                    TimeoutAction::ToDuration(std::time::Duration::from_millis(50))
+                    // Messages queued during this pass (a surface to recreate)
+                    // are for the next one; wait a little so a recreate that
+                    // keeps failing can't spin.
+                    if !window_state.message.is_empty() {
+                        window_state.wake_soon();
+                    }
                 },
             )
             .expect("Cannot insert_source");
+
+        /// Wake the next pass: now for Wayland events, queued messages or a due
+        /// frame; later for a retry or a timed redraw. Nothing else wakes the loop.
+        fn schedule_next_pass<T: 'static, F: 'static>(
+            window_state: &mut WindowState<T>,
+            looph: &LoopHandle<'static, EventWrapper<WindowState<T>, F>>,
+            woke_by_events: bool,
+        ) {
+            if window_state.retry_requested && window_state.retry_timer.is_none() {
+                window_state.retry_timer = looph
+                    .insert_source(Timer::from_duration(RETRY_DELAY), |_, _, wrapper| {
+                        wrapper.raw.retry_timer = None;
+                        if let Some(tick) = &wrapper.raw.tick_sender {
+                            tick.ping();
+                        }
+                        TimeoutAction::Drop
+                    })
+                    .ok();
+            }
+            window_state.retry_requested = false;
+
+            let queued = !window_state.message.is_empty() && window_state.retry_timer.is_none();
+            if (woke_by_events || queued || window_state.has_due_frame())
+                && let Some(tick) = &window_state.tick_sender
+            {
+                tick.ping();
+            }
+
+            let next = window_state.next_timed_refresh();
+            if window_state.refresh_timer.map(|(at, _)| at) == next {
+                return;
+            }
+            if let Some((_, token)) = window_state.refresh_timer.take() {
+                looph.remove(token);
+            }
+            let Some(at) = next else {
+                return;
+            };
+            window_state.refresh_timer = looph
+                .insert_source(Timer::from_deadline(at), |_, _, wrapper| {
+                    wrapper.raw.refresh_timer = None;
+                    if let Some(tick) = &wrapper.raw.tick_sender {
+                        tick.ping();
+                    }
+                    TimeoutAction::Drop
+                })
+                .ok()
+                .map(|token| (at, token));
+        }
+
+        // Events read while setting up, before the loop first sleeps.
+        let _ = event_queue_origin.dispatch_pending(&mut state.raw);
+        if let Some(tick) = &state.raw.tick_sender {
+            tick.ping();
+        }
         event_loop
-            .run(
-                std::time::Duration::from_millis(20),
-                &mut state,
-                move |r_window_state| {
-                    let window_state = &mut r_window_state.raw;
-                    let _ = event_queue_origin.roundtrip(window_state);
-                    let looph = &r_window_state.loop_handle;
-                    for token in window_state.to_remove_tokens.iter() {
-                        looph.remove(*token);
-                    }
-                    window_state.to_remove_tokens.clear();
-                    if let Some(VirtualKeyRelease { delay, time, key }) =
-                        window_state.to_be_released_key
-                    {
-                        looph
-                            .insert_source(
-                                Timer::from_duration(delay),
-                                move |_, _, r_window_state| {
-                                    let state = &mut r_window_state.raw;
-                                    let ky = state.get_virtual_keyboard().unwrap();
+            .run(None, &mut state, move |r_window_state| {
+                let window_state = &mut r_window_state.raw;
+                // The Wayland source reads the socket when it has data; this
+                // dispatches what it read for the queue every object lives on.
+                let dispatched = event_queue_origin
+                    .dispatch_pending(window_state)
+                    .unwrap_or(0);
+                let looph = &r_window_state.loop_handle;
+                schedule_next_pass(window_state, looph, dispatched > 0);
+                for token in window_state.to_remove_tokens.iter() {
+                    looph.remove(*token);
+                }
+                window_state.to_remove_tokens.clear();
+                if let Some(VirtualKeyRelease { delay, time, key }) =
+                    window_state.to_be_released_key
+                {
+                    looph
+                        .insert_source(Timer::from_duration(delay), move |_, _, r_window_state| {
+                            let state = &mut r_window_state.raw;
+                            let ky = state.get_virtual_keyboard().unwrap();
 
-                                    ky.key(time, key, KeyState::Released.into());
-                                    TimeoutAction::Drop
-                                },
-                            )
-                            .ok();
-                    }
-                    if let Some(KeyboardTokenState {
-                        key,
-                        delay,
-                        surface_id,
-                        pressed_state,
-                    }) = window_state.repeat_delay.take()
-                    {
-                        let timer = Timer::from_duration(delay);
-                        let keyboard_state = window_state.keyboard_state.as_mut().unwrap();
-                        keyboard_state.repeat_token = looph
-                            .insert_source(timer, move |_, _, r_window_state| {
-                                let state = &mut r_window_state.raw;
-                                let event_handler = &mut r_window_state.fun;
-                                let keyboard_state = match state.keyboard_state.as_mut() {
-                                    Some(keyboard_state) => keyboard_state,
-                                    None => return TimeoutAction::Drop,
-                                };
-                                let repeat_keycode = match keyboard_state.current_repeat {
-                                    Some(repeat_keycode) => repeat_keycode,
-                                    None => return TimeoutAction::Drop,
-                                };
-                                // NOTE: not the same key
-                                if repeat_keycode != key {
-                                    return TimeoutAction::Drop;
-                                }
-                                if let Some(mut key_context) =
-                                    keyboard_state.xkb_context.key_context()
-                                {
-                                    let event = key_context.process_key_event(
-                                        repeat_keycode,
-                                        pressed_state,
-                                        false,
-                                    );
-                                    let event = DispatchMessageInner::KeyboardInput {
-                                        event,
-                                        is_synthetic: false,
-                                    };
-                                    state.message.push((surface_id, event));
-                                }
-                                let repeat_info = keyboard_state.repeat_info;
-
-                                let _ = keyboard_state;
-                                state.handle_event(
-                                    &mut *event_handler,
-                                    LayerShellEvent::NormalDispatch,
-                                    None,
+                            ky.key(time, key, KeyState::Released.into());
+                            TimeoutAction::Drop
+                        })
+                        .ok();
+                }
+                if let Some(KeyboardTokenState {
+                    key,
+                    delay,
+                    surface_id,
+                    pressed_state,
+                }) = window_state.repeat_delay.take()
+                {
+                    let timer = Timer::from_duration(delay);
+                    let keyboard_state = window_state.keyboard_state.as_mut().unwrap();
+                    keyboard_state.repeat_token = looph
+                        .insert_source(timer, move |_, _, r_window_state| {
+                            let state = &mut r_window_state.raw;
+                            let event_handler = &mut r_window_state.fun;
+                            let keyboard_state = match state.keyboard_state.as_mut() {
+                                Some(keyboard_state) => keyboard_state,
+                                None => return TimeoutAction::Drop,
+                            };
+                            let repeat_keycode = match keyboard_state.current_repeat {
+                                Some(repeat_keycode) => repeat_keycode,
+                                None => return TimeoutAction::Drop,
+                            };
+                            // NOTE: not the same key
+                            if repeat_keycode != key {
+                                return TimeoutAction::Drop;
+                            }
+                            if let Some(mut key_context) = keyboard_state.xkb_context.key_context()
+                            {
+                                let event = key_context.process_key_event(
+                                    repeat_keycode,
+                                    pressed_state,
+                                    false,
                                 );
-                                match repeat_info {
-                                    RepeatInfo::Repeat { gap, .. } => {
-                                        TimeoutAction::ToDuration(gap)
-                                    }
-                                    RepeatInfo::Disable => TimeoutAction::Drop,
-                                }
-                            })
-                            .ok();
-                    }
-                },
-            )
+                                let event = DispatchMessageInner::KeyboardInput {
+                                    event,
+                                    is_synthetic: false,
+                                };
+                                state.message.push((surface_id, event));
+                            }
+                            let repeat_info = keyboard_state.repeat_info;
+
+                            let _ = keyboard_state;
+                            state.handle_event(
+                                &mut *event_handler,
+                                LayerShellEvent::NormalDispatch,
+                                None,
+                            );
+                            match repeat_info {
+                                RepeatInfo::Repeat { gap, .. } => TimeoutAction::ToDuration(gap),
+                                RepeatInfo::Disable => TimeoutAction::Drop,
+                            }
+                        })
+                        .ok();
+                }
+            })
             .expect("Error during event loop!");
         Ok(())
     }

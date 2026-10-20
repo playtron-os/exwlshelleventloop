@@ -270,7 +270,11 @@ where
                                 need_continue = true;
                                 ContextState::Context(context)
                             }
-                            Poll::Pending => ContextState::Future(future),
+                            Poll::Pending => {
+                                // Nothing wakes the loop for it; come back to poll again.
+                                ev.wake_soon();
+                                ContextState::Future(future)
+                            }
                         }
                     }
                     other => other,
@@ -2393,6 +2397,8 @@ where
         if !deferred_events.is_empty() {
             deferred_events.append(&mut self.iced_events);
             self.iced_events = deferred_events;
+            // They wait for a window still joining; come back for them.
+            ev.wake_soon();
         }
 
         if !self.messages.is_empty() {
@@ -2523,9 +2529,7 @@ where
                             }
                         }
                         iced_core::InputMethod::Enabled {
-                            purpose,
-                            preedit: _,
-                            cursor,
+                            purpose, cursor, ..
                         } => {
                             if ime_flags.contains(ImeState::Allowed) {
                                 ev.set_ime_allowed(true);
@@ -2540,6 +2544,16 @@ where
                                         height: cursor.height,
                                     },
                                     window.id,
+                                );
+                            }
+
+                            if ime_flags.contains(ImeState::Surrounding) {
+                                ev.set_ime_surrounding_text(
+                                    window
+                                        .ime_surrounding
+                                        .as_ref()
+                                        .map(conversion::ime_surrounding_text)
+                                        .as_ref(),
                                 );
                             }
                         }
