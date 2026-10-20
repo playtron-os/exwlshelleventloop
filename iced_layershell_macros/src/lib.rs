@@ -83,6 +83,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 KeyboardShortcutsInhibitChange{id: iced_layershell::reexport::IcedId, enabled: bool},
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
+                /// Redraw the icon of the drag in flight (see `LayershellCustomAction::DragIconChange`).
+                DragIconChange(iced_layershell::actions::DragIcon),
                 /// Hide the window without destroying it (uses layer_surface_visibility protocol)
                 HideWindow(iced_layershell::reexport::IcedId),
                 /// Show the window if it was previously hidden
@@ -170,6 +172,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::KeyboardShortcutsInhibitChange { id, enabled } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::KeyboardShortcutsInhibitChange(enabled))),
                             Self::RemoveWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
+                            Self::DragIconChange(icon) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DragIconChange(icon))),
                             Self::HideWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::HideWindow)),
                             Self::ShowWindow(id) => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ShowWindow)),
                             Self::AssignRealm{ id, workspace } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::AssignRealm { workspace })),
@@ -230,6 +233,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 AssignRealm{workspace: String},
                 /// Forget which output the surface was last on so it follows the cursor
                 ForgetLastOutput,
+                /// Redraw the icon of the drag in flight (see `LayershellCustomAction::DragIconChange`).
+                DragIconChange(iced_layershell::actions::DragIcon),
                 /// Arm click-outside dismiss: once armed, the compositor delivers an
                 /// `iced::Event::Dismiss` when the user clicks/taps outside this
                 /// surface's dismiss group.
@@ -284,6 +289,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::ShowWindow => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ShowWindow)),
                             Self::AssignRealm{ workspace } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::AssignRealm { workspace })),
                             Self::ForgetLastOutput => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ForgetLastOutput)),
+                            Self::DragIconChange(icon) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DragIconChange(icon))),
                             Self::ArmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ArmDismiss)),
                             Self::DisarmDismiss => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::DisarmDismiss)),
                             Self::SetDismissIgnoreLayerClicks => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetDismissIgnoreLayerClicks)),

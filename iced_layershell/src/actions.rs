@@ -100,6 +100,26 @@ impl ActionCallback {
     }
 }
 
+/// A new picture for the drag in flight: pre-multiplied ARGB (`Argb8888`,
+/// little-endian) pixels at a buffer scale, as `Shell::start_dnd_with_icon` takes.
+#[derive(Clone)]
+pub struct DragIcon {
+    pub width: u32,
+    pub height: u32,
+    pub scale: i32,
+    pub pixels: Vec<u8>,
+}
+
+impl std::fmt::Debug for DragIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DragIcon")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("scale", &self.scale)
+            .finish_non_exhaustive()
+    }
+}
+
 /// NOTE: DO NOT USE THIS ENUM DIERCTLY
 /// use macro to_layer_message
 #[derive(Debug, Clone)]
@@ -255,6 +275,9 @@ pub enum LayershellCustomAction {
     /// is same with WindowAction::Close(id)
     RemoveWindow,
     ForgetLastOutput,
+    /// Redraw the icon of the drag this app has in flight; it keeps its place
+    /// under the pointer. Ignored when no drag with an icon is in flight.
+    DragIconChange(DragIcon),
     /// Hide the window without destroying it (uses layer_surface_visibility protocol)
     /// The surface is not rendered and doesn't receive input, but maintains its configuration.
     HideWindow,
