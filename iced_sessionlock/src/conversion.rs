@@ -169,8 +169,10 @@ pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
         Interaction::Copy => Shape::Copy.name().to_owned(),
         Interaction::Help => Shape::Help.name().to_owned(),
         Interaction::ZoomOut => Shape::ZoomOut.name().to_owned(),
-        Interaction::ResizingDiagonallyUp => Shape::NwseResize.name().to_owned(),
+        Interaction::ResizingDiagonallyUp => Shape::NeswResize.name().to_owned(),
         Interaction::ResizingDiagonallyDown => Shape::NwseResize.name().to_owned(),
+        Interaction::ResizingColumn => Shape::ColResize.name().to_owned(),
+        Interaction::ResizingRow => Shape::RowResize.name().to_owned(),
         _ => Shape::Default.name().to_owned(),
     }
 }

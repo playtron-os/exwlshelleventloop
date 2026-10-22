@@ -237,8 +237,10 @@ pub(crate) fn mouse_interaction(interaction: mouse::Interaction) -> String {
         Interaction::Copy => Shape::Copy.name().to_owned(),
         Interaction::Help => Shape::Help.name().to_owned(),
         Interaction::ZoomOut => Shape::ZoomOut.name().to_owned(),
-        Interaction::ResizingDiagonallyUp => Shape::NwseResize.name().to_owned(),
+        Interaction::ResizingDiagonallyUp => Shape::NeswResize.name().to_owned(),
         Interaction::ResizingDiagonallyDown => Shape::NwseResize.name().to_owned(),
+        Interaction::ResizingColumn => Shape::ColResize.name().to_owned(),
+        Interaction::ResizingRow => Shape::RowResize.name().to_owned(),
         _ => Shape::Default.name().to_owned(),
     }
 }
@@ -315,5 +317,28 @@ mod cursor_tests {
         assert_eq!(mouse_interaction(Interaction::Hidden), "none");
         assert_eq!(mouse_interaction(Interaction::Idle), "default");
         assert_eq!(mouse_interaction(Interaction::Pointer), "pointer");
+    }
+
+    #[test]
+    fn each_resize_points_its_own_way() {
+        // iced: "up" runs bottom-left to top-right, "down" top-left to bottom-right.
+        assert_eq!(
+            mouse_interaction(Interaction::ResizingDiagonallyUp),
+            "nesw_resize"
+        );
+        assert_eq!(
+            mouse_interaction(Interaction::ResizingDiagonallyDown),
+            "nwse_resize"
+        );
+        assert_eq!(
+            mouse_interaction(Interaction::ResizingVertically),
+            "ns_resize"
+        );
+        assert_eq!(
+            mouse_interaction(Interaction::ResizingHorizontally),
+            "ew_resize"
+        );
+        assert_eq!(mouse_interaction(Interaction::ResizingColumn), "col_resize");
+        assert_eq!(mouse_interaction(Interaction::ResizingRow), "row_resize");
     }
 }

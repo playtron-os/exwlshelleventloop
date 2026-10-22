@@ -66,6 +66,7 @@ impl ShapeName for Shape {
             Self::Grabbing => "grabbing",
             Self::EResize => "e_resize",
             Self::NResize => "n_resize",
+            Self::NeResize => "ne_resize",
             Self::EwResize => "ew_resize",
             Self::NwResize => "nw_resize",
             Self::SResize => "s_resize",
@@ -74,13 +75,61 @@ impl ShapeName for Shape {
             Self::WResize => "w_resize",
             Self::NsResize => "ns_resize",
             Self::NeswResize => "nesw_resize",
-            Self::NwseResize => "nesw_resize",
+            Self::NwseResize => "nwse_resize",
             Self::ColResize => "col_resize",
             Self::RowResize => "row_resize",
             Self::AllScroll => "all_scroll",
             Self::ZoomIn => "zoom_in",
             Self::ZoomOut => "zoom_out",
             _ => "default",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_shape_name_reads_back_as_the_same_shape() {
+        let shapes = [
+            Shape::Default,
+            Shape::ContextMenu,
+            Shape::Help,
+            Shape::Pointer,
+            Shape::Progress,
+            Shape::Wait,
+            Shape::Cell,
+            Shape::Crosshair,
+            Shape::Text,
+            Shape::VerticalText,
+            Shape::Alias,
+            Shape::Copy,
+            Shape::Move,
+            Shape::NoDrop,
+            Shape::NotAllowed,
+            Shape::Grab,
+            Shape::Grabbing,
+            Shape::EResize,
+            Shape::NResize,
+            Shape::NeResize,
+            Shape::NwResize,
+            Shape::SResize,
+            Shape::SeResize,
+            Shape::SwResize,
+            Shape::WResize,
+            Shape::EwResize,
+            Shape::NsResize,
+            Shape::NeswResize,
+            Shape::NwseResize,
+            Shape::ColResize,
+            Shape::RowResize,
+            Shape::AllScroll,
+            Shape::ZoomIn,
+            Shape::ZoomOut,
+        ];
+        for shape in shapes {
+            assert_eq!(str_to_shape(shape.name()), Some(shape), "{}", shape.name());
         }
     }
 }
