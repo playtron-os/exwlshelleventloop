@@ -102,9 +102,18 @@ pub fn encode_region_geometry(geometry: &[(f32, f32, f32, f32)]) -> Vec<u8> {
         .collect()
 }
 
+/// Encode per-rect opacity for `set_region_opacity` (blur v6): one native-endian
+/// `u32` per rect, 0 to 1 as fixed-point with 8 fractional bits, in region order.
+pub fn encode_region_opacity(opacity: &[f32]) -> Vec<u8> {
+    opacity
+        .iter()
+        .flat_map(|o| ((o.clamp(0.0, 1.0) * 256.0).round() as u32).to_ne_bytes())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{encode_region_geometry, encode_region_radii};
+    use super::{encode_region_geometry, encode_region_opacity, encode_region_radii};
 
     #[test]
     fn geometry_round_trips_through_the_fixed_point_encoding() {
@@ -138,6 +147,18 @@ mod tests {
     #[test]
     fn no_geometry_encodes_to_an_empty_array() {
         assert!(encode_region_geometry(&[]).is_empty());
+    }
+
+    #[test]
+    fn opacity_encodes_one_clamped_fixed_point_u32_per_rect() {
+        let bytes = encode_region_opacity(&[0.0, 0.5, 1.0, 1.7, -0.2]);
+        let got: Vec<u32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&b| u32::from_ne_bytes(b))
+            .collect();
+        assert_eq!(got, vec![0, 128, 256, 256, 0]);
     }
 
     #[test]

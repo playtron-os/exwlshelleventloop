@@ -239,10 +239,16 @@ pub enum LayershellCustomAction {
     /// whole-pixel bound; this is what the backdrop is drawn to, so it stops
     /// being rounded away from the shape drawn over it. Empty leaves every
     /// rectangle on its whole-pixel bound. Requires blur protocol v5.
+    ///
+    /// `opacity` is how strongly each rectangle's backdrop is drawn, 0 to 1, in
+    /// the same order, so content fading out inside the surface takes its
+    /// backdrop with it. Empty, or past its end, draws a rectangle at full
+    /// strength. Requires blur protocol v6.
     SetBlurRegion {
         callback: ActionCallback,
         radii: Vec<[u32; 4]>,
         geometry: Vec<(f32, f32, f32, f32)>,
+        opacity: Vec<f32>,
     },
     /// Mark the zones of this surface to be told the backdrop luminance behind,
     /// so content drawn straight onto the wallpaper can stay legible against it.

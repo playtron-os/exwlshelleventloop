@@ -1911,6 +1911,7 @@ where
                 callback,
                 radii,
                 geometry,
+                opacity,
             } => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 let set_region = callback.0;
@@ -1934,9 +1935,14 @@ where
                 );
 
                 let surface = layer_shell_window.get_wlsurface().clone();
-                ev.set_blur_region_for_surface(&surface, region, &radii, &geometry, |r| {
-                    set_region(r)
-                });
+                ev.set_blur_region_for_surface(
+                    &surface,
+                    region,
+                    &radii,
+                    &geometry,
+                    &opacity,
+                    |r| set_region(r),
+                );
                 tracing::debug!(?iced_id, "SetBlurRegion: done");
             }
             LayershellCustomAction::SetAdaptiveForegroundRegion { callback } => {
