@@ -58,6 +58,10 @@ type MultiRuntime<E, Message> = Runtime<E, IcedProxy<Action<Message>>, Action<Me
 /// A popup fitted to its content as it was shown: its id, largest size and size.
 type FittedPopup = (IcedId, (u32, u32), (u32, u32));
 
+/// How long a hidden popup lives on while the compositor fades it out: longer than
+/// cosmic-comp's 100 ms fade of a hidden layer popup.
+const POPUP_FADE_OUT: Duration = Duration::from_millis(150);
+
 // a dispatch loop, another is listen loop
 /// Runs `program` on layer-shell surfaces. `automation` is the app's settings
 /// for its automation door (used when the `automation` feature builds one in
@@ -2148,6 +2152,7 @@ where
                     tooltip_offset: None,
                     tooltip_anchor: None,
                     tooltip_delay_ms: None,
+                    capture_excluded: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -2194,6 +2199,7 @@ where
                     tooltip_offset: None,
                     tooltip_anchor: None,
                     tooltip_delay_ms: None,
+                    capture_excluded: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -3165,6 +3171,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     tooltip_offset: settings.tooltip_offset,
                                     tooltip_anchor: settings.tooltip_anchor,
                                     tooltip_delay_ms: settings.tooltip_delay_ms,
+                                    capture_excluded: popup::excluded_from_capture(popup_iced_id),
                                 };
 
                                 let layer_shell_id = layershellev::id::Id::unique();
@@ -3184,6 +3191,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 )));
                             }
                             popup::Action::Hide { id } => {
+                                popup::forget_capture_exclusion(id);
                                 // Map from iced ID to layershell ID and request close.
                                 // Check window_manager first (popup fully initialized),
                                 // then pending_popups (Show processed but WindowOpened
@@ -3196,7 +3204,10 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     );
                                     pending_popups.remove(&id);
                                     popup_pending_shadow.remove(&id);
-                                    ev.request_close(window.id);
+                                    // Faded out where the compositor can, then closed.
+                                    if !ev.fade_out_popup(window.id, POPUP_FADE_OUT) {
+                                        ev.request_close(window.id);
+                                    }
                                 } else if let Some(layer_id) = pending_popups.remove(&id) {
                                     tracing::debug!(
                                         iced_id = ?id,

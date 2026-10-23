@@ -135,6 +135,7 @@ pub mod layer_edge_resize;
 mod surrounding_text;
 pub use surrounding_text::ImeSurroundingText;
 use surrounding_text::{SurroundingChange, SurroundingText};
+pub mod capture_exclusion;
 pub mod layer_size_transition;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
@@ -503,6 +504,7 @@ impl<T> WindowStateUnitBuilder<T> {
                 becreated: Default::default(),
                 initial_refresh_sent: false,
                 popup_placement: None,
+                fade_close: None,
                 // Unknown why it is 120
                 scale: 120,
                 request_flag: Default::default(),
@@ -581,6 +583,10 @@ struct WindowStateUnitRequestFlag {
 /// popup's size only through a positioner.
 #[derive(Debug, Clone)]
 struct PopupPlacement {
+    /// The surface it opens from.
+    parent: id::Id,
+    /// Whether it holds the keyboard and pointer grab.
+    grab: bool,
     wm_base: XdgWmBase,
     anchor_rect: (i32, i32, i32, i32),
     anchor: u32,
@@ -656,6 +662,9 @@ pub struct WindowStateUnit<T> {
     configured: bool,
     /// A popup's placement, for resizing it.
     popup_placement: Option<PopupPlacement>,
+    /// When a popup fading out on hide is destroyed. Nothing is drawn meanwhile: the
+    /// compositor fades the last frame committed.
+    fade_close: Option<Instant>,
 
     scale: u32,
     request_flag: WindowStateUnitRequestFlag,
@@ -954,7 +963,7 @@ impl<T> WindowStateUnit<T> {
     }
 
     pub fn take_present_slot(&mut self) -> bool {
-        if !self.configured {
+        if !self.configured || self.fade_close.is_some() {
             return false;
         }
         if !self.should_refresh() {
@@ -1390,6 +1399,16 @@ pub struct WindowState<T> {
     tooltip_surfaces:
         HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
 
+    /// Capture exclusion manager (bound lazily when a popup asks to be left out of captures)
+    capture_exclusion_manager: Option<
+        capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1,
+    >,
+    /// Capture exclusion objects per popup surface (keyed by surface protocol ID)
+    capture_exclusions: HashMap<
+        u32,
+        capture_exclusion::kora_surface_capture_exclusion_v1::KoraSurfaceCaptureExclusionV1,
+    >,
+
 
     /// Layer surface visibility manager (bound lazily when needed)
     layer_surface_visibility_manager: Option<
@@ -1594,6 +1613,9 @@ impl<T> WindowState<T> {
         }
         if let Some(tooltip_obj) = self.tooltip_surfaces.remove(&surface_id) {
             tooltip_obj.destroy();
+        }
+        if let Some(exclusion) = self.capture_exclusions.remove(&surface_id) {
+            exclusion.destroy();
         }
         if let Some(visibility_obj) = self
             .layer_surface_visibility_controllers
@@ -3073,7 +3095,10 @@ impl<T: 'static> WindowState<T> {
     /// event waits in `return_data`, and only a pass makes it.
     fn pass_due_now(&self, woke_by_events: bool) -> bool {
         let queued = !self.message.is_empty() && self.retry_timer.is_none();
-        woke_by_events || queued || !self.return_data.is_empty() || self.has_due_frame()
+        let faded = self
+            .next_fade_close()
+            .is_some_and(|at| at <= Instant::now());
+        woke_by_events || queued || faded || !self.return_data.is_empty() || self.has_due_frame()
     }
 
     /// The earliest timed redraw still to come.
@@ -3084,6 +3109,7 @@ impl<T: 'static> WindowState<T> {
                 RefreshRequest::At(at) if at > now => Some(at),
                 _ => None,
             })
+            .chain(self.next_fade_close().filter(|at| *at > now))
             .min()
     }
 
@@ -3112,6 +3138,66 @@ impl<T: 'static> WindowState<T> {
         #[cfg(not(feature = "workspaces"))]
         let _ = (surface, workspace);
         false
+    }
+
+    /// Hide the popup `id` and destroy it once `fade` has passed, so the compositor fades it
+    /// out instead of dropping it. Returns `false`, and does nothing, for a popup that holds
+    /// the grab or was never configured, or without the visibility protocol: close those.
+    pub fn fade_out_popup(&mut self, id: id::Id, fade: Duration) -> bool {
+        let Some(index) = self.units.iter().position(|unit| unit.id == id) else {
+            return false;
+        };
+        let unit = &self.units[index];
+        let fades = unit.configured
+            && unit.popup_placement.as_ref().is_some_and(|p| !p.grab)
+            && self.layer_surface_visibility_manager.is_some();
+        if !fades {
+            return false;
+        }
+        let surface = unit.wl_surface.clone();
+        self.hide_surface(&surface);
+        self.units[index].fade_close = Some(Instant::now() + fade);
+        true
+    }
+
+    /// Mark the popups whose fade-out is over, and the popups of a surface being closed, for
+    /// closing. Returns what to close: popups before the surface they open from.
+    fn closing_order(&mut self) -> Vec<id::Id> {
+        let now = Instant::now();
+        for unit in &mut self.units {
+            if unit.fade_close.is_some_and(|at| at <= now) {
+                unit.request_flag.close = true;
+            }
+        }
+        let closing: Vec<id::Id> = self
+            .units
+            .iter()
+            .filter(|unit| unit.request_flag.close)
+            .map(WindowStateUnit::id)
+            .collect();
+        let mut order: Vec<id::Id> = self
+            .units
+            .iter()
+            .filter(|unit| {
+                !unit.request_flag.close
+                    && unit
+                        .popup_placement
+                        .as_ref()
+                        .is_some_and(|p| closing.contains(&p.parent))
+            })
+            .map(WindowStateUnit::id)
+            .collect();
+        let (popups, others): (Vec<_>, Vec<_>) = closing
+            .into_iter()
+            .partition(|id| self.units.iter().any(|u| u.id == *id && u.is_popup()));
+        order.extend(popups);
+        order.extend(others);
+        order
+    }
+
+    /// The next popup fade-out to end.
+    fn next_fade_close(&self) -> Option<Instant> {
+        self.units.iter().filter_map(|unit| unit.fade_close).min()
     }
 
     /// Hide a surface without destroying it (using layer_surface_visibility protocol)
@@ -3998,6 +4084,8 @@ impl<T> Default for WindowState<T> {
             workspace_transition_manager: None,
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
+            capture_exclusion_manager: None,
+            capture_exclusions: HashMap::new(),
             special_action: false,
             special_action_default: false,
             special_action_manager: None,
@@ -5943,6 +6031,8 @@ delegate_noop!(@<T> WindowState<T>: ignore kora_image_capture_size::kora_image_c
 
 // Tooltip protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore capture_exclusion::kora_surface_capture_exclusion_v1::KoraSurfaceCaptureExclusionV1);
 
 // Manual Dispatch impl for tooltip object to handle reposition events
 impl<T: 'static> Dispatch<tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1, tooltip::TooltipData>
@@ -8313,6 +8403,7 @@ impl<T: 'static> WindowState<T> {
                                         tooltip_offset,
                                         tooltip_anchor,
                                         tooltip_delay_ms,
+                                        capture_excluded,
                                     },
                                     targetid,
                                     info,
@@ -8327,6 +8418,8 @@ impl<T: 'static> WindowState<T> {
                                     let wl_surface = wmcompositer.create_surface(&qh, ());
                                     let (ar_w, ar_h) = anchor_rect_size.unwrap_or((width as i32, height as i32));
                                     let placement = PopupPlacement {
+                                        parent: id,
+                                        grab,
                                         wm_base: wmbase.clone(),
                                         anchor_rect: (x, y, ar_w, ar_h),
                                         anchor,
@@ -8419,6 +8512,24 @@ impl<T: 'static> WindowState<T> {
                                         }
                                     }
 
+                                    // Before the first commit, so no capture ever holds the popup.
+                                    if capture_excluded {
+                                        if window_state.capture_exclusion_manager.is_none() {
+                                            window_state.capture_exclusion_manager = globals
+                                                .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
+                                                    &qh,
+                                                    1..=1,
+                                                    (),
+                                                )
+                                                .ok();
+                                        }
+                                        if let Some(manager) = &window_state.capture_exclusion_manager {
+                                            let exclusion = manager.get_surface_exclusion(&wl_surface, &qh, ());
+                                            exclusion.set_excluded(1);
+                                            window_state.capture_exclusions.insert(surface_id, exclusion);
+                                        }
+                                    }
+
                                     // Set empty input region so pointer events pass through
                                     if input_passthrough {
                                         let region = wmcompositer.create_region(&qh, ());
@@ -8506,15 +8617,19 @@ impl<T: 'static> WindowState<T> {
                                         continue;
                                     };
 
+                                    let Some(previous) = unit.popup_placement.clone() else {
+                                        log::warn!("RepositionPopUp: popup has no placement");
+                                        continue;
+                                    };
                                     let (ar_w, ar_h) = anchor_rect_size.unwrap_or((width as i32, height as i32));
                                     let placement = PopupPlacement {
-                                        wm_base: wmbase.clone(),
                                         anchor_rect: (x, y, ar_w, ar_h),
                                         anchor,
                                         gravity,
                                         constraint_adjustment,
                                         offset,
                                         reactive,
+                                        ..previous
                                     };
                                     let positioner = placement.positioner(&qh, (width, height));
                                     let token = next_reposition_token();
@@ -8682,12 +8797,7 @@ impl<T: 'static> WindowState<T> {
                         }
                     }
 
-                    let to_be_closed_ids: Vec<_> = window_state
-                        .units
-                        .iter()
-                        .filter(|unit| unit.request_flag.close)
-                        .map(WindowStateUnit::id)
-                        .collect();
+                    let to_be_closed_ids = window_state.closing_order();
                     if !to_be_closed_ids.is_empty() {
                         log::info!(target: "move_debug", "processing {} to_be_closed unit(s) (request_flag.close)", to_be_closed_ids.len());
                     }
@@ -9055,6 +9165,9 @@ mod toplevel_configure_tests;
 
 #[cfg(test)]
 mod requested_surface_tests;
+
+#[cfg(test)]
+mod popup_fade_tests;
 
 #[cfg(test)]
 mod tests {
