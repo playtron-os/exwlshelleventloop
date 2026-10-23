@@ -135,6 +135,7 @@ pub mod layer_edge_resize;
 mod surrounding_text;
 pub use surrounding_text::ImeSurroundingText;
 use surrounding_text::{SurroundingChange, SurroundingText};
+pub mod capture_exclusion;
 pub mod layer_size_transition;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
@@ -1398,6 +1399,16 @@ pub struct WindowState<T> {
     tooltip_surfaces:
         HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
 
+    /// Capture exclusion manager (bound lazily when a popup asks to be left out of captures)
+    capture_exclusion_manager: Option<
+        capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1,
+    >,
+    /// Capture exclusion objects per popup surface (keyed by surface protocol ID)
+    capture_exclusions: HashMap<
+        u32,
+        capture_exclusion::kora_surface_capture_exclusion_v1::KoraSurfaceCaptureExclusionV1,
+    >,
+
 
     /// Layer surface visibility manager (bound lazily when needed)
     layer_surface_visibility_manager: Option<
@@ -1602,6 +1613,9 @@ impl<T> WindowState<T> {
         }
         if let Some(tooltip_obj) = self.tooltip_surfaces.remove(&surface_id) {
             tooltip_obj.destroy();
+        }
+        if let Some(exclusion) = self.capture_exclusions.remove(&surface_id) {
+            exclusion.destroy();
         }
         if let Some(visibility_obj) = self
             .layer_surface_visibility_controllers
@@ -4070,6 +4084,8 @@ impl<T> Default for WindowState<T> {
             workspace_transition_manager: None,
             tooltip_manager: None,
             tooltip_surfaces: HashMap::new(),
+            capture_exclusion_manager: None,
+            capture_exclusions: HashMap::new(),
             special_action: false,
             special_action_default: false,
             special_action_manager: None,
@@ -6015,6 +6031,8 @@ delegate_noop!(@<T> WindowState<T>: ignore kora_image_capture_size::kora_image_c
 
 // Tooltip protocol delegates
 delegate_noop!(@<T> WindowState<T>: ignore tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1);
+delegate_noop!(@<T> WindowState<T>: ignore capture_exclusion::kora_surface_capture_exclusion_v1::KoraSurfaceCaptureExclusionV1);
 
 // Manual Dispatch impl for tooltip object to handle reposition events
 impl<T: 'static> Dispatch<tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1, tooltip::TooltipData>
@@ -8385,6 +8403,7 @@ impl<T: 'static> WindowState<T> {
                                         tooltip_offset,
                                         tooltip_anchor,
                                         tooltip_delay_ms,
+                                        capture_excluded,
                                     },
                                     targetid,
                                     info,
@@ -8490,6 +8509,25 @@ impl<T: 'static> WindowState<T> {
                                             window_state.tooltip_surfaces.insert(surface_id, tooltip_obj);
                                         } else {
                                             log::warn!("Tooltip manager not available — compositor may not support tooltips");
+                                        }
+                                    }
+
+                                    // Before the first commit, so no capture ever holds the popup.
+                                    if capture_excluded {
+                                        if window_state.capture_exclusion_manager.is_none()
+                                            && let Some(globals) = &window_state.globals {
+                                                window_state.capture_exclusion_manager = globals
+                                                    .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
+                                                        &qh,
+                                                        1..=1,
+                                                        (),
+                                                    )
+                                                    .ok();
+                                            }
+                                        if let Some(manager) = &window_state.capture_exclusion_manager {
+                                            let exclusion = manager.get_surface_exclusion(&wl_surface, &qh, ());
+                                            exclusion.set_excluded(1);
+                                            window_state.capture_exclusions.insert(surface_id, exclusion);
                                         }
                                     }
 
