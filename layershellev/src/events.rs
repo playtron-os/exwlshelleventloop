@@ -206,6 +206,10 @@ pub struct NewPopUpSettings {
     pub position: (i32, i32),
     /// It means where the popup is, on which surface. It is the id of that layershell
     pub id: id::Id,
+    /// Blur what is behind the popup (requires compositor support for org_kde_kwin_blur).
+    /// It takes the blur radius, saturation, tint and border of the surface it opens from,
+    /// or the global ones when that surface has none.
+    pub blur: bool,
     /// Request shadow effect for this popup surface (requires compositor support for layer_shadow_manager_v1)
     pub shadow: bool,
     /// Corner radius in pixels [top_left, top_right, bottom_right, bottom_left]
@@ -245,6 +249,9 @@ pub struct NewPopUpSettings {
     /// appears only after the pointer has hovered over the parent surface for
     /// this duration. 0 or None = immediate (follows pointer).
     pub tooltip_delay_ms: Option<u32>,
+    /// Leave the popup out of screen captures and recordings while it stays on screen,
+    /// e.g. for a tooltip. Needs compositor support for kora_capture_exclusion_manager_v1.
+    pub capture_excluded: bool,
 }
 
 /// Settings to reposition an existing popup via xdg_popup.reposition (v3).
