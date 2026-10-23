@@ -24,8 +24,10 @@ fn requests(peer: &mut UnixStream) -> Vec<(u32, u16, Vec<u32>)> {
         let length = (header >> 16) as usize;
         assert!(length >= 8 && bytes.len() >= length);
         let arguments = bytes[8..length]
-            .chunks_exact(4)
-            .map(|word| u32::from_ne_bytes(word.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_ne_bytes(*word))
             .collect();
         messages.push((object, header as u16, arguments));
         bytes.drain(..length);
