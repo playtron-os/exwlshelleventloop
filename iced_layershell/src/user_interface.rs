@@ -142,6 +142,18 @@ where
         &self.application
     }
 
+    /// The size `id`'s view lays out at within `bounds`, from an interface built and
+    /// dropped for the purpose.
+    pub fn measure(&self, id: Id, renderer: &mut P::Renderer, bounds: Size) -> Size {
+        IcedUserInterface::build(
+            self.application.view(id),
+            bounds,
+            Cache::default(),
+            renderer,
+        )
+        .content_size()
+    }
+
     pub fn remove(&mut self, id: &Id) -> Option<Cache> {
         self.stale
             .remove(id)

@@ -55,6 +55,9 @@ mod window_manager;
 
 type MultiRuntime<E, Message> = Runtime<E, IcedProxy<Action<Message>>, Action<Message>>;
 
+/// A popup fitted to its content as it was shown: its id, largest size and size.
+type FittedPopup = (IcedId, (u32, u32), (u32, u32));
+
 // a dispatch loop, another is listen loop
 /// Runs `program` on layer-shell surfaces. `automation` is the app's settings
 /// for its automation door (used when the `automation` feature builds one in
@@ -1707,6 +1710,7 @@ where
 
     fn handle_user_action(&mut self, ev: &mut WindowState<IcedId>, action: Action<P::Message>) {
         let mut should_exit = false;
+        let mut fitted_popups = Vec::new();
         run_action(
             &mut self.user_interfaces,
             &mut self.compositor,
@@ -1723,7 +1727,15 @@ where
             &mut self.pending_popups,
             &mut self.cancelled_popups,
             &mut self.popup_pending_shadow,
+            &mut fitted_popups,
         );
+        // A popup fitted to its content is refitted as that changes, like an
+        // auto-sized layer surface, without the hidden first frame: it was measured.
+        for (id, max, size) in fitted_popups {
+            self.auto_size_enabled.insert(id);
+            self.auto_size_max.insert(id, max);
+            self.auto_size_last_content.insert(id, size);
+        }
         if should_exit {
             ev.append_return_data(ReturnData::RequestExit);
         }
@@ -2121,6 +2133,7 @@ where
                     size,
                     position,
                     id: parent_layer_shell_id,
+                    blur: false,
                     shadow,
                     corner_radius,
                     auto_size,
@@ -2166,6 +2179,7 @@ where
                     size: menu_setting.size,
                     position: (x, y),
                     id: parent_layer_shell_id,
+                    blur: false,
                     shadow: false,
                     corner_radius: None,
                     auto_size: false,
@@ -2873,6 +2887,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
     pending_popups: &mut HashMap<IcedId, layershellev::id::Id>,
     cancelled_popups: &mut std::collections::HashSet<IcedId>,
     popup_pending_shadow: &mut std::collections::HashSet<IcedId>,
+    fitted_popups: &mut Vec<FittedPopup>,
 ) where
     P: IcedProgram + 'static,
     C: Compositor<Renderer = P::Renderer> + 'static,
@@ -3087,7 +3102,8 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 );
 
                                 // Look up the parent's layershell ID
-                                let Some(parent_window) = window_manager.get(parent_iced_id) else {
+                                let Some(parent_window) = window_manager.get_mut(parent_iced_id)
+                                else {
                                     tracing::warn!(
                                         parent = ?parent_iced_id,
                                         "xdg_popup show: parent window not found"
@@ -3096,18 +3112,40 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 };
                                 let parent_layer_shell_id = parent_window.id;
 
-                                // Convert iced Positioner to NewPopUpSettings
-                                let (width, height) = positioner.size.unwrap_or((
-                                    positioner.size_limits.max().width as u32,
-                                    positioner.size_limits.max().height as u32,
-                                ));
+                                // Without a size, the popup fits its content, measured now
+                                // and again whenever it is drawn (see `auto_size_enabled`).
+                                let (width, height) = match positioner.size {
+                                    Some(size) => size,
+                                    None => {
+                                        let (min, max) = (
+                                            positioner.size_limits.min(),
+                                            positioner.size_limits.max(),
+                                        );
+                                        let content = user_interfaces.measure(
+                                            popup_iced_id,
+                                            &mut parent_window.renderer,
+                                            max,
+                                        );
+                                        let fit = |content: f32, min: f32, max: f32| {
+                                            content.ceil().clamp(min.max(1.0), max.max(1.0)) as u32
+                                        };
+                                        let size = (
+                                            fit(content.width, min.width, max.width),
+                                            fit(content.height, min.height, max.height),
+                                        );
+                                        let max = (max.width as u32, max.height as u32);
+                                        fitted_popups.push((popup_iced_id, max, size));
+                                        size
+                                    }
+                                };
 
                                 let popup_settings = NewPopUpSettings {
                                     size: (width, height),
                                     position: (positioner.anchor_rect.x, positioner.anchor_rect.y),
                                     id: parent_layer_shell_id,
-                                    shadow: false,
-                                    corner_radius: None,
+                                    blur: settings.blur,
+                                    shadow: settings.shadow,
+                                    corner_radius: settings.corner_radius.map(|radius| [radius; 4]),
                                     auto_size: positioner.size.is_none(),
                                     anchor_rect_size: Some((
                                         positioner.anchor_rect.width,
@@ -3136,7 +3174,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 pending_popups.insert(popup_iced_id, layer_shell_id);
                                 // Defer shadow for popups so it's applied after
                                 // the first content frame (avoids transparent flash).
-                                if ev.has_shadow() {
+                                if settings.shadow || ev.has_shadow() {
                                     popup_pending_shadow.insert(popup_iced_id);
                                 }
                                 ev.append_return_data(ReturnData::NewPopUp((
@@ -3179,12 +3217,13 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 }
                             }
                             popup::Action::Resize { id, width, height } => {
-                                // Resize is not yet supported for xdg_popup surfaces
-                                tracing::debug!(
-                                    popup = ?id,
-                                    width, height,
-                                    "xdg_popup resize: not yet implemented"
-                                );
+                                let Some(layer_id) = window_manager.get(id).map(|w| w.id) else {
+                                    tracing::warn!(popup = ?id, "xdg_popup resize: popup not found");
+                                    return;
+                                };
+                                if let Some(unit) = ev.get_unit_with_id(layer_id) {
+                                    unit.set_size((width, height));
+                                }
                             }
                             popup::Action::Reposition { id, positioner } => {
                                 // Look up the popup's layershell ID
@@ -3201,10 +3240,17 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     return;
                                 };
 
-                                let (width, height) = positioner.size.unwrap_or((
-                                    positioner.size_limits.max().width as u32,
-                                    positioner.size_limits.max().height as u32,
-                                ));
+                                // A popup fitted to its content keeps the size it has.
+                                let (width, height) = positioner
+                                    .size
+                                    .or_else(|| {
+                                        let size = window_manager.get(id)?.state.window_size();
+                                        Some((size.width, size.height))
+                                    })
+                                    .unwrap_or((
+                                        positioner.size_limits.max().width as u32,
+                                        positioner.size_limits.max().height as u32,
+                                    ));
 
                                 let reposition_settings = layershellev::RepositionPopUpSettings {
                                     popup_id: layer_id,
