@@ -2176,7 +2176,7 @@ impl<T: 'static> WindowState<T> {
                 self.blur_manager = globals
                     .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                         &unit.qh,
-                        1..=5,
+                        1..=6,
                         (),
                     )
                     .ok();
@@ -2382,6 +2382,7 @@ impl<T: 'static> WindowState<T> {
         region: &WlRegion,
         radii: &[[u32; 4]],
         geometry: &[(f32, f32, f32, f32)],
+        opacity: &[f32],
         set_region: F,
     ) where
         F: FnOnce(&WlRegion),
@@ -2396,7 +2397,7 @@ impl<T: 'static> WindowState<T> {
             self.blur_manager = globals
                 .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                     &unit.qh,
-                    1..=5,
+                    1..=6,
                     (),
                 )
                 .ok();
@@ -2489,6 +2490,11 @@ impl<T: 'static> WindowState<T> {
             // shape it draws. A v4 compositor simply keeps using the region.
             if !geometry.is_empty() && blur_obj.version() >= 5 {
                 blur_obj.set_region_geometry(blur::encode_region_geometry(geometry));
+            }
+            // Lets a rect fading out inside the surface take its backdrop with
+            // it; a v5 compositor draws every rect at full strength.
+            if !opacity.is_empty() && blur_obj.version() >= 6 {
+                blur_obj.set_region_opacity(blur::encode_region_opacity(opacity));
             }
             blur_obj.commit();
         }
@@ -6876,7 +6882,7 @@ impl<T: 'static> WindowState<T> {
         // Always try to bind blur manager for dynamic blur support
         // (allows requesting blur on any surface, like popups, even if main window doesn't have blur)
         self.blur_manager = globals
-            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=5, ())
+            .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(&qh, 1..=6, ())
             .ok();
         if self.blur_manager.is_some() {
             log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
@@ -8038,7 +8044,7 @@ impl<T: 'static> WindowState<T> {
                                             window_state.blur_manager = globals
                                                 .bind::<blur::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _, _>(
                                                     &qh,
-                                                    1..=5,
+                                                    1..=6,
                                                     (),
                                                 )
                                                 .ok();
