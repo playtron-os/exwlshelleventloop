@@ -2152,6 +2152,7 @@ where
                     tooltip_offset: None,
                     tooltip_anchor: None,
                     tooltip_delay_ms: None,
+                    capture_excluded: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -2198,6 +2199,7 @@ where
                     tooltip_offset: None,
                     tooltip_anchor: None,
                     tooltip_delay_ms: None,
+                    capture_excluded: false,
                 };
                 let layer_shell_id = layershellev::id::Id::unique();
                 ev.append_return_data(ReturnData::NewPopUp((
@@ -3169,6 +3171,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                     tooltip_offset: settings.tooltip_offset,
                                     tooltip_anchor: settings.tooltip_anchor,
                                     tooltip_delay_ms: settings.tooltip_delay_ms,
+                                    capture_excluded: popup::excluded_from_capture(popup_iced_id),
                                 };
 
                                 let layer_shell_id = layershellev::id::Id::unique();
@@ -3188,6 +3191,7 @@ pub(crate) fn run_action<P, C, E: Executor>(
                                 )));
                             }
                             popup::Action::Hide { id } => {
+                                popup::forget_capture_exclusion(id);
                                 // Map from iced ID to layershell ID and request close.
                                 // Check window_manager first (popup fully initialized),
                                 // then pending_popups (Show processed but WindowOpened

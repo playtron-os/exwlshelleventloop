@@ -249,6 +249,9 @@ pub struct NewPopUpSettings {
     /// appears only after the pointer has hovered over the parent surface for
     /// this duration. 0 or None = immediate (follows pointer).
     pub tooltip_delay_ms: Option<u32>,
+    /// Leave the popup out of screen captures and recordings while it stays on screen,
+    /// e.g. for a tooltip. Needs compositor support for kora_capture_exclusion_manager_v1.
+    pub capture_excluded: bool,
 }
 
 /// Settings to reposition an existing popup via xdg_popup.reposition (v3).
