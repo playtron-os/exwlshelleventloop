@@ -8514,16 +8514,15 @@ impl<T: 'static> WindowState<T> {
 
                                     // Before the first commit, so no capture ever holds the popup.
                                     if capture_excluded {
-                                        if window_state.capture_exclusion_manager.is_none()
-                                            && let Some(globals) = &window_state.globals {
-                                                window_state.capture_exclusion_manager = globals
-                                                    .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
-                                                        &qh,
-                                                        1..=1,
-                                                        (),
-                                                    )
-                                                    .ok();
-                                            }
+                                        if window_state.capture_exclusion_manager.is_none() {
+                                            window_state.capture_exclusion_manager = globals
+                                                .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
+                                                    &qh,
+                                                    1..=1,
+                                                    (),
+                                                )
+                                                .ok();
+                                        }
                                         if let Some(manager) = &window_state.capture_exclusion_manager {
                                             let exclusion = manager.get_surface_exclusion(&wl_surface, &qh, ());
                                             exclusion.set_excluded(1);
