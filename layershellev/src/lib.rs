@@ -2266,14 +2266,16 @@ impl<T: 'static> WindowState<T> {
         }
     }
 
-    /// Enable or disable blur effect for a specific surface.
-    /// Requires compositor support for org_kde_kwin_blur protocol.
+    /// Enable or disable blur effect for a specific surface, over the KDE blur
+    /// protocol and the standard background effect, whichever the compositor offers.
     pub fn set_blur_for_surface(&mut self, surface: &WlSurface, enabled: bool) {
         let surface_id = surface.id().protocol_id();
 
         if enabled {
             // Check if blur is already enabled for this surface
-            if self.blur_surfaces.contains_key(&surface_id) {
+            if self.blur_surfaces.contains_key(&surface_id)
+                || self.background_effect_surfaces.contains_key(&surface_id)
+            {
                 return;
             }
 
@@ -2294,95 +2296,81 @@ impl<T: 'static> WindowState<T> {
                 }
             }
 
-            // Bind the standard protocol too, so a compositor that implements
-            // only the upstream staging protocol still blurs -- just the region,
-            // without strength, corner or appearance control.
-            if self.background_effect_manager.is_none()
-                && let Some(globals) = &self.globals
-                && let Some(unit) = self.units.first()
-            {
-                self.background_effect_manager = globals
-                    .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
-                        &unit.qh,
-                        1..=1,
-                        (),
-                    )
-                    .ok();
-                if let Some(manager) = &self.background_effect_manager {
-                    log::info!(
-                        "Bound background effect manager (version {})",
-                        manager.version()
-                    );
-                }
-            }
+            let Some(unit) = self.units.first() else {
+                return;
+            };
+            // Re-apply the per-surface frosted-glass params captured at
+            // creation, so a deferred (auto-size) re-enable keeps the
+            // requested radius/saturation/tint/border instead of the
+            // compositor default (which would wash the blur white).
+            let (radius, saturation, tint, border) = self
+                .blur_params
+                .get(&surface_id)
+                .copied()
+                .unwrap_or((None, None, None, None));
 
             if let Some(manager) = &self.blur_manager {
-                if let Some(unit) = self.units.first() {
-                    let blur_data = blur::BlurData {
+                let blur_data = blur::BlurData {
+                    surface: surface.clone(),
+                };
+                let blur_obj = manager.create(surface, &unit.qh, blur_data);
+                // Set region to null (entire surface)
+                blur_obj.set_region(None);
+                apply_blur_params(&blur_obj, radius, saturation, tint, border);
+                blur_obj.commit();
+                self.blur_surfaces.insert(surface_id, blur_obj);
+            }
+
+            // The loop takes `wl_compositor` when it starts; this copy stays.
+            if let Some(effect_manager) = &self.background_effect_manager
+                && let Some(compositor) = &self.cached_compositor
+            {
+                let effect = effect_manager.get_background_effect(
+                    surface,
+                    &unit.qh,
+                    background_effect::BackgroundEffectData {
                         surface: surface.clone(),
-                    };
-                    let blur_obj = manager.create(surface, &unit.qh, blur_data);
-                    // Set region to null (entire surface)
-                    blur_obj.set_region(None);
-                    // Re-apply the per-surface frosted-glass params captured at
-                    // creation, so a deferred (auto-size) re-enable keeps the
-                    // requested radius/saturation/tint/border instead of the
-                    // compositor default (which would wash the blur white).
-                    let (radius, saturation, tint, border) = self
-                        .blur_params
-                        .get(&surface_id)
-                        .copied()
-                        .unwrap_or((None, None, None, None));
-                    apply_blur_params(&blur_obj, radius, saturation, tint, border);
-                    blur_obj.commit();
-                    self.blur_surfaces.insert(surface_id, blur_obj);
-
-                    if let Some(effect_manager) = &self.background_effect_manager
-                        && let Some(compositor) = &self.wl_compositor
-                        && !self.background_effect_surfaces.contains_key(&surface_id)
-                    {
-                        let effect = effect_manager.get_background_effect(
-                            surface,
-                            &unit.qh,
-                            background_effect::BackgroundEffectData {
-                                surface: surface.clone(),
-                            },
-                        );
-                        // This protocol has no whole-surface request, so ask for
-                        // an oversized region and let the compositor clip it to
-                        // the surface. That keeps it right across resizes, which
-                        // a surface-sized region would not without a resend.
-                        let (x, y, w, h) = background_effect::WHOLE_SURFACE;
-                        let region = compositor.create_region(&unit.qh, ());
-                        region.add(x, y, w, h);
-                        background_effect::apply(&effect, Some(&region));
-                        region.destroy();
-                        self.background_effect_surfaces.insert(surface_id, effect);
-                    }
-
-                    surface.commit();
-                    log::info!(
-                        "Enabled blur for surface (radius={radius:?}, saturation={saturation:?}, tint={tint:?}, border={border:?})"
-                    );
-                }
-            } else {
-                log::warn!("Blur manager not available - compositor may not support blur");
+                    },
+                );
+                // This protocol has no whole-surface request, so ask for
+                // an oversized region and let the compositor clip it to
+                // the surface. That keeps it right across resizes, which
+                // a surface-sized region would not without a resend.
+                let (x, y, w, h) = background_effect::WHOLE_SURFACE;
+                let region = compositor.create_region(&unit.qh, ());
+                region.add(x, y, w, h);
+                background_effect::apply(&effect, Some(&region));
+                region.destroy();
+                self.background_effect_surfaces.insert(surface_id, effect);
             }
+
+            if !self.blur_surfaces.contains_key(&surface_id)
+                && !self.background_effect_surfaces.contains_key(&surface_id)
+            {
+                log::warn!("No blur protocol available - compositor may not support blur");
+                return;
+            }
+            surface.commit();
+            log::info!(
+                "Enabled blur for surface (radius={radius:?}, saturation={saturation:?}, tint={tint:?}, border={border:?})"
+            );
         } else {
-            // Disable blur by releasing the blur object
-            if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
-                blur_obj.release();
-
-                // Tear down both, or the surface keeps whichever protocol the
-                // compositor actually honoured.
-                if let Some(effect) = self.background_effect_surfaces.remove(&surface_id) {
-                    effect.set_blur_region(None);
-                    effect.destroy();
-                }
-
-                surface.commit();
-                log::info!("Disabled blur for surface");
+            // Tear down both, or the surface keeps whichever protocol the
+            // compositor actually honoured.
+            let blur_obj = self.blur_surfaces.remove(&surface_id);
+            let effect = self.background_effect_surfaces.remove(&surface_id);
+            if blur_obj.is_none() && effect.is_none() {
+                return;
             }
+            if let Some(blur_obj) = blur_obj {
+                blur_obj.release();
+            }
+            if let Some(effect) = effect {
+                effect.set_blur_region(None);
+                effect.destroy();
+            }
+            surface.commit();
+            log::info!("Disabled blur for surface");
         }
     }
 
@@ -2513,21 +2501,6 @@ impl<T: 'static> WindowState<T> {
             if self.blur_manager.is_some() {
                 log::info!("Bound blur manager");
             }
-        }
-
-        // Bind the standard protocol too, so a compositor implementing either
-        // one gets the same region. The caller does not know or care which.
-        if self.background_effect_manager.is_none()
-            && let Some(globals) = &self.globals
-            && let Some(unit) = self.units.first()
-        {
-            self.background_effect_manager = globals
-                .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
-                    &unit.qh,
-                    1..=1,
-                    (),
-                )
-                .ok();
         }
 
         if self.blur_manager.is_none() && self.background_effect_manager.is_none() {
@@ -7065,6 +7038,22 @@ impl<T: 'static> WindowState<T> {
             log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
         }
 
+        // The standard protocol too, so a compositor implementing either one gets
+        // the same region. Bound here because the loop takes `globals` when it starts.
+        self.background_effect_manager = globals
+            .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if let Some(manager) = &self.background_effect_manager {
+            log::info!(
+                "Bound background effect manager (version {})",
+                manager.version()
+            );
+        }
+
         // Bind adaptive foreground, for surfaces that draw onto the wallpaper and
         // have to stay legible against whatever it happens to be.
         self.adaptive_foreground_manager = globals
@@ -9165,6 +9154,9 @@ mod cursor_tests;
 
 #[cfg(test)]
 mod keyboard_focus_tests;
+
+#[cfg(test)]
+mod background_effect_tests;
 
 #[cfg(test)]
 mod toplevel_configure_tests;
