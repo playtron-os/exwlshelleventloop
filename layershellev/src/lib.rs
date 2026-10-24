@@ -2294,28 +2294,6 @@ impl<T: 'static> WindowState<T> {
                 }
             }
 
-            // Bind the standard protocol too, so a compositor that implements
-            // only the upstream staging protocol still blurs -- just the region,
-            // without strength, corner or appearance control.
-            if self.background_effect_manager.is_none()
-                && let Some(globals) = &self.globals
-                && let Some(unit) = self.units.first()
-            {
-                self.background_effect_manager = globals
-                    .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
-                        &unit.qh,
-                        1..=1,
-                        (),
-                    )
-                    .ok();
-                if let Some(manager) = &self.background_effect_manager {
-                    log::info!(
-                        "Bound background effect manager (version {})",
-                        manager.version()
-                    );
-                }
-            }
-
             if let Some(manager) = &self.blur_manager {
                 if let Some(unit) = self.units.first() {
                     let blur_data = blur::BlurData {
@@ -2337,8 +2315,9 @@ impl<T: 'static> WindowState<T> {
                     blur_obj.commit();
                     self.blur_surfaces.insert(surface_id, blur_obj);
 
+                    // The loop takes `wl_compositor` when it starts; this copy stays.
                     if let Some(effect_manager) = &self.background_effect_manager
-                        && let Some(compositor) = &self.wl_compositor
+                        && let Some(compositor) = &self.cached_compositor
                         && !self.background_effect_surfaces.contains_key(&surface_id)
                     {
                         let effect = effect_manager.get_background_effect(
@@ -2513,21 +2492,6 @@ impl<T: 'static> WindowState<T> {
             if self.blur_manager.is_some() {
                 log::info!("Bound blur manager");
             }
-        }
-
-        // Bind the standard protocol too, so a compositor implementing either
-        // one gets the same region. The caller does not know or care which.
-        if self.background_effect_manager.is_none()
-            && let Some(globals) = &self.globals
-            && let Some(unit) = self.units.first()
-        {
-            self.background_effect_manager = globals
-                .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
-                    &unit.qh,
-                    1..=1,
-                    (),
-                )
-                .ok();
         }
 
         if self.blur_manager.is_none() && self.background_effect_manager.is_none() {
@@ -7065,6 +7029,22 @@ impl<T: 'static> WindowState<T> {
             log::info!("Successfully bound org_kde_kwin_blur_manager protocol for blur support");
         }
 
+        // The standard protocol too, so a compositor implementing either one gets
+        // the same region. Bound here because the loop takes `globals` when it starts.
+        self.background_effect_manager = globals
+            .bind::<background_effect::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1, _, _>(
+                &qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if let Some(manager) = &self.background_effect_manager {
+            log::info!(
+                "Bound background effect manager (version {})",
+                manager.version()
+            );
+        }
+
         // Bind adaptive foreground, for surfaces that draw onto the wallpaper and
         // have to stay legible against whatever it happens to be.
         self.adaptive_foreground_manager = globals
@@ -9165,6 +9145,9 @@ mod cursor_tests;
 
 #[cfg(test)]
 mod keyboard_focus_tests;
+
+#[cfg(test)]
+mod background_effect_tests;
 
 #[cfg(test)]
 mod toplevel_configure_tests;
