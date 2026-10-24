@@ -3634,6 +3634,64 @@ fn apply_corner_radius_to_surface<T: 'static>(
     }
 }
 
+/// How a popup asks the compositor to place it as a tooltip; all `None` when it does not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TooltipPlacement {
+    offset: Option<(i32, i32)>,
+    anchor: Option<u32>,
+    delay_ms: Option<u32>,
+}
+
+/// Give `surface` a compositor-driven tooltip over `parent` when its placement asks for one.
+/// The manager is bound from the event loop's globals, since the window state's copy is
+/// taken when the loop starts.
+fn attach_tooltip<T: 'static>(
+    manager: &mut Option<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1>,
+    globals: &GlobalList,
+    qh: &QueueHandle<WindowState<T>>,
+    surface: &WlSurface,
+    parent: &WlSurface,
+    placement: TooltipPlacement,
+) -> Option<tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1> {
+    if placement == TooltipPlacement::default() {
+        return None;
+    }
+    if manager.is_none() {
+        *manager = globals
+            .bind::<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, _, _>(
+                qh,
+                1..=1,
+                (),
+            )
+            .ok();
+        if manager.is_some() {
+            log::info!("Bound tooltip manager");
+        }
+    }
+    let Some(manager) = manager.as_ref() else {
+        log::warn!("Tooltip manager not available — compositor may not support tooltips");
+        return None;
+    };
+    let data = tooltip::TooltipData {
+        tooltip_surface: surface.clone(),
+        parent_surface: parent.clone(),
+    };
+    let tooltip = manager.get_tooltip(surface, parent, qh, data);
+    if let Some((x, y)) = placement.offset {
+        tooltip.set_offset(x, y);
+    }
+    if let Some(anchor) = placement
+        .anchor
+        .and_then(|a| tooltip::zcosmic_tooltip_v1::Anchor::try_from(a).ok())
+    {
+        tooltip.set_anchor(anchor);
+    }
+    if let Some(delay) = placement.delay_ms {
+        tooltip.set_show_delay(delay);
+    }
+    Some(tooltip)
+}
+
 /// Apply shadow to a surface using the layer shadow protocol
 fn apply_shadow_to_surface<T: 'static>(
     shadow_manager: &Option<shadow::layer_shadow_manager_v1::LayerShadowManagerV1>,
@@ -8470,52 +8528,21 @@ impl<T: 'static> WindowState<T> {
                                     // iced_layershell applies ShadowChange after
                                     // the popup's first present.
 
-                                    // Create tooltip object if tooltip settings are provided
-                                    let has_tooltip = tooltip_offset.is_some()
-                                        || tooltip_anchor.is_some()
-                                        || tooltip_delay_ms.is_some();
-                                    if has_tooltip {
-                                        // Bind the tooltip manager lazily
-                                        if window_state.tooltip_manager.is_none()
-                                            && let Some(globals) = &window_state.globals {
-                                                window_state.tooltip_manager = globals
-                                                    .bind::<tooltip::zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, _, _>(
-                                                        &qh,
-                                                        1..=1,
-                                                        (),
-                                                    )
-                                                    .ok();
-                                                if window_state.tooltip_manager.is_some() {
-                                                    log::info!("Bound tooltip manager");
-                                                }
-                                            }
-
-                                        if let Some(manager) = &window_state.tooltip_manager {
-                                            let parent_surface = &window_state.units[index].wl_surface;
-                                            let tooltip_data = tooltip::TooltipData {
-                                                tooltip_surface: wl_surface.clone(),
-                                                parent_surface: parent_surface.clone(),
-                                            };
-                                            let tooltip_obj = manager.get_tooltip(
-                                                &wl_surface,
-                                                parent_surface,
-                                                &qh,
-                                                tooltip_data,
-                                            );
-                                            if let Some((ox, oy)) = tooltip_offset {
-                                                tooltip_obj.set_offset(ox, oy);
-                                            }
-                                            if let Some(a) = tooltip_anchor
-                                                && let Ok(anchor_val) = tooltip::zcosmic_tooltip_v1::Anchor::try_from(a) {
-                                                    tooltip_obj.set_anchor(anchor_val);
-                                                }
-                                            if let Some(delay) = tooltip_delay_ms {
-                                                tooltip_obj.set_show_delay(delay);
-                                            }
-                                            window_state.tooltip_surfaces.insert(surface_id, tooltip_obj);
-                                        } else {
-                                            log::warn!("Tooltip manager not available — compositor may not support tooltips");
-                                        }
+                                    // Let the compositor place a tooltip popup at the pointer.
+                                    let tooltip = TooltipPlacement {
+                                        offset: tooltip_offset,
+                                        anchor: tooltip_anchor,
+                                        delay_ms: tooltip_delay_ms,
+                                    };
+                                    if let Some(tooltip_obj) = attach_tooltip(
+                                        &mut window_state.tooltip_manager,
+                                        &globals,
+                                        &qh,
+                                        &wl_surface,
+                                        &window_state.units[index].wl_surface,
+                                        tooltip,
+                                    ) {
+                                        window_state.tooltip_surfaces.insert(surface_id, tooltip_obj);
                                     }
 
                                     // Before the first commit, so no capture ever holds the popup.
@@ -9174,6 +9201,9 @@ mod requested_surface_tests;
 
 #[cfg(test)]
 mod popup_fade_tests;
+
+#[cfg(test)]
+mod tooltip_tests;
 
 #[cfg(test)]
 mod tests {
