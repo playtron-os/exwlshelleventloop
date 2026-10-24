@@ -6,7 +6,7 @@ use wayland_client::{Connection, Proxy};
 
 /// Read the actual Wayland requests from the local peer; no compositor or
 /// announced globals are needed to inspect client-side request encoding.
-fn requests(peer: &mut UnixStream) -> Vec<(u32, u16, Vec<u32>)> {
+pub(super) fn requests(peer: &mut UnixStream) -> Vec<(u32, u16, Vec<u32>)> {
     let mut bytes = Vec::new();
     loop {
         let mut buffer = [0; 512];

@@ -2709,19 +2709,6 @@ impl<T: 'static> WindowState<T> {
                 return;
             }
 
-            // Bind the manager lazily on first use (mirrors blur/shadow).
-            if self.keyboard_shortcuts_inhibit_manager.is_none()
-                && let Some(globals) = &self.globals
-                && let Some(unit) = self.units.first()
-            {
-                self.keyboard_shortcuts_inhibit_manager = globals
-                    .bind::<ZwpKeyboardShortcutsInhibitManagerV1, _, _>(&unit.qh, 1..=1, ())
-                    .ok();
-                if self.keyboard_shortcuts_inhibit_manager.is_some() {
-                    log::info!("Bound keyboard-shortcuts-inhibit manager");
-                }
-            }
-
             let Some(seat) = self.seat.clone() else {
                 log::warn!("No seat available - cannot inhibit keyboard shortcuts");
                 return;
@@ -2742,6 +2729,21 @@ impl<T: 'static> WindowState<T> {
         } else if let Some(inhibitor) = self.keyboard_shortcuts_inhibitors.remove(&surface_id) {
             inhibitor.destroy();
             log::info!("Disabled keyboard-shortcuts inhibitor for surface");
+        }
+    }
+
+    /// Bind the keyboard-shortcuts-inhibit manager when the compositor offers it.
+    /// Called when the loop is built, because the loop takes `globals` when it starts.
+    fn bind_keyboard_shortcuts_inhibit_manager(
+        &mut self,
+        globals: &GlobalList,
+        qh: &QueueHandle<Self>,
+    ) {
+        self.keyboard_shortcuts_inhibit_manager = globals
+            .bind::<ZwpKeyboardShortcutsInhibitManagerV1, _, _>(qh, 1..=1, ())
+            .ok();
+        if self.keyboard_shortcuts_inhibit_manager.is_some() {
+            log::info!("Bound keyboard-shortcuts-inhibit manager");
         }
     }
 
@@ -7134,6 +7136,8 @@ impl<T: 'static> WindowState<T> {
             log::info!("Successfully bound layer_shadow_manager_v1 protocol for shadow support");
         }
 
+        self.bind_keyboard_shortcuts_inhibit_manager(&globals, &qh);
+
         // Always try to bind layer auto-hide manager for compositor-driven auto-hide support
         self.auto_hide_manager = globals
             .bind::<layer_auto_hide::layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _, _>(
@@ -9168,6 +9172,9 @@ mod keyboard_focus_tests;
 
 #[cfg(test)]
 mod toplevel_configure_tests;
+
+#[cfg(test)]
+mod shortcuts_inhibit_tests;
 
 #[cfg(test)]
 mod requested_surface_tests;
