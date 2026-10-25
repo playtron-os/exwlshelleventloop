@@ -197,6 +197,12 @@ pub enum LayershellCustomAction {
     /// directly. Requires compositor support for
     /// `zwp_keyboard_shortcuts_inhibit_manager_v1`.
     KeyboardShortcutsInhibitChange(bool),
+    /// Leave the surface out of screen captures and recordings while it stays
+    /// on screen (`true`), or put it back in them (`false`), from the commit
+    /// this makes. For a capture the app asks for from that surface, such as a
+    /// screenshot button on it. Requires compositor support for
+    /// `kora_capture_exclusion_manager_v1`; without it nothing changes.
+    CaptureExcludedChange(bool),
     /// Enable compositor-driven auto-hide for the surface. The compositor will
     /// animate hide/show transitions based on the specified mode.
     /// `edge`: which edge to slide off (0 = bottom)
