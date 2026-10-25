@@ -2001,6 +2001,13 @@ where
                 };
                 ev.set_keyboard_shortcuts_inhibit_for_surface(&surface, enabled);
             }
+            LayershellCustomAction::CaptureExcludedChange(excluded) => {
+                let surface = {
+                    ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                    layer_shell_window.get_wlsurface().clone()
+                };
+                ev.set_capture_excluded_for_surface(&surface, excluded);
+            }
             LayershellCustomAction::AutoHideChange {
                 edge,
                 edge_zone,

@@ -1,5 +1,5 @@
 //! Client side of `kora_capture_exclusion_v1`: a surface drawn on screen but left out of
-//! screen captures, such as a tooltip.
+//! screen captures, such as a panel during a screenshot taken from it.
 
 pub use generated::{kora_capture_exclusion_manager_v1, kora_surface_capture_exclusion_v1};
 

@@ -1399,11 +1399,11 @@ pub struct WindowState<T> {
     tooltip_surfaces:
         HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
 
-    /// Capture exclusion manager (bound lazily when a popup asks to be left out of captures)
+    /// Capture exclusion manager (bound lazily when a surface asks to be left out of captures)
     capture_exclusion_manager: Option<
         capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1,
     >,
-    /// Capture exclusion objects per popup surface (keyed by surface protocol ID)
+    /// Capture exclusion objects per surface (keyed by surface protocol ID)
     capture_exclusions: HashMap<
         u32,
         capture_exclusion::kora_surface_capture_exclusion_v1::KoraSurfaceCaptureExclusionV1,
@@ -2658,6 +2658,46 @@ impl<T: 'static> WindowState<T> {
                 surface.commit();
                 log::info!("Disabled shadow for surface");
             }
+        }
+    }
+
+    /// Leave a surface out of screen captures and recordings while it stays on
+    /// screen, or put it back in them, from the commit this makes. Requires
+    /// compositor support for `kora_capture_exclusion_manager_v1`; without it
+    /// nothing changes. The surface keeps its exclusion object until it goes.
+    pub fn set_capture_excluded_for_surface(&mut self, surface: &WlSurface, excluded: bool) {
+        let surface_id = surface.id().protocol_id();
+        if !self.capture_exclusions.contains_key(&surface_id) {
+            if !excluded {
+                return;
+            }
+            let Some(unit) = self.units.first() else {
+                return;
+            };
+            let qh = unit.qh.clone();
+            if self.capture_exclusion_manager.is_none()
+                && let Some(globals) = &self.globals
+            {
+                self.capture_exclusion_manager = globals
+                    .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
+                        &qh,
+                        1..=1,
+                        (),
+                    )
+                    .ok();
+            }
+            let Some(manager) = &self.capture_exclusion_manager else {
+                log::warn!(
+                    "Capture exclusion manager not available - compositor may not support it"
+                );
+                return;
+            };
+            let exclusion = manager.get_surface_exclusion(surface, &qh, ());
+            self.capture_exclusions.insert(surface_id, exclusion);
+        }
+        if let Some(exclusion) = self.capture_exclusions.get(&surface_id) {
+            exclusion.set_excluded(u32::from(excluded));
+            surface.commit();
         }
     }
 
