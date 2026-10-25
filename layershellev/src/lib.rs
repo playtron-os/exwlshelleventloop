@@ -1399,7 +1399,7 @@ pub struct WindowState<T> {
     tooltip_surfaces:
         HashMap<u32, tooltip::zcosmic_tooltip_v1::ZcosmicTooltipV1>,
 
-    /// Capture exclusion manager (bound lazily when a surface asks to be left out of captures)
+    /// Capture exclusion manager, bound when the loop starts
     capture_exclusion_manager: Option<
         capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1,
     >,
@@ -2675,17 +2675,6 @@ impl<T: 'static> WindowState<T> {
                 return;
             };
             let qh = unit.qh.clone();
-            if self.capture_exclusion_manager.is_none()
-                && let Some(globals) = &self.globals
-            {
-                self.capture_exclusion_manager = globals
-                    .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
-                        &qh,
-                        1..=1,
-                        (),
-                    )
-                    .ok();
-            }
             let Some(manager) = &self.capture_exclusion_manager else {
                 log::warn!(
                     "Capture exclusion manager not available - compositor may not support it"
@@ -2743,6 +2732,18 @@ impl<T: 'static> WindowState<T> {
             inhibitor.destroy();
             log::info!("Disabled keyboard-shortcuts inhibitor for surface");
         }
+    }
+
+    /// Bind the capture exclusion manager when the compositor offers it. Called when
+    /// the loop is built, because the loop takes `globals` when it starts.
+    fn bind_capture_exclusion_manager(&mut self, globals: &GlobalList, qh: &QueueHandle<Self>) {
+        self.capture_exclusion_manager = globals
+            .bind::<capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1, _, _>(
+                qh,
+                1..=1,
+                (),
+            )
+            .ok();
     }
 
     /// Bind the keyboard-shortcuts-inhibit manager when the compositor offers it.
@@ -7224,6 +7225,7 @@ impl<T: 'static> WindowState<T> {
         }
 
         self.bind_keyboard_shortcuts_inhibit_manager(&globals, &qh);
+        self.bind_capture_exclusion_manager(&globals, &qh);
 
         // Always try to bind layer auto-hide manager for compositor-driven auto-hide support
         self.auto_hide_manager = globals
