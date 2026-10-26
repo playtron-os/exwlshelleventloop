@@ -1590,6 +1590,10 @@ impl<T> WindowState<T> {
         if let Some(blur_obj) = self.blur_surfaces.remove(&surface_id) {
             blur_obj.release();
         }
+        if let Some(effect) = self.background_effect_surfaces.remove(&surface_id) {
+            effect.destroy();
+        }
+        self.blur_params.remove(&surface_id);
         if let Some(adaptive_fg_obj) = self.adaptive_foreground_surfaces.remove(&surface_id) {
             adaptive_fg_obj.destroy();
         }
