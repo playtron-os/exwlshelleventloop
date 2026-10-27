@@ -413,6 +413,92 @@ pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent>
     })
 }
 
+// Global channel for first-frame events. Sends only while a subscription
+// listens, so an app that never asks keeps nothing.
+static FIRST_FRAME_CHANNEL: std::sync::OnceLock<SharedChannel<iced_core::window::Id>> =
+    std::sync::OnceLock::new();
+static FIRST_FRAME_WANTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn get_first_frame_channel() -> &'static SharedChannel<iced_core::window::Id> {
+    FIRST_FRAME_CHANNEL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (std::sync::Mutex::new(tx), std::sync::Mutex::new(rx))
+    })
+}
+
+/// Send a first-frame event (called by the event loop).
+pub(crate) fn send_first_frame_event(id: iced_core::window::Id) {
+    if !FIRST_FRAME_WANTED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let (tx, _) = get_first_frame_channel();
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(id);
+    }
+}
+
+/// Subscription for first-frame events.
+///
+/// Yields a surface's id once its first drawn frame is committed, so the
+/// compositor shows it from its next repaint. An auto-sized surface without a
+/// `first_size` reports it after it has measured itself, not while it waits
+/// hidden. Use it to start a motion the moment there is something to see:
+/// a motion started when the surface opens can be over before its first frame
+/// is drawn.
+///
+/// # Example
+/// ```no_run
+/// # use iced::Subscription;
+/// # use iced::window;
+/// # enum Message { FirstFrame(window::Id) }
+/// # struct App;
+/// # impl App {
+/// fn subscription(&self) -> Subscription<Message> {
+///     iced_layershell::event::first_frame_subscription().map(Message::FirstFrame)
+/// }
+/// # }
+/// ```
+pub fn first_frame_subscription() -> iced_futures::Subscription<iced_core::window::Id> {
+    #[derive(Hash)]
+    struct FirstFrameSubscription;
+
+    iced_futures::Subscription::run_with(FirstFrameSubscription, |_| {
+        iced_futures::stream::channel(
+            100,
+            |mut output: iced_futures::futures::channel::mpsc::Sender<iced_core::window::Id>| async move {
+                use iced_futures::futures::SinkExt;
+
+                FIRST_FRAME_WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Bridge std::sync::mpsc → async channel via a dedicated thread,
+                // so idle costs nothing and events deliver instantly.
+                let (async_tx, mut async_rx) =
+                    iced_futures::futures::channel::mpsc::channel::<iced_core::window::Id>(100);
+
+                std::thread::Builder::new()
+                    .name("first-frame-bridge".into())
+                    .spawn(move || {
+                        let (_, rx) = get_first_frame_channel();
+                        let rx = rx.lock().expect("first frame rx lock");
+                        while let Ok(id) = rx.recv() {
+                            if async_tx.clone().try_send(id).is_err() {
+                                log::warn!(
+                                    "First frame bridge: async channel full, dropping event"
+                                );
+                            }
+                        }
+                    })
+                    .expect("spawn first frame bridge thread");
+
+                use iced_futures::futures::StreamExt;
+                while let Some(id) = async_rx.next().await {
+                    let _ = output.send(id).await;
+                }
+            },
+        )
+    })
+}
+
 /// A workspace switch, as reported by the compositor.
 pub use layershellev::workspace_transition::WorkspaceTransition;
 
