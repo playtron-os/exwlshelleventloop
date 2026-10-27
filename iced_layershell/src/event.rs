@@ -413,8 +413,8 @@ pub fn usable_area_subscription() -> iced_futures::Subscription<UsableAreaEvent>
     })
 }
 
-// Global channel for first-frame events. Sends only while a subscription
-// listens, so an app that never asks keeps nothing.
+// Global channel for first-frame events. Sends only once an app has asked for
+// the subscription, so an app that never asks keeps nothing.
 static FIRST_FRAME_CHANNEL: std::sync::OnceLock<SharedChannel<iced_core::window::Id>> =
     std::sync::OnceLock::new();
 static FIRST_FRAME_WANTED: std::sync::atomic::AtomicBool =
@@ -463,13 +463,15 @@ pub fn first_frame_subscription() -> iced_futures::Subscription<iced_core::windo
     #[derive(Hash)]
     struct FirstFrameSubscription;
 
+    // Set as the app asks, before it has a surface: a frame drawn before the
+    // stream first runs waits in the channel rather than being dropped.
+    FIRST_FRAME_WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
     iced_futures::Subscription::run_with(FirstFrameSubscription, |_| {
         iced_futures::stream::channel(
             100,
             |mut output: iced_futures::futures::channel::mpsc::Sender<iced_core::window::Id>| async move {
                 use iced_futures::futures::SinkExt;
 
-                FIRST_FRAME_WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
                 // Bridge std::sync::mpsc → async channel via a dedicated thread,
                 // so idle costs nothing and events deliver instantly.
                 let (async_tx, mut async_rx) =
