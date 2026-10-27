@@ -175,6 +175,10 @@ pub struct NewLayerShellSettings {
     /// When true, the initial size is used as a maximum, and the surface will be resized
     /// to match the actual content size after the first render.
     pub auto_size: bool,
+    /// The size an auto-sized surface would measure, when the app already knows it. The
+    /// surface then maps at this size at once, with its shadow, blur and corners, instead
+    /// of at 1x1 and transparent until it has been measured. Later changes are measured.
+    pub first_size: Option<(u32, u32)>,
     /// Start the surface hidden (using layer_surface_visibility protocol).
     /// The compositor will not render or give focus to the surface until
     /// `ShowWindow` is sent.  Useful for daemon-mode GPU warm-up where the
@@ -327,6 +331,7 @@ impl Default for NewLayerShellSettings {
             corner_radius: None,
             transition: None,
             auto_size: false,
+            first_size: None,
             start_hidden: false,
             start_hidden_without_animating: false,
         }

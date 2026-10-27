@@ -1246,8 +1246,13 @@ where
                 event: IcedEvent::Window(IcedWindowEvent::Closed),
                 status: iced_core::event::Status::Ignored,
             });
-        // if now there is no windows now, then break the compositor, and unlink the clipboard
-        if self.window_manager.is_empty() {
+        // if now there is no windows now, then break the compositor, and unlink the clipboard.
+        // A surface made as this one closed is not drawn yet; it keeps the compositor, which
+        // takes a moment to build again.
+        let on_its_way = ev
+            .get_unit_iter()
+            .any(|unit| Some(unit.id()) != layer_shell_id);
+        if self.window_manager.is_empty() && !on_its_way {
             self.remove_compositor();
         }
     }
@@ -2085,7 +2090,16 @@ where
                 ..
             } => {
                 // Track this window for auto-sizing if enabled
-                if settings.auto_size {
+                if settings.auto_size
+                    && let Some(size) = settings.first_size
+                {
+                    // Already measured by the app: map at it, and measure from the first frame.
+                    self.auto_size_enabled.insert(iced_id);
+                    self.auto_size_max
+                        .insert(iced_id, settings.size.unwrap_or((10000, 10000)));
+                    self.auto_size_last_content.insert(iced_id, size);
+                    settings.size = Some(size);
+                } else if settings.auto_size {
                     // Store the original size as max bounds for auto-sizing
                     let max_size = settings.size.unwrap_or((10000, 10000));
                     tracing::debug!(
