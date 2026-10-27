@@ -68,6 +68,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 /// Disable the compositor-drawn edge resize for the surface.
                 UnsetEdgeResize{id: iced_layershell::reexport::IcedId},
                 ExclusiveZoneChange{id: iced_layershell::reexport::IcedId, zone_size: i32},
+                /// The edge the exclusive zone is taken from; empty lets the anchors imply it.
+                ExclusiveEdgeChange{id: iced_layershell::reexport::IcedId, edge: iced_layershell::reexport::Anchor},
                 KeyboardInteractivityChange{id: iced_layershell::reexport::IcedId, interactivity: iced_layershell::reexport::KeyboardInteractivity},
                 VirtualKeyboardPressed {
                     time: u32,
@@ -161,6 +163,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::SetEdgeResize { id, min_width, max_width } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::SetEdgeResize { min_width, max_width })),
                             Self::UnsetEdgeResize { id } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::UnsetEdgeResize)),
                             Self::ExclusiveZoneChange { id, zone_size } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ExclusiveZoneChange(zone_size))),
+                            Self::ExclusiveEdgeChange { id, edge } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::ExclusiveEdgeChange(edge))),
                             Self::KeyboardInteractivityChange { id, interactivity } => Ok(LayershellCustomActionWithId::new(Some(id), LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(
                                 None,
@@ -223,6 +226,8 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 /// Disable the compositor-drawn edge resize for the surface.
                 UnsetEdgeResize,
                 ExclusiveZoneChange(i32),
+                /// The edge the exclusive zone is taken from; empty lets the anchors imply it.
+                ExclusiveEdgeChange(iced_layershell::reexport::Anchor),
                 KeyboardInteractivityChange(iced_layershell::reexport::KeyboardInteractivity),
                 VirtualKeyboardPressed {
                     time: u32,
@@ -285,6 +290,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::SetEdgeResize { min_width, max_width } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::SetEdgeResize { min_width, max_width })),
                             Self::UnsetEdgeResize => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::UnsetEdgeResize)),
                             Self::ExclusiveZoneChange(zone_size) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ExclusiveZoneChange(zone_size))),
+                            Self::ExclusiveEdgeChange(edge) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::ExclusiveEdgeChange(edge))),
                             Self::KeyboardInteractivityChange(interactivity) => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::KeyboardInteractivityChange(interactivity))),
                             Self::VirtualKeyboardPressed { time, key } => Ok(LayershellCustomActionWithId::new(None, LayershellCustomAction::VirtualKeyboardPressed {
                                 time,

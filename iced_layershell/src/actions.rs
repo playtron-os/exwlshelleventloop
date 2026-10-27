@@ -216,6 +216,10 @@ pub enum LayershellCustomAction {
     /// Disable compositor-driven auto-hide for the surface.
     AutoHideUnset,
     ExclusiveZoneChange(i32),
+    /// The edge the exclusive zone is taken from: one of the surface's anchors, or none
+    /// (empty) to let the anchors imply it. A corner-anchored surface needs one to reserve
+    /// anything. Requires layer shell version 5; without it nothing changes.
+    ExclusiveEdgeChange(Anchor),
     KeyboardInteractivityChange(KeyboardInteractivity),
     VirtualKeyboardPressed {
         time: u32,

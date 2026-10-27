@@ -2032,6 +2032,10 @@ where
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 layer_shell_window.set_exclusive_zone(zone_size);
             }
+            LayershellCustomAction::ExclusiveEdgeChange(edge) => {
+                ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
+                layer_shell_window.set_exclusive_edge(edge);
+            }
             LayershellCustomAction::KeyboardInteractivityChange(interactivity) => {
                 ref_layer_shell_window!(ev, iced_id, layer_shell_id, layer_shell_window);
                 layer_shell_window.set_keyboard_interactivity(interactivity);
