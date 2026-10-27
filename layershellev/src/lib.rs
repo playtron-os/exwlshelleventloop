@@ -8253,6 +8253,7 @@ impl<T: 'static> WindowState<T> {
                                         corner_radius,
                                         transition,
                                         auto_size: _, // Auto-size is handled at the iced level
+                                        first_size: _,
                                         start_hidden,
                                         start_hidden_without_animating,
                                     },

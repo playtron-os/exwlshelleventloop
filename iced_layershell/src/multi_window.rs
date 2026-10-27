@@ -2085,7 +2085,16 @@ where
                 ..
             } => {
                 // Track this window for auto-sizing if enabled
-                if settings.auto_size {
+                if settings.auto_size
+                    && let Some(size) = settings.first_size
+                {
+                    // Already measured by the app: map at it, and measure from the first frame.
+                    self.auto_size_enabled.insert(iced_id);
+                    self.auto_size_max
+                        .insert(iced_id, settings.size.unwrap_or((10000, 10000)));
+                    self.auto_size_last_content.insert(iced_id, size);
+                    settings.size = Some(size);
+                } else if settings.auto_size {
                     // Store the original size as max bounds for auto-sizing
                     let max_size = settings.size.unwrap_or((10000, 10000));
                     tracing::debug!(
