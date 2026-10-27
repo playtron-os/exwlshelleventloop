@@ -1246,8 +1246,13 @@ where
                 event: IcedEvent::Window(IcedWindowEvent::Closed),
                 status: iced_core::event::Status::Ignored,
             });
-        // if now there is no windows now, then break the compositor, and unlink the clipboard
-        if self.window_manager.is_empty() {
+        // if now there is no windows now, then break the compositor, and unlink the clipboard.
+        // A surface made as this one closed is not drawn yet; it keeps the compositor, which
+        // takes a moment to build again.
+        let on_its_way = ev
+            .get_unit_iter()
+            .any(|unit| Some(unit.id()) != layer_shell_id);
+        if self.window_manager.is_empty() && !on_its_way {
             self.remove_compositor();
         }
     }
