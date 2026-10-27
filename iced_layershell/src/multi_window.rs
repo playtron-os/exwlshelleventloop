@@ -388,6 +388,8 @@ where
     /// Shadow is deferred to avoid a visible flash of shadow around an
     /// empty/transparent surface before the popup content is drawn.
     popup_pending_shadow: std::collections::HashSet<IcedId>,
+    /// Windows whose first drawn frame was committed.
+    first_framed: std::collections::HashSet<IcedId>,
     /// What the automation door needs to remember between passes.
     #[cfg(all(feature = "automation", target_os = "linux"))]
     door: DoorState,
@@ -478,6 +480,7 @@ where
             pending_popups: HashMap::new(),
             cancelled_popups: std::collections::HashSet::new(),
             popup_pending_shadow: std::collections::HashSet::new(),
+            first_framed: std::collections::HashSet::new(),
             #[cfg(all(feature = "automation", target_os = "linux"))]
             door: DoorState::default(),
         }
@@ -1188,6 +1191,9 @@ where
                     self.waiting_layer_shell_actions
                         .push((Some(iced_id), LayershellCustomAction::ShadowChange(true)));
                 }
+                if !skip_present && self.first_framed.insert(iced_id) {
+                    crate::event::send_first_frame_event(iced_id);
+                }
             }
             Err(error) => match error {
                 compositor::SurfaceError::OutOfMemory => {
@@ -1238,6 +1244,7 @@ where
         self.auto_size_last_content.remove(&iced_id);
         self.auto_size_max.remove(&iced_id);
         self.auto_size_deferred_effects.remove(&iced_id);
+        self.first_framed.remove(&iced_id);
         self.window_manager.remove(iced_id);
         self.user_interfaces.remove(&iced_id);
         self.runtime
