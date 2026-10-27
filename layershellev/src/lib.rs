@@ -877,6 +877,20 @@ impl<T> WindowStateUnit<T> {
         }
     }
 
+    /// Set the edge the exclusive zone is taken from, which must be one of the surface's
+    /// anchors, or none (an empty `Anchor`) to let the anchors imply it. A surface anchored to
+    /// a corner reserves nothing without one. Needs layer shell version 5; older compositors
+    /// keep the implied edge.
+    pub fn set_exclusive_edge(&self, edge: Anchor) {
+        if let Shell::LayerShell(layer_shell) = &self.shell {
+            if layer_shell.version() < 5 {
+                return;
+            }
+            layer_shell.set_exclusive_edge(edge);
+            self.wl_surface.commit();
+        }
+    }
+
     /// set keyboard interactivity for the layer surface
     pub fn set_keyboard_interactivity(
         &self,
@@ -7592,7 +7606,7 @@ impl<T: 'static> WindowState<T> {
 
             let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
             let layer_shell = globals
-                .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=4, ())
+                .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=5, ())
                 .unwrap();
             let layer = layer_shell.get_layer_surface(
                 &wl_surface,
@@ -7714,7 +7728,7 @@ impl<T: 'static> WindowState<T> {
             for (_, output_display) in displays.iter() {
                 let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
                 let layer_shell = globals
-                    .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=4, ())
+                    .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=5, ())
                     .unwrap();
                 let layer = layer_shell.get_layer_surface(
                     &wl_surface,
@@ -8095,7 +8109,7 @@ impl<T: 'static> WindowState<T> {
                                 let bound_output = (!recreate_lost_active).then_some(output_display);
                                 let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
                                 let layer_shell = globals
-                                    .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=4, ())
+                                    .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=5, ())
                                     .unwrap();
                                 let layer = layer_shell.get_layer_surface(
                                     &wl_surface,
@@ -8281,7 +8295,7 @@ impl<T: 'static> WindowState<T> {
 
                                     let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
                                     let layer_shell = globals
-                                        .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=4, ())
+                                        .bind::<ZwlrLayerShellV1, _, _>(&qh, 3..=5, ())
                                         .unwrap();
                                     let layer = layer_shell.get_layer_surface(
                                         &wl_surface,
