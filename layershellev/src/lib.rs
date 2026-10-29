@@ -835,6 +835,19 @@ impl<T> WindowStateUnit<T> {
         self.zxdgoutput.as_ref()
     }
 
+    /// Its output's size and place as the message `zxdg_output` sends, once known.
+    fn output_info(&self) -> Option<DispatchMessage> {
+        let info = self.zxdgoutput.as_ref()?;
+        let (width, height) = info.logical_size;
+        (width > 0 && height > 0).then(|| DispatchMessage::XdgInfoChanged {
+            width,
+            height,
+            output_name: info.name.clone(),
+            output_x: info.position.0,
+            output_y: info.position.1,
+        })
+    }
+
     /// set the anchor of the current unit. please take the simple.rs as reference
     pub fn set_anchor(&self, anchor: Anchor) {
         if let Shell::LayerShell(layer_shell) = &self.shell {
@@ -1691,6 +1704,45 @@ impl<T> WindowState<T> {
         self.units.push(window_state_unit);
         // new created surface will be current_surface.
         self.update_current_surface(Some(surface));
+    }
+
+    /// Asks for `unit_id` to be drawn. Its output's size usually arrives before
+    /// the first draw, when the consumer has no window to give it to, so say it again.
+    fn refresh_unit<F, Message>(
+        &mut self,
+        event_handler: &mut F,
+        unit_id: id::Id,
+        (width, height): (u32, u32),
+        is_created: bool,
+        scale_float: f64,
+    ) where
+        T: 'static,
+        Message: std::marker::Send + 'static,
+        F: FnMut(LayerShellEvent<T, Message>, &mut WindowState<T>, Option<id::Id>) -> ReturnData<T>,
+    {
+        self.handle_event(
+            &mut *event_handler,
+            LayerShellEvent::RequestMessages(&DispatchMessage::RequestRefresh {
+                width,
+                height,
+                is_created,
+                scale_float,
+            }),
+            Some(unit_id),
+        );
+        let Some(unit) = self.units.iter_mut().find(|unit| unit.id == unit_id) else {
+            return;
+        };
+        if std::mem::replace(&mut unit.initial_refresh_sent, true) {
+            return;
+        }
+        if let Some(output) = unit.output_info() {
+            self.handle_event(
+                &mut *event_handler,
+                LayerShellEvent::RequestMessages(&output),
+                Some(unit_id),
+            );
+        }
     }
 }
 
@@ -8004,17 +8056,13 @@ impl<T: 'static> WindowState<T> {
                             wl_surface.commit();
                             window_state.units[idx].buffer = Some(buffer);
                         }
-                        window_state.handle_event(
+                        window_state.refresh_unit(
                             &mut *event_handler,
-                            LayerShellEvent::RequestMessages(&DispatchMessage::RequestRefresh {
-                                width,
-                                height,
-                                is_created,
-                                scale_float,
-                            }),
-                            Some(unit_id),
+                            unit_id,
+                            (width, height),
+                            is_created,
+                            scale_float,
                         );
-                        window_state.units[idx].initial_refresh_sent = true;
                         window_state.units[idx].reset_present_slot();
                     }
                 }
@@ -8994,17 +9042,13 @@ impl<T: 'static> WindowState<T> {
                                 wl_surface.commit();
                                 window_state.units[idx].buffer = Some(buffer);
                             }
-                            window_state.handle_event(
+                            window_state.refresh_unit(
                                 &mut *event_handler,
-                                LayerShellEvent::RequestMessages(&DispatchMessage::RequestRefresh {
-                                    width,
-                                    height,
-                                    is_created,
-                                    scale_float,
-                                }),
-                                Some(unit_id),
+                                unit_id,
+                                (width, height),
+                                is_created,
+                                scale_float,
                             );
-                            window_state.units[idx].initial_refresh_sent = true;
                             // reset if the slot is not used
                             window_state.units[idx].reset_present_slot();
                         }
@@ -9264,6 +9308,9 @@ mod popup_fade_tests;
 
 #[cfg(test)]
 mod tooltip_tests;
+
+#[cfg(test)]
+mod output_info_tests;
 
 #[cfg(test)]
 mod tests {
