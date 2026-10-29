@@ -503,6 +503,7 @@ impl<T> WindowStateUnitBuilder<T> {
                 binding: Default::default(),
                 becreated: Default::default(),
                 initial_refresh_sent: false,
+                unanswered_sizes: std::sync::atomic::AtomicU32::new(0),
                 popup_placement: None,
                 fade_close: None,
                 // Unknown why it is 120
@@ -660,6 +661,8 @@ pub struct WindowStateUnit<T> {
     /// Whether the compositor has sent the first configure. A buffer committed before it is a
     /// protocol error, so nothing presents until then.
     configured: bool,
+    /// Size requests whose answer is still on its way (see [`WindowStateUnit::size_answered`]).
+    unanswered_sizes: std::sync::atomic::AtomicU32,
     /// A popup's placement, for resizing it.
     popup_placement: Option<PopupPlacement>,
     /// When a popup fading out on hide is destroyed. Nothing is drawn meanwhile: the
@@ -688,6 +691,11 @@ impl<T: 'static> WindowStateUnit<T> {
             Shell::LayerShell(layer_shell) => {
                 layer_shell.set_size(width, height);
                 self.wl_surface.commit();
+                // A compositor that keeps the size it gave sends no configure, so ask
+                // when it has read the request; any configure comes before that answer.
+                self.unanswered_sizes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.display.sync(&self.qh, SizeAnswer(self.id));
             }
             Shell::PopUp((popup, xdg_surface)) => {
                 let Some(placement) = &self.popup_placement else {
@@ -833,6 +841,14 @@ impl<T> WindowStateUnit<T> {
     /// get the xdg_output info related to this unit
     pub fn get_xdgoutput_info(&self) -> Option<&ZxdgOutputInfo> {
         self.zxdgoutput.as_ref()
+    }
+
+    /// Whether the compositor has answered every size this surface asked for, with a
+    /// configure or by keeping the size it gave. [`Self::get_size`] is then final.
+    pub fn size_answered(&self) -> bool {
+        self.unanswered_sizes
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == 0
     }
 
     /// Its output's size and place as the message `zxdg_output` sends, once known.
@@ -5918,6 +5934,33 @@ impl<T> Dispatch<zwp_text_input_v3::ZwpTextInputV3, TextInputData> for WindowSta
     }
 }
 
+/// The `wl_display.sync` sent after a size request of the unit it names.
+#[derive(Debug, Clone, Copy)]
+struct SizeAnswer(id::Id);
+
+impl<T> Dispatch<WlCallback, SizeAnswer> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        _proxy: &WlCallback,
+        event: <WlCallback as Proxy>::Event,
+        data: &SizeAnswer,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        let WlCallbackEvent::Done { .. } = event else {
+            return;
+        };
+        let Some(unit) = state.get_mut_unit_with_id(data.0) else {
+            return;
+        };
+        let left = unit.unanswered_sizes.get_mut();
+        *left = left.saturating_sub(1);
+        if *left == 0 {
+            unit.request_refresh(RefreshRequest::NextFrame);
+        }
+    }
+}
+
 impl<T> Dispatch<WlCallback, (id::Id, PresentAvailableState)> for WindowState<T> {
     fn event(
         state: &mut Self,
@@ -9311,6 +9354,9 @@ mod tooltip_tests;
 
 #[cfg(test)]
 mod output_info_tests;
+
+#[cfg(test)]
+mod size_answer_tests;
 
 #[cfg(test)]
 mod tests {

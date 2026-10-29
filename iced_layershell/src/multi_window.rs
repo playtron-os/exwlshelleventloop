@@ -981,7 +981,10 @@ where
             self.auto_size_hidden.get_mut(&iced_id)
         {
             let current_size = window.state.window_size();
-            if current_size.width == *target_w && current_size.height == *target_h {
+            // A compositor may give less than was asked for; its answer is final either way.
+            if (current_size.width == *target_w && current_size.height == *target_h)
+                || layer_shell_window.size_answered()
+            {
                 // Resize confirmed, remove from hidden
                 tracing::debug!(
                     "Auto-size resize CONFIRMED for {:?}: size ({}, {})",
